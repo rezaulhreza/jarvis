@@ -1,0 +1,82 @@
+# Jarvis Configuration
+# Secrets should be in .env file, not here!
+
+# Model Settings
+models:
+  default: "qwen3:4b"
+  reasoning: "deepseek-r1:8b"
+  vision: "llava"
+  code: "qwen2.5-coder:7b"
+  tools: "functiongemma"
+  embeddings: "nomic-embed-text"
+
+# Context Management
+context:
+  max_tokens: 8000
+  keep_recent_messages: 5
+  auto_compact: true
+  summary_model: "qwen3:4b"
+
+# Memory Settings
+memory:
+  database: "memory/jarvis.db"
+  vector_store: "knowledge/chroma_db"
+  facts_file: "memory/facts.md"
+  entities_file: "memory/entities.json"
+
+# Active Persona (see config/personas/)
+persona: "default"
+
+# Integrations
+integrations:
+  telegram:
+    enabled: false
+    # Token loaded from TELEGRAM_BOT_TOKEN env var
+
+  web_search:
+    enabled: true
+    provider: "duckduckgo"
+
+  weather:
+    enabled: false
+    # API key loaded from OPENWEATHER_API_KEY env var
+    units: "metric"
+
+  calendar:
+    enabled: false
+    provider: "google"
+
+  github:
+    enabled: false
+    # Token loaded from GITHUB_TOKEN env var
+
+  notion:
+    enabled: false
+    # API key loaded from NOTION_API_KEY env var
+
+# Safety Settings
+safety:
+  confirm_destructive: true
+  log_all_commands: true
+  max_shell_timeout: 30
+  allowed_directories:
+    - "~"
+    - "/tmp"
+  blocked_commands:
+    - "rm -rf"
+    - "sudo"
+    - "mkfs"
+
+# Voice Settings (future)
+voice:
+  enabled: false
+  stt_model: "whisper"
+  tts_engine: "say"
+  wake_word: "jarvis"
+
+# Logging
+logging:
+  level: "INFO"
+  file: "logs/jarvis.log"
+  max_size_mb: 10
+  backup_count: 3
