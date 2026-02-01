@@ -1,5 +1,12 @@
 # Skills module
 # Each skill is a tool the assistant can use
+#
+# Skills can be:
+# 1. Built-in (this package)
+# 2. User-created (~/.jarvis/skills/)
+
+import importlib.util
+from pathlib import Path
 
 from .web_search import web_search
 from .shell import shell_run, is_safe_command
@@ -10,11 +17,13 @@ from .github_ops import list_repos, repo_info, list_issues, create_issue, list_p
 from .datetime_ops import get_current_time, convert_timezone, add_time, time_until
 from .calculator import calculate, convert_units, percentage
 from .notes import quick_note, list_notes, read_note, search_notes
+from .skill_creator import (
+    create_skill, update_skill, delete_skill,
+    list_user_skills, get_skill_code, get_skill_template
+)
 
-# Telegram requires async - import separately when needed
-# from .telegram import send_message, get_updates
-
-AVAILABLE_SKILLS = {
+# Built-in skills
+BUILT_IN_SKILLS = {
     # Web
     "web_search": {
         "function": web_search,
@@ -135,25 +144,115 @@ AVAILABLE_SKILLS = {
         "description": "Search through notes",
         "parameters": {"query": "string - search term"}
     },
+
+    # Skill Management (Meta-skills)
+    "create_skill": {
+        "function": create_skill,
+        "description": "Create a new skill (provide name, description, and Python code)",
+        "parameters": {
+            "name": "string - skill name (snake_case)",
+            "description": "string - what the skill does",
+            "code": "string - Python function code",
+            "parameters": "dict - parameter descriptions (optional)"
+        }
+    },
+    "delete_skill": {
+        "function": delete_skill,
+        "description": "Delete a user-created skill",
+        "parameters": {"name": "string - skill name to delete"}
+    },
+    "list_user_skills": {
+        "function": list_user_skills,
+        "description": "List all user-created custom skills",
+        "parameters": {}
+    },
+    "get_skill_code": {
+        "function": get_skill_code,
+        "description": "View the source code of a skill",
+        "parameters": {"name": "string - skill name"}
+    },
+    "get_skill_template": {
+        "function": get_skill_template,
+        "description": "Get a template for creating skills",
+        "parameters": {"template_type": "string - basic, api_fetch, file_processor, shell_command"}
+    },
 }
+
+
+def _load_user_skills() -> dict:
+    """Load user-created skills from ~/.jarvis/skills/"""
+    from .. import get_data_dir
+
+    user_skills = {}
+    skills_dir = get_data_dir() / "skills"
+
+    if not skills_dir.exists():
+        return user_skills
+
+    for skill_file in skills_dir.glob("*.py"):
+        if skill_file.name.startswith("_"):
+            continue
+
+        try:
+            # Load the module
+            spec = importlib.util.spec_from_file_location(
+                skill_file.stem, skill_file
+            )
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+
+            # Get skill info
+            if hasattr(module, 'SKILL_INFO'):
+                info = module.SKILL_INFO
+                user_skills[info['name']] = {
+                    "function": info['function'],
+                    "description": info.get('description', 'User-created skill'),
+                    "parameters": info.get('parameters', {}),
+                    "user_created": True
+                }
+        except Exception as e:
+            # Skip broken skills
+            print(f"Warning: Could not load skill {skill_file.name}: {e}")
+
+    return user_skills
+
+
+def get_all_skills() -> dict:
+    """Get all skills (built-in + user-created)."""
+    all_skills = BUILT_IN_SKILLS.copy()
+    all_skills.update(_load_user_skills())
+    return all_skills
+
+
+# This is what gets imported - includes user skills
+AVAILABLE_SKILLS = get_all_skills()
+
+
+def reload_skills():
+    """Reload skills (call after creating new skills)."""
+    global AVAILABLE_SKILLS
+    AVAILABLE_SKILLS = get_all_skills()
 
 
 def get_skill(name: str):
     """Get a skill by name."""
-    if name in AVAILABLE_SKILLS:
-        return AVAILABLE_SKILLS[name]["function"]
+    skills = get_all_skills()
+    if name in skills:
+        return skills[name]["function"]
     return None
 
 
 def list_skills() -> list[str]:
     """List all available skill names."""
-    return list(AVAILABLE_SKILLS.keys())
+    return list(get_all_skills().keys())
 
 
 def get_skills_schema() -> str:
     """Get schema of all skills for the router."""
+    skills = get_all_skills()
     lines = ["Available tools:"]
-    for i, (name, info) in enumerate(AVAILABLE_SKILLS.items(), 1):
+    for i, (name, info) in enumerate(skills.items(), 1):
         params = ", ".join(f"{k}: {v}" for k, v in info["parameters"].items())
-        lines.append(f"{i}. {name}({params}) - {info['description']}")
+        marker = " [custom]" if info.get("user_created") else ""
+        lines.append(f"{i}. {name}({params}) - {info['description']}{marker}")
     return "\n".join(lines)

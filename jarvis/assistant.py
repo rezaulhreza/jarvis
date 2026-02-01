@@ -18,7 +18,7 @@ from rich.prompt import Prompt
 from .core.ollama_client import OllamaClient
 from .core.context_manager import ContextManager
 from .core.router import ToolRouter, should_use_reasoning, should_use_vision
-from .skills import AVAILABLE_SKILLS, get_skills_schema
+from .skills import AVAILABLE_SKILLS, get_skills_schema, reload_skills, get_all_skills
 from . import get_data_dir, ensure_data_dir, PACKAGE_DIR
 
 # Load environment variables
@@ -290,15 +290,25 @@ When you need to use a tool, I'll do so automatically based on the user's reques
         tool_name = route_result.get('tool')
         params = route_result.get('params', {})
 
-        if tool_name not in AVAILABLE_SKILLS:
+        # Get fresh skills list (in case user skills were added)
+        skills = get_all_skills()
+
+        if tool_name not in skills:
             return ""
 
         console.print(f"[dim]Using tool: {tool_name}[/dim]")
 
         try:
-            tool_func = AVAILABLE_SKILLS[tool_name]['function']
+            tool_func = skills[tool_name]['function']
             params = {k: v for k, v in params.items() if v}
             result = tool_func(**params)
+
+            # Reload skills if we just created or deleted one
+            if tool_name in ['create_skill', 'delete_skill']:
+                reload_skills()
+                self._build_system_prompt()  # Update prompt with new skills
+                console.print("[green]Skills reloaded.[/green]")
+
             return str(result)
         except Exception as e:
             console.print(f"[red]Tool error: {e}[/red]")
