@@ -345,12 +345,62 @@ You are Jarvis in custom mode.
 
 ## Development
 
+### Setup
+
 ```bash
 git clone https://github.com/rezaulhreza/jarvis.git
 cd jarvis
+
+# Python backend
 python -m venv venv
 source venv/bin/activate
 pip install -e ".[all]"
+
+# React frontend
+cd web
+npm install
+npm run build
+cd ..
+```
+
+### Running in Dev Mode
+
+```bash
+# Full dev environment (backend + frontend with hot reload)
+jarvis --dev
+
+# This starts:
+# - Backend at http://localhost:7777
+# - Frontend at http://localhost:3000 (with hot reload)
+```
+
+### Building for Production
+
+```bash
+# Build React frontend
+cd web && npm run build && cd ..
+
+# Run production server
+jarvis --ui
+```
+
+### Project Structure
+
+```
+jarvis/
+├── jarvis/              # Python backend
+│   ├── core/            # Agent, context, tools
+│   ├── knowledge/       # RAG system (ChromaDB)
+│   ├── providers/       # LLM providers (Ollama)
+│   ├── skills/          # Built-in tools
+│   └── ui/              # FastAPI server
+├── web/                 # React frontend
+│   ├── src/
+│   │   ├── components/  # React components
+│   │   └── hooks/       # Custom hooks
+│   └── dist/            # Production build
+├── docs/                # Documentation (synced to RAG)
+└── knowledge/           # Vector DB storage
 ```
 
 ## License
