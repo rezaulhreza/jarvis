@@ -3,10 +3,11 @@ import { useState, useRef, useCallback, useEffect } from 'react'
 interface UseVoiceOptions {
   onSpeechEnd?: (transcript: string) => void
   onInterrupt?: () => void
+  sttProvider?: 'browser' | 'whisper'
 }
 
 export function useVoice(options: UseVoiceOptions = {}) {
-  const { onSpeechEnd, onInterrupt } = options
+  const { onSpeechEnd, onInterrupt, sttProvider = 'browser' } = options
 
   const [isListening, setIsListening] = useState(false)
   const [isRecording, setIsRecording] = useState(false)
@@ -14,6 +15,8 @@ export function useVoice(options: UseVoiceOptions = {}) {
   const [volume, setVolume] = useState(0)
 
   const recognition = useRef<any>(null)
+  const mediaRecorder = useRef<MediaRecorder | null>(null)
+  const audioChunks = useRef<Blob[]>([])
   const currentAudio = useRef<HTMLAudioElement | null>(null)
   const audioContext = useRef<AudioContext | null>(null)
   const analyser = useRef<AnalyserNode | null>(null)
@@ -23,18 +26,21 @@ export function useVoice(options: UseVoiceOptions = {}) {
   const isListeningRef = useRef(false)
   const onSpeechEndRef = useRef(onSpeechEnd)
   const onInterruptRef = useRef(onInterrupt)
+  const sttProviderRef = useRef(sttProvider)
+  const silenceTimer = useRef<NodeJS.Timeout | null>(null)
 
   // Keep refs in sync
   useEffect(() => {
     onSpeechEndRef.current = onSpeechEnd
     onInterruptRef.current = onInterrupt
-  }, [onSpeechEnd, onInterrupt])
+    sttProviderRef.current = sttProvider
+  }, [onSpeechEnd, onInterrupt, sttProvider])
 
   useEffect(() => {
     isListeningRef.current = isListening
   }, [isListening])
 
-  // Initialize speech recognition once
+  // Initialize browser speech recognition
   useEffect(() => {
     const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
     if (!SpeechRecognition) {
@@ -81,7 +87,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
     }
 
     recog.onend = () => {
-      if (isListeningRef.current) {
+      if (isListeningRef.current && sttProviderRef.current === 'browser') {
         try {
           recog.start()
         } catch (e) {}
@@ -97,8 +103,31 @@ export function useVoice(options: UseVoiceOptions = {}) {
     }
   }, [])
 
+  // Process audio with Whisper
+  const processWithWhisper = useCallback(async (audioBlob: Blob) => {
+    try {
+      const formData = new FormData()
+      formData.append('audio', audioBlob, 'recording.webm')
+
+      const res = await fetch('/api/transcribe', {
+        method: 'POST',
+        body: formData,
+      })
+
+      if (res.ok) {
+        const data = await res.json()
+        const text = data.transcript || data.text
+        if (text && onSpeechEndRef.current) {
+          onSpeechEndRef.current(text)
+        }
+      }
+    } catch (err) {
+      console.error('Whisper transcription failed:', err)
+    }
+  }, [])
+
   const startListening = useCallback(async () => {
-    if (isListeningRef.current || !recognition.current) return
+    if (isListeningRef.current) return
 
     try {
       stream.current = await navigator.mediaDevices.getUserMedia({ audio: true })
@@ -108,10 +137,36 @@ export function useVoice(options: UseVoiceOptions = {}) {
       const source = audioContext.current.createMediaStreamSource(stream.current)
       source.connect(analyser.current)
 
-      recognition.current.start()
       setIsListening(true)
       transcriptRef.current = ''
 
+      if (sttProviderRef.current === 'browser' && recognition.current) {
+        // Use browser speech recognition
+        recognition.current.start()
+      } else {
+        // Use Whisper - set up MediaRecorder
+        audioChunks.current = []
+        mediaRecorder.current = new MediaRecorder(stream.current, {
+          mimeType: 'audio/webm;codecs=opus'
+        })
+
+        mediaRecorder.current.ondataavailable = (e) => {
+          if (e.data.size > 0) {
+            audioChunks.current.push(e.data)
+          }
+        }
+
+        mediaRecorder.current.onstop = async () => {
+          if (audioChunks.current.length > 0) {
+            const audioBlob = new Blob(audioChunks.current, { type: 'audio/webm' })
+            await processWithWhisper(audioBlob)
+          }
+        }
+
+        mediaRecorder.current.start(100) // Collect data every 100ms
+      }
+
+      // Volume monitoring and interrupt detection
       const checkVolume = () => {
         if (!analyser.current) return
         const dataArray = new Uint8Array(analyser.current.frequencyBinCount)
@@ -119,6 +174,46 @@ export function useVoice(options: UseVoiceOptions = {}) {
         const avg = dataArray.reduce((a, b) => a + b, 0) / dataArray.length / 255
         setVolume(avg)
 
+        // Detect speech for Whisper mode
+        if (sttProviderRef.current === 'whisper') {
+          if (avg > 0.02) {
+            setIsRecording(true)
+            // Reset silence timer
+            if (silenceTimer.current) {
+              clearTimeout(silenceTimer.current)
+            }
+            silenceTimer.current = setTimeout(() => {
+              // Silence detected - process audio
+              if (mediaRecorder.current?.state === 'recording') {
+                mediaRecorder.current.stop()
+                setIsRecording(false)
+                // Restart recording for continuous listening
+                setTimeout(() => {
+                  if (isListeningRef.current && stream.current) {
+                    audioChunks.current = []
+                    mediaRecorder.current = new MediaRecorder(stream.current, {
+                      mimeType: 'audio/webm;codecs=opus'
+                    })
+                    mediaRecorder.current.ondataavailable = (e) => {
+                      if (e.data.size > 0) {
+                        audioChunks.current.push(e.data)
+                      }
+                    }
+                    mediaRecorder.current.onstop = async () => {
+                      if (audioChunks.current.length > 0) {
+                        const audioBlob = new Blob(audioChunks.current, { type: 'audio/webm' })
+                        await processWithWhisper(audioBlob)
+                      }
+                    }
+                    mediaRecorder.current.start(100)
+                  }
+                }, 100)
+              }
+            }, 1500) // 1.5s silence = end of speech
+          }
+        }
+
+        // Interrupt detection
         if (avg > 0.03 && currentAudio.current && !currentAudio.current.paused) {
           currentAudio.current.pause()
           currentAudio.current = null
@@ -132,12 +227,17 @@ export function useVoice(options: UseVoiceOptions = {}) {
     } catch (err) {
       console.error('Mic access denied:', err)
     }
-  }, [])
+  }, [processWithWhisper])
 
   const stopListening = useCallback(() => {
     setIsListening(false)
     setIsRecording(false)
     setVolume(0)
+
+    if (silenceTimer.current) {
+      clearTimeout(silenceTimer.current)
+      silenceTimer.current = null
+    }
 
     if (animationFrame.current) {
       cancelAnimationFrame(animationFrame.current)
@@ -148,6 +248,10 @@ export function useVoice(options: UseVoiceOptions = {}) {
       try {
         recognition.current.stop()
       } catch (e) {}
+    }
+
+    if (mediaRecorder.current?.state === 'recording') {
+      mediaRecorder.current.stop()
     }
 
     if (stream.current) {

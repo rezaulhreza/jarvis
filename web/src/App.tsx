@@ -31,10 +31,11 @@ export default function App() {
   const [elevenVoices, setElevenVoices] = useState<{id: string, name: string}[]>([])
   const [currentVoice, setCurrentVoice] = useState('en-GB-SoniaNeural')
   const [showSettings, setShowSettings] = useState(false)
-  const [settingsTab, setSettingsTab] = useState<'model' | 'voice'>('model')
+  const [settingsTab, setSettingsTab] = useState<'model' | 'voice' | 'stt'>('model')
   const [isMuted, setIsMuted] = useState(false)
   const [loadingText, setLoadingText] = useState('')
   const [ttsProvider, setTtsProvider] = useState<'browser' | 'edge' | 'elevenlabs'>('browser')
+  const [sttProvider, setSttProvider] = useState<'browser' | 'whisper'>('browser')
   const [elevenLabsKey, setElevenLabsKey] = useState('')
   const [showApiKeyInput, setShowApiKeyInput] = useState(false)
 
@@ -144,8 +145,7 @@ export default function App() {
   } = useVoice({
     onSpeechEnd: handleVoiceInput,
     onInterrupt: handleInterrupt,
-    silenceThreshold: 800, // 0.8 seconds - snappy response
-    volumeThreshold: 0.02, // Slightly higher to avoid false triggers
+    sttProvider,
   })
 
   // Close settings dropdown when clicking outside
@@ -387,7 +387,16 @@ export default function App() {
                       settingsTab === 'voice' ? 'text-blue-400 border-b-2 border-blue-400' : 'text-[#71717a]'
                     )}
                   >
-                    Voice
+                    TTS
+                  </button>
+                  <button
+                    onClick={() => setSettingsTab('stt')}
+                    className={cn(
+                      'flex-1 px-3 py-2 text-xs',
+                      settingsTab === 'stt' ? 'text-blue-400 border-b-2 border-blue-400' : 'text-[#71717a]'
+                    )}
+                  >
+                    STT
                   </button>
                 </div>
                 {/* Content */}
@@ -508,6 +517,43 @@ export default function App() {
                           )}
                         </>
                       )}
+                    </>
+                  )}
+                  {settingsTab === 'stt' && (
+                    <>
+                      {/* STT Provider Selection */}
+                      <div className="px-3 py-2 border-b border-[#2a2a3a]">
+                        <span className="text-xs text-[#71717a] block mb-2">Speech-to-Text</span>
+                        <div className="flex gap-1">
+                          <button
+                            onClick={() => setSttProvider('browser')}
+                            className={cn(
+                              'px-3 py-1.5 text-xs rounded transition-colors flex-1',
+                              sttProvider === 'browser'
+                                ? 'bg-green-500/30 text-green-300'
+                                : 'bg-[#2a2a3a] text-[#71717a] hover:text-white'
+                            )}
+                          >
+                            Browser (instant)
+                          </button>
+                          <button
+                            onClick={() => setSttProvider('whisper')}
+                            className={cn(
+                              'px-3 py-1.5 text-xs rounded transition-colors flex-1',
+                              sttProvider === 'whisper'
+                                ? 'bg-purple-500/30 text-purple-300'
+                                : 'bg-[#2a2a3a] text-[#71717a] hover:text-white'
+                            )}
+                          >
+                            Whisper (accurate)
+                          </button>
+                        </div>
+                      </div>
+                      <div className="px-3 py-2 text-xs text-[#51515a]">
+                        {sttProvider === 'browser'
+                          ? 'Real-time transcription using browser API. Instant but may be less accurate.'
+                          : 'OpenAI Whisper for accurate transcription. Processes after you stop speaking.'}
+                      </div>
                     </>
                   )}
                 </div>
