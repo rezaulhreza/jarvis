@@ -396,35 +396,42 @@ def knowledge_clear(yes):
 @knowledge.command("sync")
 @click.option("--projects", is_flag=True, help="Sync project README files from Developer folder")
 @click.option("--personal", is_flag=True, help="Sync personal documents from ~/.jarvis/knowledge/personal/")
-def knowledge_sync(projects, personal):
+@click.option("--docs", is_flag=True, help="Sync Jarvis docs and shared documents")
+def knowledge_sync(projects, personal, docs):
     """Sync knowledge base with configured sources.
 
     \b
     Examples:
-        jarvis knowledge sync              # Sync project docs only
-        jarvis knowledge sync --personal   # Also sync personal knowledge
-        jarvis knowledge sync --projects   # Also sync project READMEs
+        jarvis knowledge sync              # Sync docs (default)
+        jarvis knowledge sync --personal   # Sync only personal knowledge
+        jarvis knowledge sync --projects   # Sync only project READMEs
+        jarvis knowledge sync --docs --personal  # Sync both
     """
     from .knowledge import get_rag_engine
     from pathlib import Path
 
     rag = get_rag_engine()
 
-    # Sync Jarvis documentation (architecture, AI concepts)
-    docs_dir = Path(__file__).parent.parent / "docs"
-    if docs_dir.exists():
-        click.echo(f"Syncing Jarvis docs from {docs_dir}...")
-        results = rag.add_directory(str(docs_dir))
-        success = sum(1 for r in results.values() if r["status"] == "success")
-        click.echo(f"  Added {success} documentation files")
+    # If no flags specified, default to docs
+    if not projects and not personal and not docs:
+        docs = True
 
-    # Sync knowledge/documents folder (shared, in git)
-    shared_docs = Path(__file__).parent.parent / "knowledge" / "documents"
-    if shared_docs.exists():
-        click.echo(f"Syncing shared documents from {shared_docs}...")
-        results = rag.add_directory(str(shared_docs))
-        success = sum(1 for r in results.values() if r["status"] == "success")
-        click.echo(f"  Added {success} shared documents")
+    # Sync Jarvis documentation (architecture, AI concepts)
+    if docs:
+        docs_dir = Path(__file__).parent.parent / "docs"
+        if docs_dir.exists():
+            click.echo(f"Syncing Jarvis docs from {docs_dir}...")
+            results = rag.add_directory(str(docs_dir))
+            success = sum(1 for r in results.values() if r["status"] == "success")
+            click.echo(f"  Added {success} documentation files")
+
+        # Sync knowledge/documents folder (shared, in git)
+        shared_docs = Path(__file__).parent.parent / "knowledge" / "documents"
+        if shared_docs.exists():
+            click.echo(f"Syncing shared documents from {shared_docs}...")
+            results = rag.add_directory(str(shared_docs))
+            success = sum(1 for r in results.values() if r["status"] == "success")
+            click.echo(f"  Added {success} shared documents")
 
     # Sync personal documents (outside git, in ~/.jarvis/)
     if personal:
@@ -438,7 +445,7 @@ def knowledge_sync(projects, personal):
             click.echo(f"Personal knowledge directory not found: {personal_dir}")
             click.echo("  Create it and add .txt/.md/.pdf files to sync personal knowledge")
 
-    # Optionally sync project READMEs
+    # Sync project READMEs
     if projects:
         dev_dir = Path.home() / "Developer"
         if dev_dir.exists():
