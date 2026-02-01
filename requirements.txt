@@ -22,6 +22,9 @@ pypdf>=4.0.0
 qdrant-client>=1.9.0  # Default: Qdrant cloud (when QDRANT_URL + QDRANT_API_KEY set)
 chromadb>=0.4.0  # Fallback: local vector store
 
+# Reranking (for improved RAG accuracy)
+sentence-transformers>=2.2.0  # Cross-encoder reranking models
+
 # Future additions (uncomment when needed)
 # python-telegram-bot>=20.0
 # openai-whisper

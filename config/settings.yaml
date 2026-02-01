@@ -22,6 +22,8 @@ memory:
   database: "memory/jarvis.db"
   vector_store: "knowledge/chroma_db"  # ChromaDB local path (fallback when Qdrant not configured)
   # Vector backend is auto-detected from env: QDRANT_URL + QDRANT_API_KEY → Qdrant, otherwise → ChromaDB
+  rerank: true  # Enable cross-encoder reranking for better retrieval accuracy
+  rerank_model: "cross-encoder/ms-marco-MiniLM-L-6-v2"  # Reranker model (requires sentence-transformers)
   facts_file: "memory/facts.md"
   entities_file: "memory/entities.json"
 

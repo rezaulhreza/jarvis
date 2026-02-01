@@ -137,7 +137,6 @@ class QdrantVectorStore(VectorStore):
     def __init__(self, url: str, api_key: str, collection_name: str = "jarvis_knowledge"):
         try:
             from qdrant_client import QdrantClient
-            from qdrant_client.models import Distance, VectorParams
         except ImportError:
             raise ImportError(
                 "qdrant-client is required for Qdrant backend. "
@@ -277,14 +276,73 @@ class QdrantVectorStore(VectorStore):
         return count
 
 
+class Reranker:
+    """Cross-encoder reranker for improving retrieval quality."""
+
+    def __init__(self, model_name: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"):
+        self.model_name = model_name
+        self._model = None
+
+    def _load_model(self):
+        """Lazy load the cross-encoder model."""
+        if self._model is None:
+            try:
+                from sentence_transformers import CrossEncoder
+                self._model = CrossEncoder(self.model_name)
+            except ImportError:
+                raise ImportError(
+                    "sentence-transformers is required for reranking. "
+                    "Install with: pip install sentence-transformers"
+                )
+        return self._model
+
+    def rerank(self, query: str, documents: list[dict], top_k: int = 5) -> list[dict]:
+        """Rerank documents by relevance to query using cross-encoder.
+
+        Args:
+            query: The search query
+            documents: List of document dicts with 'content' key
+            top_k: Number of top documents to return
+
+        Returns:
+            Reranked documents (top_k most relevant)
+        """
+        if not documents:
+            return []
+
+        model = self._load_model()
+
+        # Create query-document pairs for scoring
+        pairs = [(query, doc["content"]) for doc in documents]
+
+        # Get relevance scores from cross-encoder
+        scores = model.predict(pairs)
+
+        # Attach scores to documents
+        for doc, score in zip(documents, scores):
+            doc["rerank_score"] = float(score)
+
+        # Sort by rerank score (higher = more relevant)
+        reranked = sorted(documents, key=lambda x: x["rerank_score"], reverse=True)
+
+        return reranked[:top_k]
+
+
 class RAGEngine:
-    """RAG engine with pluggable vector store backends."""
+    """RAG engine with pluggable vector store backends.
+
+    Features:
+    - Pluggable vector stores (ChromaDB, Qdrant)
+    - Optional reranking with cross-encoder models
+    - Configurable chunking and retrieval
+    """
 
     def __init__(self, vector_store: VectorStore, embedding_model: str = "nomic-embed-text",
-                 ollama_client=None):
+                 ollama_client=None, reranker: Reranker = None):
         self.store = vector_store
         self.embedding_model = embedding_model
         self.ollama_client = ollama_client
+        self.reranker = reranker
 
     def _get_embedding(self, text: str) -> list[float]:
         """Generate embedding using Ollama."""
@@ -401,13 +459,31 @@ class RAGEngine:
 
         return results
 
-    def search(self, query: str, n_results: int = 5, filter_metadata: dict = None) -> list[dict]:
-        """Search for relevant documents."""
+    def search(self, query: str, n_results: int = 5, filter_metadata: dict = None,
+                rerank: bool = True) -> list[dict]:
+        """Search for relevant documents with optional reranking.
+
+        Two-stage retrieval:
+        1. Fast vector search retrieves candidates (4x requested if reranking)
+        2. Cross-encoder reranks candidates by relevance (if reranker enabled)
+
+        Args:
+            query: Search query
+            n_results: Number of results to return
+            filter_metadata: Optional metadata filter
+            rerank: Whether to use reranking (default True if reranker available)
+
+        Returns:
+            List of relevant documents sorted by relevance
+        """
         query_embedding = self._get_embedding(query)
+
+        # If reranking, retrieve more candidates for better recall
+        retrieve_count = n_results * 4 if (self.reranker and rerank) else n_results
 
         results = self.store.query(
             embedding=query_embedding,
-            n_results=n_results,
+            n_results=retrieve_count,
             filter_metadata=filter_metadata
         )
 
@@ -420,7 +496,11 @@ class RAGEngine:
                 "distance": results["distances"][i] if results["distances"] else None
             })
 
-        return documents
+        # Apply reranking if enabled
+        if self.reranker and rerank and documents:
+            documents = self.reranker.rerank(query, documents, top_k=n_results)
+
+        return documents[:n_results]
 
     def get_context(self, query: str, n_results: int = 5, max_tokens: int = 1500) -> str:
         """Get formatted context for injection into prompts."""
@@ -510,6 +590,28 @@ def create_vector_store(config: dict) -> VectorStore:
     return ChromaVectorStore(persist_dir=persist_dir)
 
 
+def create_reranker(config: dict) -> Optional[Reranker]:
+    """Create a reranker if enabled in config or environment.
+
+    Enable reranking by:
+    - Setting RAG_RERANK=true in environment, or
+    - Setting memory.rerank: true in settings.yaml
+    """
+    # Check environment first
+    env_rerank = os.environ.get("RAG_RERANK", "").lower()
+    if env_rerank in ("true", "1", "yes"):
+        return Reranker()
+
+    # Check config
+    if config.get("memory", {}).get("rerank", False):
+        rerank_model = config.get("memory", {}).get(
+            "rerank_model", "cross-encoder/ms-marco-MiniLM-L-6-v2"
+        )
+        return Reranker(model_name=rerank_model)
+
+    return None
+
+
 def get_rag_engine(config: dict = None) -> RAGEngine:
     """Get or create the RAG engine singleton."""
     global _rag_engine
@@ -521,7 +623,8 @@ def get_rag_engine(config: dict = None) -> RAGEngine:
 
         embedding_model = config.get("models", {}).get("embeddings", "nomic-embed-text")
         vector_store = create_vector_store(config)
+        reranker = create_reranker(config)
 
-        _rag_engine = RAGEngine(vector_store, embedding_model)
+        _rag_engine = RAGEngine(vector_store, embedding_model, reranker=reranker)
 
     return _rag_engine

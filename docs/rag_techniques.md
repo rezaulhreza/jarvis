@@ -1,0 +1,326 @@
+# RAG Optimization Techniques
+
+This document covers advanced techniques for improving Retrieval-Augmented Generation (RAG) quality in Jarvis.
+
+## Overview
+
+Basic RAG has a simple flow:
+```
+Query → Embed → Vector Search → Top-K Results → LLM
+```
+
+Advanced RAG adds optimization stages:
+```
+Query → [Query Expansion] → Embed → Vector Search → [Reranking] → [Compression] → LLM
+```
+
+---
+
+## Implemented Techniques
+
+### 1. Two-Stage Retrieval with Reranking
+
+**Problem:** Vector similarity search is fast but approximate. Embeddings capture semantic meaning but may miss nuanced relevance.
+
+**Solution:** Retrieve more candidates, then rerank with a more accurate (but slower) model.
+
+```
+Stage 1: Vector Search (fast, approximate)
+    Query → Embedding → Top 20 candidates
+
+Stage 2: Cross-Encoder Reranking (slow, accurate)
+    Query + Each Candidate → Relevance Score → Top 5
+```
+
+**How it works in Jarvis:**
+
+```python
+# jarvis/knowledge/rag.py
+
+class Reranker:
+    """Cross-encoder reranker using sentence-transformers."""
+
+    def __init__(self, model_name="cross-encoder/ms-marco-MiniLM-L-6-v2"):
+        self.model = CrossEncoder(model_name)
+
+    def rerank(self, query: str, documents: list, top_k: int = 5):
+        # Score each query-document pair
+        pairs = [(query, doc["content"]) for doc in documents]
+        scores = self.model.predict(pairs)
+
+        # Sort by relevance score
+        ranked = sorted(zip(documents, scores), key=lambda x: x[1], reverse=True)
+        return [doc for doc, score in ranked[:top_k]]
+```
+
+**Configuration:**
+
+```yaml
+# config/settings.yaml
+memory:
+  rerank: true
+  rerank_model: "cross-encoder/ms-marco-MiniLM-L-6-v2"
+```
+
+Or via environment:
+```bash
+export RAG_RERANK=true
+```
+
+**Why cross-encoders are better for reranking:**
+
+| Bi-Encoder (Embeddings) | Cross-Encoder (Reranking) |
+|------------------------|---------------------------|
+| Encodes query and doc separately | Encodes query+doc together |
+| Fast: O(1) per comparison | Slow: O(n) per comparison |
+| Good for initial retrieval | Better for final ranking |
+| Captures general similarity | Captures specific relevance |
+
+**Impact:** Typically improves accuracy by 10-20% on retrieval benchmarks.
+
+---
+
+## Techniques To Implement
+
+### 2. Hybrid Search (BM25 + Vector)
+
+**Problem:** Pure vector search misses exact keyword matches. Pure keyword search misses semantic similarity.
+
+**Solution:** Combine sparse (BM25/keyword) and dense (vector) retrieval with Reciprocal Rank Fusion.
+
+```
+┌─────────────────────────────────────────────┐
+│                  Query                       │
+└─────────────────┬───────────────────────────┘
+                  │
+        ┌─────────┴─────────┐
+        ▼                   ▼
+┌───────────────┐   ┌───────────────┐
+│  BM25 Search  │   │ Vector Search │
+│  (keywords)   │   │  (semantic)   │
+└───────┬───────┘   └───────┬───────┘
+        │                   │
+        └─────────┬─────────┘
+                  ▼
+        ┌─────────────────┐
+        │ Reciprocal Rank │
+        │     Fusion      │
+        └────────┬────────┘
+                 ▼
+           Final Results
+```
+
+**Reciprocal Rank Fusion (RRF):**
+```python
+def rrf_score(rank, k=60):
+    return 1 / (k + rank)
+
+# Combine rankings
+final_score = rrf_score(bm25_rank) + rrf_score(vector_rank)
+```
+
+**Why it helps:**
+- BM25 finds "Laravel developer" when query is "Laravel developer"
+- Vectors find "PHP framework expert" for same query
+- Combined: best of both worlds
+
+---
+
+### 3. Query Expansion
+
+**Problem:** User queries are often short or ambiguous. "auth issues" could mean authentication, authorization, or authentication errors.
+
+**Solution:** Generate multiple query variations before searching.
+
+```python
+def expand_query(query: str, llm) -> list[str]:
+    """Generate query variations using LLM."""
+    prompt = f"""Generate 3 search variations for: "{query}"
+    Return only the variations, one per line."""
+
+    variations = llm.generate(prompt).split('\n')
+    return [query] + variations  # Include original
+
+# Example:
+# Input: "auth issues"
+# Output: ["auth issues", "authentication problems", "login errors", "authorization failures"]
+```
+
+**Search with expansion:**
+```python
+def search_with_expansion(query, n_results=5):
+    queries = expand_query(query)
+    all_results = []
+
+    for q in queries:
+        results = vector_search(q, n_results=n_results)
+        all_results.extend(results)
+
+    # Deduplicate and rank
+    return dedupe_and_rank(all_results)
+```
+
+---
+
+### 4. Semantic Chunking
+
+**Problem:** Fixed-size chunks split documents arbitrarily, potentially cutting sentences or concepts in half.
+
+**Solution:** Split at natural semantic boundaries (sentences, paragraphs, sections).
+
+**Current (fixed-size):**
+```python
+def chunk_text(text, chunk_size=500, overlap=50):
+    words = text.split()
+    # Blindly splits every 500 words
+```
+
+**Improved (semantic):**
+```python
+def semantic_chunk(text, max_chunk_size=500):
+    """Split at sentence boundaries, respecting max size."""
+    import nltk
+    sentences = nltk.sent_tokenize(text)
+
+    chunks = []
+    current_chunk = []
+    current_size = 0
+
+    for sentence in sentences:
+        sentence_size = len(sentence.split())
+
+        if current_size + sentence_size > max_chunk_size:
+            # Start new chunk
+            chunks.append(' '.join(current_chunk))
+            current_chunk = [sentence]
+            current_size = sentence_size
+        else:
+            current_chunk.append(sentence)
+            current_size += sentence_size
+
+    if current_chunk:
+        chunks.append(' '.join(current_chunk))
+
+    return chunks
+```
+
+**Advanced: Hierarchical chunking for documents with structure:**
+```python
+def hierarchical_chunk(markdown_text):
+    """Split by headers, preserving document structure."""
+    sections = split_by_headers(markdown_text)
+
+    for section in sections:
+        yield {
+            "content": section.content,
+            "metadata": {
+                "header": section.header,
+                "level": section.level,
+                "parent": section.parent_header
+            }
+        }
+```
+
+---
+
+### 5. Contextual Compression
+
+**Problem:** Retrieved chunks contain irrelevant information. A 500-word chunk might have only 2 relevant sentences.
+
+**Solution:** Extract only relevant parts from each chunk before sending to LLM.
+
+```python
+def compress_context(query: str, documents: list, llm) -> str:
+    """Extract relevant sentences from documents."""
+    compressed = []
+
+    for doc in documents:
+        prompt = f"""Given the question: "{query}"
+
+Extract ONLY the sentences from this document that help answer the question.
+If nothing is relevant, return "NOT_RELEVANT".
+
+Document:
+{doc['content']}
+
+Relevant sentences:"""
+
+        result = llm.generate(prompt)
+        if result != "NOT_RELEVANT":
+            compressed.append(f"[From: {doc['source']}]\n{result}")
+
+    return "\n\n".join(compressed)
+```
+
+**Benefits:**
+- Reduces context length (saves tokens)
+- Removes noise from LLM input
+- Improves answer quality
+
+---
+
+## Technique Comparison
+
+| Technique | Impact | Latency Cost | Implementation Effort |
+|-----------|--------|--------------|----------------------|
+| **Reranking** | High (10-20%) | Medium (+100-300ms) | Low |
+| **Hybrid Search** | High (15-25%) | Low (+50ms) | Medium |
+| **Query Expansion** | Medium (5-15%) | High (+LLM call) | Low |
+| **Semantic Chunking** | Medium (5-10%) | None (indexing only) | Medium |
+| **Contextual Compression** | Medium (10-15%) | High (+LLM calls) | Low |
+
+---
+
+## Recommended Implementation Order
+
+1. **Reranking** (implemented) - Quick win, big impact
+2. **Hybrid Search** - Qdrant supports this natively
+3. **Semantic Chunking** - Improves index quality
+4. **Query Expansion** - Good for ambiguous queries
+5. **Contextual Compression** - Polish for production
+
+---
+
+## Monitoring RAG Quality
+
+### Key Metrics
+
+1. **Retrieval Recall@K**: Do the top K results contain the answer?
+2. **Retrieval Precision@K**: What % of top K results are relevant?
+3. **MRR (Mean Reciprocal Rank)**: How high is the first relevant result?
+4. **Answer Quality**: Does the final answer correctly use retrieved context?
+
+### Simple Evaluation Script
+
+```python
+def evaluate_rag(test_cases):
+    """Evaluate RAG on test question-answer pairs."""
+    results = []
+
+    for query, expected_source in test_cases:
+        retrieved = rag.search(query, n_results=5)
+        sources = [doc['source'] for doc in retrieved]
+
+        results.append({
+            'query': query,
+            'expected': expected_source,
+            'found': expected_source in sources,
+            'rank': sources.index(expected_source) + 1 if expected_source in sources else -1
+        })
+
+    recall = sum(r['found'] for r in results) / len(results)
+    mrr = sum(1/r['rank'] for r in results if r['rank'] > 0) / len(results)
+
+    print(f"Recall@5: {recall:.2%}")
+    print(f"MRR: {mrr:.2f}")
+```
+
+---
+
+## References
+
+- [RAG Performance Optimization - DEV Community](https://dev.to/jamesli/rag-performance-optimization-engineering-practice-implementation-guide-based-on-langchain-34ej)
+- [Advanced Retrieval Techniques - Medium](https://medium.com/@abhiragkulkarni12/advanced-retrieval-techniques-in-langchain-to-improve-the-efficiency-of-rag-systems-32b88d78383d)
+- [Enhancing RAG with Reranking - MyScale](https://www.myscale.com/blog/maximizing-advanced-rag-models-langchain-reranking-techniques/)
+- [Cross-Encoders - Sentence Transformers](https://www.sbert.net/examples/applications/cross-encoder/README.html)
+- [Qdrant Hybrid Search](https://qdrant.tech/documentation/concepts/hybrid-queries/)
