@@ -53,3 +53,8 @@ ehthumbs.db
 *.temp
 *.bak
 *~
+
+# Personal notes (not for git)
+LEARNING.md
+NOTES.md
+TODO.md
