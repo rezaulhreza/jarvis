@@ -320,6 +320,7 @@ class QdrantVectorStore(VectorStore):
             ]
             qdrant_filter = Filter(must=conditions)
 
+        used_fusion = False
         if self.hybrid and query_text and self.sparse_encoder:
             # Hybrid search with RRF fusion
             sparse_indices, sparse_values = self.sparse_encoder.encode(query_text)
@@ -346,6 +347,7 @@ class QdrantVectorStore(VectorStore):
                     limit=n_results,
                     with_payload=True
                 )
+                used_fusion = True
             else:
                 # No sparse matches, fall back to dense only
                 response = self.client.query_points(
@@ -368,12 +370,26 @@ class QdrantVectorStore(VectorStore):
             )
 
         results = response.points
+        # Convert scores to distances (lower = more similar)
+        distances = []
+        for r in results:
+            if r.score is None:
+                distances.append(1.0)
+            elif used_fusion:
+                # RRF fusion scores: typically 0.01-0.1 range, higher = more relevant
+                # Convert to distance: RRF 0.03 → ~0.55, RRF 0.015 → ~0.78
+                distances.append(max(0, min(1, 1 - (r.score * 15))))
+            else:
+                # Cosine similarity: 0-1 range, higher = more similar
+                # Convert to distance: sim 0.9 → 0.1, sim 0.5 → 0.5
+                distances.append(max(0, 1 - r.score))
+
         return {
             "ids": [r.payload.get("doc_id", str(r.id)) for r in results],
             "documents": [r.payload.get("document", "") for r in results],
             "metadatas": [{k: v for k, v in r.payload.items()
                          if k not in ("document", "doc_id")} for r in results],
-            "distances": [1 - r.score if r.score else 0 for r in results]
+            "distances": distances
         }
 
     def delete(self, ids: list[str]) -> None:
@@ -418,13 +434,9 @@ class QdrantVectorStore(VectorStore):
 
     def clear(self) -> int:
         count = self.count()
-        if count > 0:
-            from qdrant_client.models import Distance, VectorParams
-            self.client.delete_collection(self.collection_name)
-            self.client.create_collection(
-                collection_name=self.collection_name,
-                vectors_config=VectorParams(size=768, distance=Distance.COSINE)
-            )
+        # Delete and recreate collection with proper configuration
+        self.client.delete_collection(self.collection_name)
+        self._ensure_collection()  # Recreate with hybrid config if enabled
         return count
 
 
@@ -486,15 +498,29 @@ class RAGEngine:
     Features:
     - Pluggable vector stores (ChromaDB, Qdrant)
     - Optional reranking with cross-encoder models
+    - Relevance threshold to filter irrelevant results
     - Configurable chunking and retrieval
     """
 
     def __init__(self, vector_store: VectorStore, embedding_model: str = "nomic-embed-text",
-                 ollama_client=None, reranker: Reranker = None):
+                 ollama_client=None, reranker: Reranker = None,
+                 relevance_threshold: float = 0.5):
+        """Initialize RAG engine.
+
+        Args:
+            vector_store: Vector store backend
+            embedding_model: Ollama model for embeddings
+            ollama_client: Optional Ollama client
+            reranker: Optional cross-encoder reranker
+            relevance_threshold: Max distance for results (0-1, lower = stricter).
+                                 Results with distance > threshold are filtered out.
+                                 Set to 1.0 to disable filtering.
+        """
         self.store = vector_store
         self.embedding_model = embedding_model
         self.ollama_client = ollama_client
         self.reranker = reranker
+        self.relevance_threshold = relevance_threshold
 
     def _get_embedding(self, text: str) -> list[float]:
         """Generate embedding using Ollama."""
@@ -611,13 +637,39 @@ class RAGEngine:
 
         return results
 
+    def _needs_personal_knowledge(self, query: str) -> bool:
+        """Classify if query needs personal knowledge base or general knowledge.
+
+        Returns True for personal queries (my projects, my info, etc.)
+        Returns False for general knowledge queries (facts, history, etc.)
+        """
+        query_lower = query.lower()
+
+        # Quick keyword check first - if query contains personal indicators, use RAG
+        personal_indicators = ['my ', 'i ', 'me ', 'mine', 'our ', 'we ']
+        if any(indicator in query_lower or query_lower.startswith(indicator.strip()) for indicator in personal_indicators):
+            return True  # Personal query - use RAG
+
+        # Check for general knowledge patterns - skip RAG for these
+        general_patterns = [
+            'how many', 'what is the', 'who is ', 'where is ', 'when did',
+            'capital of', 'population', 'president', 'history of', 'define ',
+            'explain ', 'tell me about', 'what are ', 'why do ', 'why is ',
+            'how does ', 'how do ', 'can you explain'
+        ]
+        if any(pattern in query_lower for pattern in general_patterns):
+            return False  # General knowledge query - skip RAG
+
+        return True  # Default to using RAG for ambiguous queries
+
     def search(self, query: str, n_results: int = 5, filter_metadata: dict = None,
                 rerank: bool = True) -> list[dict]:
         """Search for relevant documents with optional reranking.
 
         Two-stage retrieval:
-        1. Fast vector search retrieves candidates (4x requested if reranking)
-        2. Cross-encoder reranks candidates by relevance (if reranker enabled)
+        1. Query classification - skip RAG for general knowledge queries
+        2. Fast vector search retrieves candidates (4x requested if reranking)
+        3. Cross-encoder reranks candidates by relevance (if reranker enabled)
 
         Args:
             query: Search query
@@ -628,6 +680,10 @@ class RAGEngine:
         Returns:
             List of relevant documents sorted by relevance
         """
+        # Query classification: Skip RAG for general knowledge questions
+        if not self._needs_personal_knowledge(query):
+            return []  # Let LLM use its general knowledge
+
         query_embedding = self._get_embedding(query)
 
         # If reranking, retrieve more candidates for better recall
@@ -642,12 +698,21 @@ class RAGEngine:
 
         documents = []
         for i, doc in enumerate(results["documents"]):
+            distance = results["distances"][i] if results["distances"] else None
             documents.append({
                 "content": doc,
                 "source": results["metadatas"][i].get("source", "unknown"),
                 "metadata": results["metadatas"][i],
-                "distance": results["distances"][i] if results["distances"] else None
+                "distance": distance
             })
+
+        # Filter by relevance threshold (lower distance = more relevant)
+        # Skip filtering if threshold is 1.0 (disabled)
+        if self.relevance_threshold < 1.0:
+            documents = [
+                doc for doc in documents
+                if doc["distance"] is None or doc["distance"] <= self.relevance_threshold
+            ]
 
         # Apply reranking if enabled
         if self.reranker and rerank and documents:
@@ -717,6 +782,12 @@ class RAGEngine:
 _rag_engine: Optional[RAGEngine] = None
 
 
+def reset_rag_engine():
+    """Reset the RAG engine singleton (useful after config changes)."""
+    global _rag_engine
+    _rag_engine = None
+
+
 def create_vector_store(config: dict) -> VectorStore:
     """Create the appropriate vector store based on environment.
 
@@ -765,7 +836,7 @@ def create_reranker(config: dict) -> Optional[Reranker]:
     return None
 
 
-def get_rag_engine(config: dict = None) -> RAGEngine:
+def get_rag_engine(config: dict = None, ollama_client=None) -> RAGEngine:
     """Get or create the RAG engine singleton."""
     global _rag_engine
 
@@ -774,10 +845,29 @@ def get_rag_engine(config: dict = None) -> RAGEngine:
             from jarvis.assistant import load_config
             config = load_config()
 
+        # Create Ollama client for query classification if not provided
+        if ollama_client is None:
+            try:
+                from jarvis.core.ollama_client import OllamaClient
+                ollama_client = OllamaClient()
+            except Exception:
+                pass  # Query classification will be skipped
+
         embedding_model = config.get("models", {}).get("embeddings", "nomic-embed-text")
         vector_store = create_vector_store(config)
         reranker = create_reranker(config)
 
-        _rag_engine = RAGEngine(vector_store, embedding_model, reranker=reranker)
+        # Get relevance threshold from config (default 0.5 - moderate filtering)
+        # This is cosine distance: 0 = identical, 1 = orthogonal, 2 = opposite
+        # Lower = stricter (fewer results), Higher = looser (more results)
+        # Set to 1.0 to disable filtering entirely
+        relevance_threshold = config.get("memory", {}).get("relevance_threshold", 0.5)
+
+        _rag_engine = RAGEngine(
+            vector_store, embedding_model,
+            ollama_client=ollama_client,
+            reranker=reranker,
+            relevance_threshold=relevance_threshold
+        )
 
     return _rag_engine

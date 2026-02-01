@@ -173,7 +173,56 @@ class QdrantVectorStore:
 
 ---
 
-### 3. Query Expansion
+### 3. Query Classification - IMPLEMENTED
+
+**Problem:** RAG retrieves chunks for every query, even when irrelevant. Vector similarity always finds *something* - "Berlin" in a timezone matches "Berlin population" queries.
+
+**Solution:** Use LLM to classify queries before retrieval:
+
+```
+┌─────────────────────────────────────────────┐
+│                  Query                       │
+└─────────────────┬───────────────────────────┘
+                  │
+                  ▼
+        ┌─────────────────┐
+        │ Query Classifier │  "personal" or "general"?
+        │   (qwen3:4b)    │
+        └────────┬────────┘
+                 │
+        ┌────────┴────────┐
+        ▼                 ▼
+   "personal"         "general"
+        │                 │
+        ▼                 ▼
+   Use RAG            Skip RAG
+   (hybrid search)    (LLM knowledge)
+```
+
+**Examples:**
+```
+"What is my website?" → personal → RAG ✓
+"How many people live in Berlin?" → general → skip RAG ✓
+"Who is Donald Trump?" → general → skip RAG ✓
+"What projects am I working on?" → personal → RAG ✓
+```
+
+**Classification prompt:**
+```
+personal = User's own info, projects, preferences, files, work, skills, website, resume, notes
+general = Facts, history, science, geography, people, events, how-to, definitions
+```
+
+**Why this is definitive:**
+- Distance thresholds fail when keywords match (e.g., "Berlin" in timezone)
+- LLM understands query *intent*, not just word similarity
+- Fast: uses small model (qwen3:4b) for classification
+
+**Impact:** General knowledge questions use LLM's training data. Personal questions use RAG. No more irrelevant context pollution.
+
+---
+
+### 4. Query Expansion
 
 **Problem:** User queries are often short or ambiguous. "auth issues" could mean authentication, authorization, or authentication errors.
 
@@ -209,7 +258,7 @@ def search_with_expansion(query, n_results=5):
 
 ---
 
-### 4. Semantic Chunking
+### 5. Semantic Chunking
 
 **Problem:** Fixed-size chunks split documents arbitrarily, potentially cutting sentences or concepts in half.
 
@@ -270,7 +319,7 @@ def hierarchical_chunk(markdown_text):
 
 ---
 
-### 5. Contextual Compression
+### 6. Contextual Compression
 
 **Problem:** Retrieved chunks contain irrelevant information. A 500-word chunk might have only 2 relevant sentences.
 
@@ -308,23 +357,25 @@ Relevant sentences:"""
 
 ## Technique Comparison
 
-| Technique | Impact | Latency Cost | Implementation Effort |
-|-----------|--------|--------------|----------------------|
-| **Reranking** | High (10-20%) | Medium (+100-300ms) | Low |
-| **Hybrid Search** | High (15-25%) | Low (+50ms) | Medium |
-| **Query Expansion** | Medium (5-15%) | High (+LLM call) | Low |
-| **Semantic Chunking** | Medium (5-10%) | None (indexing only) | Medium |
-| **Contextual Compression** | Medium (10-15%) | High (+LLM calls) | Low |
+| Technique | Impact | Latency Cost | Implementation Effort | Status |
+|-----------|--------|--------------|----------------------|--------|
+| **Reranking** | High (10-20%) | Medium (+100-300ms) | Low | ✅ Implemented |
+| **Hybrid Search** | High (15-25%) | Low (+50ms) | Medium | ✅ Implemented |
+| **Query Classification** | High (noise elimination) | Low (+LLM call) | Low | ✅ Implemented |
+| **Query Expansion** | Medium (5-15%) | High (+LLM call) | Low | Not implemented |
+| **Semantic Chunking** | Medium (5-10%) | None (indexing only) | Medium | Not implemented |
+| **Contextual Compression** | Medium (10-15%) | High (+LLM calls) | Low | Not implemented |
 
 ---
 
 ## Recommended Implementation Order
 
 1. **Reranking** (implemented) - Quick win, big impact
-2. **Hybrid Search** - Qdrant supports this natively
-3. **Semantic Chunking** - Improves index quality
-4. **Query Expansion** - Good for ambiguous queries
-5. **Contextual Compression** - Polish for production
+2. **Hybrid Search** (implemented) - Qdrant supports this natively
+3. **Query Classification** (implemented) - Eliminates noise from general knowledge queries
+4. **Semantic Chunking** - Improves index quality
+5. **Query Expansion** - Good for ambiguous queries
+6. **Contextual Compression** - Polish for production
 
 ---
 
