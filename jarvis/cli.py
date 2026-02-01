@@ -12,14 +12,12 @@ from . import __version__, ensure_data_dir
 
 @click.group(invoke_without_command=True)
 @click.option('--version', '-v', is_flag=True, help='Show version')
-@click.option('--ui', is_flag=True, help='Launch web UI (production build)')
-@click.option('--dev', is_flag=True, help='Launch full dev environment (backend + frontend)')
+@click.option('--dev', is_flag=True, help='Launch web UI with hot reload')
 @click.option('--voice', is_flag=True, help='Enable voice input mode')
 @click.option('--port', default=7777, help='Port for web UI (default: 7777)')
-@click.option('--reload', is_flag=True, help='Enable hot reload for development')
 @click.option('--daemon', is_flag=True, help='Run as background daemon')
 @click.pass_context
-def main(ctx, version, ui, dev, voice, port, reload, daemon):
+def main(ctx, version, dev, voice, port, daemon):
     """
     Jarvis - Your local AI assistant.
 
@@ -28,8 +26,7 @@ def main(ctx, version, ui, dev, voice, port, reload, daemon):
     \b
     Examples:
         jarvis              # Interactive CLI
-        jarvis --dev        # Full dev mode (backend + frontend)
-        jarvis --ui         # Web UI at localhost:7777
+        jarvis --dev        # Web UI at localhost:7777
         jarvis --voice      # Voice input mode
         jarvis chat "hello" # Single query
     """
@@ -42,8 +39,6 @@ def main(ctx, version, ui, dev, voice, port, reload, daemon):
 
     if dev:
         _launch_dev(port)
-    elif ui:
-        _launch_ui(port, reload=reload)
     elif voice:
         _launch_voice_mode()
     elif daemon:
@@ -224,38 +219,6 @@ def _launch_dev(port: int):
                 except subprocess.TimeoutExpired:
                     p.kill()
         click.echo("Done.")
-
-
-def _launch_ui(port: int, reload: bool = False):
-    """Launch web UI."""
-    try:
-        import uvicorn
-
-        click.echo(f"Starting Jarvis UI at http://localhost:{port}")
-        if reload:
-            click.echo("Hot reload enabled - changes will auto-refresh")
-        click.echo("Press Ctrl+C to stop")
-
-        if reload:
-            # Use string path for reload support
-            uvicorn.run(
-                "jarvis.ui:create_app",
-                host="0.0.0.0",
-                port=port,
-                reload=True,
-                reload_dirs=["jarvis"],
-                factory=True,
-                log_level="info"
-            )
-        else:
-            from .ui import create_app
-            app = create_app()
-            uvicorn.run(app, host="0.0.0.0", port=port, log_level="warning")
-
-    except ImportError:
-        click.echo("UI dependencies not installed.")
-        click.echo("Install with: pip install jarvis-ai-assistant[ui]")
-        sys.exit(1)
 
 
 def _launch_voice_mode():

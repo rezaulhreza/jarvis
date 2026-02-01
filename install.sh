@@ -158,7 +158,7 @@ main() {
     echo
     echo "Usage:"
     echo "  jarvis          # Start CLI"
-    echo "  jarvis --ui     # Start Web UI"
+    echo "  jarvis --dev    # Start Web UI"
     echo "  jarvis --help   # Show all options"
     echo
     echo "If 'jarvis' command not found, restart your terminal."

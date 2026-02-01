@@ -24,6 +24,7 @@ interface WSMessage {
   error?: string
   rag?: RagInfo
   chat_id?: string
+  messages?: Array<{ role: 'user' | 'assistant' | 'system', content: string }>
 }
 
 export function useWebSocket() {
@@ -86,6 +87,17 @@ export function useWebSocket() {
         setModel(data.model || '')
         setProvider(data.provider || '')
         setProject(data.project || '')
+        // Restore chat state if available
+        if (data.chat_id) {
+          setChatId(data.chat_id)
+        }
+        if (data.messages && data.messages.length > 0) {
+          setMessages(data.messages.map(m => ({
+            role: m.role,
+            content: m.content,
+            timestamp: new Date()
+          })))
+        }
         break
 
       case 'stream':
@@ -125,6 +137,23 @@ export function useWebSocket() {
           setChatId(data.chat_id)
         }
         break
+
+      case 'chat_switched':
+        if (data.chat_id) {
+          setChatId(data.chat_id)
+        }
+        if (data.messages) {
+          setMessages(data.messages.map((m: { role: 'user' | 'assistant' | 'system', content: string }) => ({
+            role: m.role,
+            content: m.content,
+            timestamp: new Date()
+          })))
+        } else {
+          setMessages([])
+        }
+        setStreaming('')
+        setRagStatus(null)
+        break
     }
   }
 
@@ -149,6 +178,11 @@ export function useWebSocket() {
     ws.current.send(JSON.stringify({ type: 'clear' }))
   }, [])
 
+  const switchChat = useCallback((chatId: string) => {
+    if (!ws.current || ws.current.readyState !== WebSocket.OPEN) return
+    ws.current.send(JSON.stringify({ type: 'switch_chat', chat_id: chatId }))
+  }, [])
+
   return {
     connected,
     messages,
@@ -162,5 +196,6 @@ export function useWebSocket() {
     send,
     switchModel,
     clear,
+    switchChat,
   }
 }

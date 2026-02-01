@@ -54,6 +54,7 @@ export default function App() {
     send,
     clear,
     switchModel,
+    switchChat,
   } = useWebSocket()
 
   // Sync chat ID from WebSocket with local state
@@ -160,15 +161,7 @@ export default function App() {
 
   // ============== Chat History Management ==============
 
-  // Fetch current chat ID on mount
-  useEffect(() => {
-    fetch('/api/chats/current')
-      .then(res => res.json())
-      .then(data => {
-        if (data.chat_id) setCurrentChatId(data.chat_id)
-      })
-      .catch(() => {})
-  }, [])
+  // Chat ID is now synced from WebSocket on connect (see wsChatId useEffect above)
 
   // Auto-generate title after 3 messages
   useEffect(() => {
@@ -178,28 +171,28 @@ export default function App() {
     }
   }, [currentChatId, messages.length])
 
-  const handleSelectChat = async (chatId: string) => {
-    try {
-      const res = await fetch(`/api/chats/${chatId}/switch`, { method: 'POST' })
-      const data = await res.json()
-      if (data.success) {
-        setCurrentChatId(chatId)
-        // Reload the page to refresh messages (simple approach)
-        // In a more sophisticated implementation, you'd update the WebSocket state
-        window.location.reload()
-      }
-    } catch (e) {
-      console.error('Failed to switch chat:', e)
-    }
+  const handleSelectChat = (chatId: string) => {
+    // Use WebSocket to switch chats (no page reload needed)
+    switchChat(chatId)
+    setCurrentChatId(chatId)
+    setSidebarOpen(false) // Close sidebar on mobile after selecting
   }
 
   const handleNewChat = async () => {
     try {
+      // Only save current chat if it has messages
+      if (currentChatId && messages.length > 0) {
+        // Generate title if chat has messages but might not have a proper title
+        await fetch(`/api/chats/${currentChatId}/generate-title`, { method: 'POST' })
+          .catch(() => {}) // Ignore errors
+      }
+
+      // Create new chat
       const res = await fetch('/api/chats', { method: 'POST' })
       const data = await res.json()
       if (data.id) {
         setCurrentChatId(data.id)
-        clear() // Clear current messages
+        clear() // Clear current messages in UI
       }
     } catch (e) {
       console.error('Failed to create chat:', e)
@@ -739,28 +732,28 @@ export default function App() {
             </div>
           ))}
 
-          {/* RAG Status Indicator */}
-          {ragStatus && (streaming || isLoading) && (
+          {/* RAG Status Indicator - shows when RAG info is available */}
+          {ragStatus && (
             <div className="flex items-center gap-2 text-xs mb-2">
               {ragStatus.chunks > 0 ? (
                 <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                  <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                  <span>RAG: {ragStatus.chunks} chunks from {ragStatus.sources.join(', ')}</span>
+                  <div className={cn("w-2 h-2 rounded-full bg-emerald-400", (streaming || isLoading) && "animate-pulse")} />
+                  <span>📚 {ragStatus.chunks} chunks from {ragStatus.sources.join(', ')}</span>
                 </div>
               ) : ragStatus.enabled ? (
                 <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-yellow-500/10 text-yellow-400 border border-yellow-500/20">
                   <div className="w-2 h-2 rounded-full bg-yellow-400" />
-                  <span>RAG: No relevant chunks found</span>
+                  <span>📚 No relevant chunks found</span>
                 </div>
               ) : (
                 <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-zinc-500/10 text-zinc-400 border border-zinc-500/20">
                   <div className="w-2 h-2 rounded-full bg-zinc-400" />
-                  <span>RAG: Disabled (no knowledge base)</span>
+                  <span>📚 No knowledge base</span>
                 </div>
               )}
               {ragStatus.error && (
                 <div className="px-3 py-1.5 rounded-full bg-red-500/10 text-red-400 border border-red-500/20">
-                  Error: {ragStatus.error}
+                  ⚠️ {ragStatus.error}
                 </div>
               )}
             </div>

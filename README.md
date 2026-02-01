@@ -10,7 +10,7 @@ A local-first personal AI assistant powered by Ollama. Features multiple models,
 - **Built-in Skills**: Web search, weather, GitHub, file ops, calculator, notes, and more
 - **Memory System**: Conversation history with auto-compaction and persistent storage
 - **Personas**: Switch between different assistant modes (coder, researcher, creative, planner)
-- **Web UI**: Browser-based interface with `jarvis --ui`
+- **Web UI**: Browser-based interface with `jarvis --dev`
 - **Voice Input**: Speech-to-text with Whisper and TTS with Edge/ElevenLabs
 
 ## Installation
@@ -80,8 +80,8 @@ jarvis
 ### Web UI
 
 ```bash
-jarvis --ui
-# Opens at http://localhost:7777
+jarvis --dev
+# Opens at http://localhost:7777 (backend) and http://localhost:3000 (frontend)
 ```
 
 ### Voice Mode
@@ -273,7 +273,7 @@ Files in `~/.jarvis/knowledge/personal/` are:
 
 ### RAG in the Web UI
 
-When using the web UI (`jarvis --ui`), you'll see a RAG indicator during responses:
+When using the web UI (`jarvis --dev`), you'll see a RAG indicator during responses:
 
 - 🟢 **Green**: Knowledge found - shows sources used
 - 🟡 **Yellow**: Knowledge base exists but no relevant match
@@ -381,7 +381,7 @@ jarvis --dev
 cd web && npm run build && cd ..
 
 # Run production server
-jarvis --ui
+jarvis --dev
 ```
 
 ### Project Structure

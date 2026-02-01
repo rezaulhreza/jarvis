@@ -73,9 +73,21 @@ def create_app() -> FastAPI:
     connections: dict[str, WebSocket] = {}
     instances: dict[str, any] = {}
 
+    # Shared context manager for HTTP endpoints (chat history API)
+    from jarvis.core.context_manager import ContextManager
+    shared_context = ContextManager()
+
     # Serve React build if available
     if REACT_BUILD_DIR.exists():
         app.mount("/assets", StaticFiles(directory=REACT_BUILD_DIR / "assets"), name="assets")
+
+        # Serve root-level static files (jarvis.jpeg, etc.)
+        @app.get("/jarvis.jpeg")
+        async def serve_avatar():
+            avatar_path = REACT_BUILD_DIR / "jarvis.jpeg"
+            if avatar_path.exists():
+                return FileResponse(avatar_path)
+            return {"error": "Image not found"}, 404
 
     @app.get("/", response_class=HTMLResponse)
     async def index():
@@ -302,19 +314,25 @@ def create_app() -> FastAPI:
     @app.get("/api/chats")
     async def list_chats(search: str = None, limit: int = 50):
         """List all chats, optionally filtered by search."""
-        chats = jarvis.context.list_chats(limit=limit, search=search)
+        chats = shared_context.list_chats(limit=limit, search=search)
         return {"chats": chats}
 
     @app.post("/api/chats")
     async def create_chat(title: str = "New Chat"):
-        """Create a new chat."""
-        chat_id = jarvis.context.create_chat(title)
+        """Create a new chat. Cleans up empty chats first."""
+        # Clean up empty chats (no messages) before creating new one
+        existing_chats = shared_context.list_chats(limit=10)
+        for chat in existing_chats:
+            if chat.get("message_count", 0) == 0:
+                shared_context.delete_chat(chat["id"])
+
+        chat_id = shared_context.create_chat(title)
         return {"id": chat_id, "title": title}
 
     @app.get("/api/chats/{chat_id}")
     async def get_chat(chat_id: str):
         """Get a chat with its messages."""
-        chat = jarvis.context.get_chat(chat_id)
+        chat = shared_context.get_chat(chat_id)
         if not chat:
             return {"error": "Chat not found"}, 404
         return chat
@@ -322,7 +340,7 @@ def create_app() -> FastAPI:
     @app.patch("/api/chats/{chat_id}")
     async def update_chat(chat_id: str, title: str = None):
         """Update a chat's title."""
-        success = jarvis.context.update_chat(chat_id, title=title)
+        success = shared_context.update_chat(chat_id, title=title)
         if not success:
             return {"error": "Chat not found"}, 404
         return {"success": True}
@@ -330,7 +348,7 @@ def create_app() -> FastAPI:
     @app.delete("/api/chats/{chat_id}")
     async def delete_chat(chat_id: str):
         """Delete a chat."""
-        success = jarvis.context.delete_chat(chat_id)
+        success = shared_context.delete_chat(chat_id)
         if not success:
             return {"error": "Chat not found"}, 404
         return {"success": True}
@@ -338,22 +356,28 @@ def create_app() -> FastAPI:
     @app.post("/api/chats/{chat_id}/switch")
     async def switch_chat(chat_id: str):
         """Switch to a different chat."""
-        success = jarvis.context.switch_chat(chat_id)
+        success = shared_context.switch_chat(chat_id)
         if not success:
             return {"error": "Chat not found"}, 404
-        return {"success": True, "messages": jarvis.context.messages}
+        return {"success": True, "messages": shared_context.messages}
 
     @app.post("/api/chats/{chat_id}/generate-title")
     async def generate_chat_title(chat_id: str):
         """Generate a title for a chat using AI."""
-        snippet = jarvis.context.generate_chat_title(chat_id)
+        snippet = shared_context.generate_chat_title(chat_id)
         if not snippet:
             return {"error": "No messages to generate title from"}
 
         # Use LLM to generate a short title
         try:
+            from jarvis.assistant import load_config
+            from jarvis.providers import get_provider
+
+            config = load_config()
+            provider = get_provider(config)
+
             prompt = f"Generate a short title (3-6 words, no quotes) for this conversation:\n\n{snippet}\n\nTitle:"
-            response = jarvis.provider.chat(
+            response = provider.chat(
                 messages=[{"role": "user", "content": prompt}],
                 system="You are a helpful assistant. Generate only a short, descriptive title. No quotes, no punctuation at the end.",
                 stream=False,
@@ -367,7 +391,7 @@ def create_app() -> FastAPI:
             title = title.strip().strip('"\'').strip()[:50]  # Clean up and limit length
 
             if title:
-                jarvis.context.update_chat(chat_id, title=title)
+                shared_context.update_chat(chat_id, title=title)
                 return {"title": title}
             else:
                 return {"error": "Failed to generate title"}
@@ -377,7 +401,7 @@ def create_app() -> FastAPI:
     @app.get("/api/chats/current")
     async def get_current_chat():
         """Get the current chat ID."""
-        return {"chat_id": jarvis.context.get_current_chat_id()}
+        return {"chat_id": shared_context.get_current_chat_id()}
 
     @app.post("/api/transcribe")
     async def transcribe_audio(audio: UploadFile = File(...)):
@@ -581,12 +605,26 @@ def create_app() -> FastAPI:
             jarvis = Jarvis(ui=ui, working_dir=working_dir)
             instances[session_id] = jarvis
 
+            # Resume most recent chat if it exists and has messages
+            recent_chats = jarvis.context.list_chats(limit=1)
+            current_chat_id = None
+            if recent_chats and recent_chats[0].get("message_count", 0) > 0:
+                # Resume the most recent chat
+                chat_id = recent_chats[0]["id"]
+                jarvis.context.switch_chat(chat_id)
+                current_chat_id = chat_id
+            else:
+                # Create a new chat for this session
+                current_chat_id = jarvis.context.create_chat()
+
             await websocket.send_json({
                 "type": "connected",
                 "provider": jarvis.provider.name,
                 "model": jarvis.provider.model,
                 "project": jarvis.project.project_name,
                 "projectRoot": str(jarvis.project.project_root),
+                "chat_id": current_chat_id,
+                "messages": jarvis.context.get_messages() if current_chat_id else [],
             })
 
         except Exception as e:
@@ -634,6 +672,22 @@ def create_app() -> FastAPI:
                         # Create a new chat for the next conversation
                         new_chat_id = jarvis.context.create_chat()
                     await websocket.send_json({"type": "cleared", "chat_id": new_chat_id if jarvis else None})
+
+                elif msg_type == "switch_chat":
+                    chat_id = data.get("chat_id")
+                    if chat_id and jarvis:
+                        success = jarvis.context.switch_chat(chat_id)
+                        if success:
+                            await websocket.send_json({
+                                "type": "chat_switched",
+                                "chat_id": chat_id,
+                                "messages": jarvis.context.get_messages()
+                            })
+                        else:
+                            await websocket.send_json({
+                                "type": "error",
+                                "message": "Chat not found"
+                            })
 
                 elif msg_type == "set_working_dir":
                     # Reinitialize with new working directory
@@ -691,7 +745,7 @@ def create_app() -> FastAPI:
                 # Short system prompt - less tokens = faster
                 chat_system = f"You are Jarvis, a witty AI assistant. Be concise and direct. No thinking out loud."
                 if user_nickname:
-                    chat_system += f" Call user '{user_nickname}'."
+                    chat_system += f" The user's name is {user_nickname}. Only use their name occasionally (once every few messages at most), not in every response."
 
                 # RAG: Retrieve relevant context from knowledge base
                 rag_context = ""
