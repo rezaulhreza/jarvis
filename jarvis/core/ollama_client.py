@@ -2,7 +2,6 @@
 
 import ollama
 from typing import Generator
-import json
 
 
 class OllamaClient:
@@ -19,18 +18,7 @@ class OllamaClient:
         stream: bool = True,
         system: str = None
     ) -> Generator[str, None, None] | str:
-        """
-        Send a chat request to Ollama.
-
-        Args:
-            messages: List of message dicts with 'role' and 'content'
-            model: Model to use (defaults to self.default_model)
-            stream: Whether to stream the response
-            system: Optional system prompt to prepend
-
-        Yields/Returns:
-            Streamed chunks or complete response
-        """
+        """Send a chat request to Ollama."""
         model = model or self.default_model
 
         # Prepend system message if provided
@@ -44,14 +32,26 @@ class OllamaClient:
                 stream=True
             )
             for chunk in response:
-                if 'message' in chunk and 'content' in chunk['message']:
-                    yield chunk['message']['content']
+                # Handle both dict and object access patterns
+                if hasattr(chunk, 'message'):
+                    content = chunk.message.content if hasattr(chunk.message, 'content') else chunk.message.get('content', '')
+                elif isinstance(chunk, dict) and 'message' in chunk:
+                    msg = chunk['message']
+                    content = msg.get('content', '') if isinstance(msg, dict) else getattr(msg, 'content', '')
+                else:
+                    content = ''
+
+                if content:
+                    yield content
         else:
             response = self.client.chat(
                 model=model,
                 messages=messages,
                 stream=False
             )
+            # Handle both dict and object access
+            if hasattr(response, 'message'):
+                return response.message.content if hasattr(response.message, 'content') else response.message.get('content', '')
             return response['message']['content']
 
     def generate(self, prompt: str, model: str = None, stream: bool = True):
@@ -61,21 +61,30 @@ class OllamaClient:
         if stream:
             response = self.client.generate(model=model, prompt=prompt, stream=True)
             for chunk in response:
-                if 'response' in chunk:
-                    yield chunk['response']
+                content = chunk.get('response', '') if isinstance(chunk, dict) else getattr(chunk, 'response', '')
+                if content:
+                    yield content
         else:
             response = self.client.generate(model=model, prompt=prompt, stream=False)
-            return response['response']
+            return response.get('response', '') if isinstance(response, dict) else getattr(response, 'response', '')
 
     def embed(self, text: str, model: str = "nomic-embed-text") -> list[float]:
         """Generate embeddings for text."""
         response = self.client.embeddings(model=model, prompt=text)
-        return response['embedding']
+        return response.get('embedding', []) if isinstance(response, dict) else getattr(response, 'embedding', [])
 
     def list_models(self) -> list[str]:
         """List available models."""
         response = self.client.list()
-        return [m['name'] for m in response['models']]
+
+        # Handle new Ollama API format (returns ListResponse with Model objects)
+        if hasattr(response, 'models'):
+            models = response.models
+            return [m.model if hasattr(m, 'model') else m.get('model', m.get('name', str(m))) for m in models]
+        elif isinstance(response, dict) and 'models' in response:
+            return [m.get('model', m.get('name', '')) for m in response['models']]
+
+        return []
 
     def vision(
         self,
@@ -93,4 +102,7 @@ class OllamaClient:
             }],
             stream=False
         )
+
+        if hasattr(response, 'message'):
+            return response.message.content if hasattr(response.message, 'content') else response.message.get('content', '')
         return response['message']['content']
