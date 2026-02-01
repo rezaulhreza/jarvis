@@ -8,7 +8,7 @@
 import importlib.util
 from pathlib import Path
 
-from .web_search import web_search
+from .web_search import web_search, get_current_news
 from .shell import shell_run, is_safe_command
 from .file_ops import read_file, list_directory, write_file, edit_file, search_files
 from .memory_ops import save_fact, get_facts
@@ -29,6 +29,11 @@ BUILT_IN_SKILLS = {
         "function": web_search,
         "description": "Search the web for information",
         "parameters": {"query": "string - the search query"}
+    },
+    "get_current_news": {
+        "function": get_current_news,
+        "description": "Get current news and recent information about a topic. Use for current events, politics, sports, celebrities, recent news.",
+        "parameters": {"topic": "string - the topic to get news about"}
     },
 
     # Shell

@@ -88,6 +88,37 @@ def create_app() -> FastAPI:
         # For now, just return default. Can be expanded later.
         return {"personas": ["default"]}
 
+    @app.get("/api/voices")
+    async def get_voices():
+        """Get available TTS voices."""
+        return {
+            "voices": [
+                {"id": "en-GB-SoniaNeural", "name": "Sonia (British Female)", "lang": "en-GB"},
+                {"id": "en-GB-RyanNeural", "name": "Ryan (British Male)", "lang": "en-GB"},
+                {"id": "en-US-JennyNeural", "name": "Jenny (US Female)", "lang": "en-US"},
+                {"id": "en-US-ChristopherNeural", "name": "Christopher (US Male)", "lang": "en-US"},
+                {"id": "en-US-GuyNeural", "name": "Guy (US Male)", "lang": "en-US"},
+                {"id": "en-US-AriaNeural", "name": "Aria (US Female)", "lang": "en-US"},
+                {"id": "en-AU-WilliamNeural", "name": "William (Australian Male)", "lang": "en-AU"},
+                {"id": "en-AU-NatashaNeural", "name": "Natasha (Australian Female)", "lang": "en-AU"},
+            ]
+        }
+
+    @app.post("/api/settings/voice")
+    async def set_voice(data: dict):
+        """Update TTS voice in settings."""
+        voice = data.get("voice")
+        if not voice:
+            return {"error": "No voice specified"}
+
+        from jarvis.assistant import load_config, save_config
+        config = load_config()
+        if "voice" not in config:
+            config["voice"] = {}
+        config["voice"]["tts_voice"] = voice
+        save_config(config)
+        return {"success": True, "voice": voice}
+
     @app.get("/api/models")
     async def get_models():
         """Get available models from Ollama."""
@@ -174,56 +205,85 @@ def create_app() -> FastAPI:
 
     @app.post("/api/tts")
     async def text_to_speech(data: dict):
-        """Convert text to speech using best available method."""
+        """Convert text to speech - fast mode uses browser, quality mode uses Edge TTS."""
         text = data.get("text", "")
+        fast_mode = data.get("fast", False)  # Use browser TTS for speed
+
         if not text:
             return {"error": "No text provided"}
 
-        try:
-            # Option 1: OpenAI TTS (best quality)
-            import os
-            openai_key = os.getenv("OPENAI_API_KEY")
-            if openai_key:
-                try:
-                    import openai
-                    client = openai.OpenAI(api_key=openai_key)
-                    response = client.audio.speech.create(
-                        model="tts-1",
-                        voice="alloy",  # or: echo, fable, onyx, nova, shimmer
-                        input=text[:4096]
-                    )
-                    audio_data = response.content
-                    return StreamingResponse(
-                        io.BytesIO(audio_data),
-                        media_type="audio/mpeg",
-                        headers={"Content-Disposition": "inline; filename=speech.mp3"}
-                    )
-                except Exception as e:
-                    pass  # Fall through to other options
+        # Strip emojis
+        import re
+        emoji_pattern = re.compile(
+            "[\U0001F600-\U0001F64F\U0001F300-\U0001F5FF\U0001F680-\U0001F6FF"
+            "\U0001F1E0-\U0001F1FF\U00002702-\U000027B0\U0001F900-\U0001F9FF"
+            "\U0001FA00-\U0001FA6F\U0001FA70-\U0001FAFF\U00002600-\U000026FF]+",
+            flags=re.UNICODE
+        )
+        text = emoji_pattern.sub('', text).strip()
 
-            # Option 2: macOS say command (decent quality, free)
+        if not text:
+            return {"error": "No text"}
+
+        # Fast mode - tell frontend to use browser TTS
+        if fast_mode:
+            return {"use_browser": True, "text": text}
+
+        # Load voice settings
+        from jarvis.assistant import load_config
+        config = load_config()
+        tts_voice = config.get("voice", {}).get("tts_voice", "en-GB-SoniaNeural")
+
+        try:
+            import edge_tts
+
+            # Limit text length for speed
+            short_text = text[:500]  # Shorter = faster
+
+            communicate = edge_tts.Communicate(short_text, tts_voice)
+            audio_chunks = []
+            async for chunk in communicate.stream():
+                if chunk["type"] == "audio":
+                    audio_chunks.append(chunk["data"])
+
+            if audio_chunks:
+                audio_data = b"".join(audio_chunks)
+                return StreamingResponse(
+                    io.BytesIO(audio_data),
+                    media_type="audio/mpeg",
+                    headers={"Content-Disposition": "inline; filename=speech.mp3"}
+                )
+        except Exception as e:
+            print(f"[TTS] Edge TTS failed: {e}")
+
+            # Option 2: macOS say command (fallback)
             import platform
+            print(f"[TTS] Falling back to macOS say")
             if platform.system() == "Darwin":
                 with tempfile.NamedTemporaryFile(suffix=".aiff", delete=False) as tmp:
-                    tmp_path = tmp.name
-
-                # Use a good macOS voice
-                voices = ["Samantha", "Daniel", "Karen", "Moira", "Alex"]
-                voice = voices[0]  # Samantha is usually good
+                    aiff_path = tmp.name
+                mp3_path = aiff_path.replace(".aiff", ".mp3")
 
                 result = subprocess.run(
-                    ["say", "-v", voice, "-o", tmp_path, text[:1000]],
+                    ["say", "-v", "Samantha", "-o", aiff_path, text[:1000]],
                     capture_output=True, timeout=30
                 )
 
-                if Path(tmp_path).exists():
-                    audio_data = Path(tmp_path).read_bytes()
-                    Path(tmp_path).unlink()
-                    return StreamingResponse(
-                        io.BytesIO(audio_data),
-                        media_type="audio/aiff",
-                        headers={"Content-Disposition": "inline; filename=speech.aiff"}
+                if Path(aiff_path).exists():
+                    subprocess.run(
+                        ["ffmpeg", "-i", aiff_path, "-y", "-q:a", "2", mp3_path],
+                        capture_output=True, timeout=30
                     )
+                    Path(aiff_path).unlink(missing_ok=True)
+
+                    if Path(mp3_path).exists():
+                        audio_data = Path(mp3_path).read_bytes()
+                        Path(mp3_path).unlink()
+                        return StreamingResponse(
+                            io.BytesIO(audio_data),
+                            media_type="audio/mpeg",
+                            headers={"Content-Disposition": "inline; filename=speech.mp3"}
+                        )
 
             return {"error": "No TTS available"}
 
@@ -369,20 +429,35 @@ def create_app() -> FastAPI:
                 history.append(Message(role=m["role"], content=m["content"]))
 
             if chat_mode:
-                # CHAT MODE: Fast, streaming, minimal overhead
-                chat_system = "You are Jarvis. Be concise and friendly."
+                # CHAT MODE: Ultra-fast, minimal overhead, NO THINKING
+                user_nickname = jarvis.config.get("user", {}).get("nickname", "")
 
-                # Only keep last 4 messages for speed
-                recent = history[-4:] if len(history) > 4 else history
+                # Short system prompt - less tokens = faster
+                chat_system = f"You are Jarvis, a witty AI assistant. Be concise and direct. No thinking out loud."
+                if user_nickname:
+                    chat_system += f" Call user '{user_nickname}'."
+
+                # Minimal context - just last 2 exchanges for speed
+                recent = history[-2:] if len(history) > 2 else history
                 all_messages = recent + [Message(role="user", content=user_input)]
 
-                # Stream response for instant feedback
+                # Use fast chat model
+                chat_model = jarvis.config.get("models", {}).get("chat", "llama3.2")
+                original_model = jarvis.provider.model
+                jarvis.provider.model = chat_model
+
+                # Stream with options for speed
                 response_text = ""
-                stream = jarvis.provider.chat(
-                    messages=all_messages,
-                    system=chat_system,
-                    stream=True
-                )
+                try:
+                    stream = jarvis.provider.chat(
+                        messages=all_messages,
+                        system=chat_system,
+                        stream=True,
+                        options={"num_predict": 150}  # Limit response length for speed
+                    )
+                except Exception as e:
+                    jarvis.provider.model = original_model
+                    raise e
 
                 for chunk in stream:
                     response_text += chunk
@@ -391,6 +466,9 @@ def create_app() -> FastAPI:
                         "content": chunk,
                         "done": False
                     })
+
+                # Restore original model
+                jarvis.provider.model = original_model
 
                 await websocket.send_json({
                     "type": "response",

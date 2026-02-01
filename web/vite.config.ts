@@ -13,10 +13,17 @@ export default defineConfig({
   server: {
     port: 3000,
     proxy: {
-      '/api': 'http://localhost:7777',
+      '/api': {
+        target: 'http://127.0.0.1:7777',
+        changeOrigin: true,
+        secure: false,
+      },
       '/ws': {
-        target: 'ws://localhost:7777',
+        target: 'ws://127.0.0.1:7777',
         ws: true,
+        changeOrigin: true,
+        secure: false,
+        rewriteWsOrigin: true,
       },
     },
   },

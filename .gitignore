@@ -20,6 +20,10 @@ build/
 *.sublime-*
 
 # Project data (generated at runtime)
+.jarvis/
+context.db
+*.db
+*.db-*
 memory/jarvis.db
 memory/jarvis.db-*
 knowledge/chroma_db/

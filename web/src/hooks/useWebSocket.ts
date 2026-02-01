@@ -3,6 +3,7 @@ import { useEffect, useRef, useState, useCallback } from 'react'
 interface Message {
   role: 'user' | 'assistant' | 'system'
   content: string
+  timestamp: Date
 }
 
 interface WSMessage {
@@ -26,17 +27,28 @@ export function useWebSocket() {
   const [project, setProject] = useState('')
 
   useEffect(() => {
+    let reconnectTimer: NodeJS.Timeout | null = null
+    let isCleaningUp = false
+
     const connect = () => {
+      if (isCleaningUp) return
+
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
       ws.current = new WebSocket(`${protocol}//${window.location.host}/ws`)
 
       ws.current.onopen = () => {
-        setConnected(true)
+        if (!isCleaningUp) setConnected(true)
       }
 
       ws.current.onclose = () => {
-        setConnected(false)
-        setTimeout(connect, 3000)
+        if (!isCleaningUp) {
+          setConnected(false)
+          reconnectTimer = setTimeout(connect, 2000)
+        }
+      }
+
+      ws.current.onerror = () => {
+        // Suppress error logging - reconnect will handle it
       }
 
       ws.current.onmessage = (event) => {
@@ -48,7 +60,11 @@ export function useWebSocket() {
     connect()
 
     return () => {
-      ws.current?.close()
+      isCleaningUp = true
+      if (reconnectTimer) clearTimeout(reconnectTimer)
+      if (ws.current?.readyState === WebSocket.OPEN) {
+        ws.current.close()
+      }
     }
   }, [])
 
@@ -67,14 +83,14 @@ export function useWebSocket() {
 
       case 'response':
         if (data.done && data.content) {
-          setMessages((prev) => [...prev, { role: 'assistant', content: data.content! }])
+          setMessages((prev) => [...prev, { role: 'assistant', content: data.content!, timestamp: new Date() }])
           setStreaming('')
         }
         setIsLoading(false)
         break
 
       case 'error':
-        setMessages((prev) => [...prev, { role: 'system', content: `Error: ${data.error}` }])
+        setMessages((prev) => [...prev, { role: 'system', content: `Error: ${data.error}`, timestamp: new Date() }])
         setIsLoading(false)
         setStreaming('')
         break
@@ -93,7 +109,7 @@ export function useWebSocket() {
   const send = useCallback((content: string, chatMode: boolean = false) => {
     if (!ws.current || ws.current.readyState !== WebSocket.OPEN) return
 
-    setMessages((prev) => [...prev, { role: 'user', content }])
+    setMessages((prev) => [...prev, { role: 'user', content, timestamp: new Date() }])
     setIsLoading(true)
     setStreaming('')
 

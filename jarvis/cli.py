@@ -12,13 +12,14 @@ from . import __version__, ensure_data_dir
 
 @click.group(invoke_without_command=True)
 @click.option('--version', '-v', is_flag=True, help='Show version')
-@click.option('--ui', is_flag=True, help='Launch web UI')
+@click.option('--ui', is_flag=True, help='Launch web UI (production build)')
+@click.option('--dev', is_flag=True, help='Launch full dev environment (backend + frontend)')
 @click.option('--voice', is_flag=True, help='Enable voice input mode')
 @click.option('--port', default=7777, help='Port for web UI (default: 7777)')
 @click.option('--reload', is_flag=True, help='Enable hot reload for development')
 @click.option('--daemon', is_flag=True, help='Run as background daemon')
 @click.pass_context
-def main(ctx, version, ui, voice, port, reload, daemon):
+def main(ctx, version, ui, dev, voice, port, reload, daemon):
     """
     Jarvis - Your local AI assistant.
 
@@ -27,8 +28,8 @@ def main(ctx, version, ui, voice, port, reload, daemon):
     \b
     Examples:
         jarvis              # Interactive CLI
+        jarvis --dev        # Full dev mode (backend + frontend)
         jarvis --ui         # Web UI at localhost:7777
-        jarvis --ui --reload # Web UI with hot reload
         jarvis --voice      # Voice input mode
         jarvis chat "hello" # Single query
     """
@@ -39,7 +40,9 @@ def main(ctx, version, ui, voice, port, reload, daemon):
     # Ensure data directory exists
     ensure_data_dir()
 
-    if ui:
+    if dev:
+        _launch_dev(port)
+    elif ui:
         _launch_ui(port, reload=reload)
     elif voice:
         _launch_voice_mode()
@@ -161,6 +164,66 @@ def _launch_cli():
     """Launch interactive CLI mode."""
     from .assistant import run_cli
     run_cli()
+
+
+def _launch_dev(port: int):
+    """Launch full dev environment - backend + frontend together."""
+    import subprocess
+    import signal
+    import os
+
+    # Find web directory
+    web_dir = Path(__file__).parent.parent / "web"
+    if not web_dir.exists():
+        click.echo("Error: web/ directory not found")
+        sys.exit(1)
+
+    click.echo("🚀 Starting Jarvis Dev Environment")
+    click.echo(f"   Backend:  http://localhost:{port}")
+    click.echo(f"   Frontend: http://localhost:3000")
+    click.echo("   Press Ctrl+C to stop\n")
+
+    processes = []
+
+    try:
+        # Start backend
+        backend_env = os.environ.copy()
+        backend = subprocess.Popen(
+            [sys.executable, "-m", "uvicorn", "jarvis.ui:create_app",
+             "--host", "0.0.0.0", "--port", str(port),
+             "--reload", "--reload-dir", "jarvis", "--factory"],
+            env=backend_env,
+            cwd=Path(__file__).parent.parent
+        )
+        processes.append(backend)
+
+        # Start frontend
+        frontend = subprocess.Popen(
+            ["npm", "run", "dev"],
+            cwd=web_dir,
+            env=os.environ.copy()
+        )
+        processes.append(frontend)
+
+        # Wait for either to exit
+        while all(p.poll() is None for p in processes):
+            try:
+                processes[0].wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                pass
+
+    except KeyboardInterrupt:
+        click.echo("\n\nShutting down...")
+    finally:
+        # Clean up all processes
+        for p in processes:
+            if p.poll() is None:
+                p.terminate()
+                try:
+                    p.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    p.kill()
+        click.echo("Done.")
 
 
 def _launch_ui(port: int, reload: bool = False):

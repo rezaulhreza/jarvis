@@ -79,7 +79,8 @@ class OllamaProvider(BaseProvider):
         messages: List[Message],
         system: str = None,
         stream: bool = True,
-        tools: List[Callable] = None
+        tools: List[Callable] = None,
+        options: dict = None
     ) -> Generator[str, None, None]:
         """Send chat request with optional tool calling."""
         self.reset_stop()
@@ -100,6 +101,10 @@ class OllamaProvider(BaseProvider):
             "messages": msg_list,
             "stream": stream,
         }
+
+        # Add options if provided (num_predict, temperature, etc.)
+        if options:
+            kwargs["options"] = options
 
         # Convert and add tools if provided
         if tools:

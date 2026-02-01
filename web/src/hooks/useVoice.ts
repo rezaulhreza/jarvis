@@ -1,79 +1,204 @@
-import { useState, useRef, useCallback } from 'react'
+import { useState, useRef, useCallback, useEffect } from 'react'
 
-export function useVoice() {
+interface UseVoiceOptions {
+  onSpeechEnd?: (transcript: string) => void
+  onInterrupt?: () => void
+}
+
+export function useVoice(options: UseVoiceOptions = {}) {
+  const { onSpeechEnd, onInterrupt } = options
+
+  const [isListening, setIsListening] = useState(false)
   const [isRecording, setIsRecording] = useState(false)
   const [isPlaying, setIsPlaying] = useState(false)
-  const [transcript, setTranscript] = useState('')
-  const mediaRecorder = useRef<MediaRecorder | null>(null)
-  const audioChunks = useRef<Blob[]>([])
+  const [volume, setVolume] = useState(0)
+
+  const recognition = useRef<any>(null)
   const currentAudio = useRef<HTMLAudioElement | null>(null)
+  const audioContext = useRef<AudioContext | null>(null)
+  const analyser = useRef<AnalyserNode | null>(null)
+  const animationFrame = useRef<number | null>(null)
+  const stream = useRef<MediaStream | null>(null)
+  const transcriptRef = useRef('')
+  const isListeningRef = useRef(false)
+  const onSpeechEndRef = useRef(onSpeechEnd)
+  const onInterruptRef = useRef(onInterrupt)
 
-  const startRecording = useCallback(async () => {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-      mediaRecorder.current = new MediaRecorder(stream, { mimeType: 'audio/webm' })
-      audioChunks.current = []
+  // Keep refs in sync
+  useEffect(() => {
+    onSpeechEndRef.current = onSpeechEnd
+    onInterruptRef.current = onInterrupt
+  }, [onSpeechEnd, onInterrupt])
 
-      mediaRecorder.current.ondataavailable = (e) => {
-        if (e.data.size > 0) audioChunks.current.push(e.data)
+  useEffect(() => {
+    isListeningRef.current = isListening
+  }, [isListening])
+
+  // Initialize speech recognition once
+  useEffect(() => {
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
+    if (!SpeechRecognition) {
+      console.warn('Speech recognition not supported')
+      return
+    }
+
+    const recog = new SpeechRecognition()
+    recog.continuous = true
+    recog.interimResults = true
+    recog.lang = 'en-US'
+
+    recog.onresult = (event: any) => {
+      let finalTranscript = ''
+
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const result = event.results[i]
+        if (result.isFinal) {
+          finalTranscript += result[0].transcript
+        }
       }
 
-      mediaRecorder.current.start()
+      if (finalTranscript) {
+        transcriptRef.current = finalTranscript.trim()
+        if (transcriptRef.current && onSpeechEndRef.current) {
+          onSpeechEndRef.current(transcriptRef.current)
+          transcriptRef.current = ''
+        }
+      }
+
+      setVolume(0.5)
       setIsRecording(true)
-      setTranscript('')
+    }
+
+    recog.onspeechend = () => {
+      setVolume(0)
+      setIsRecording(false)
+    }
+
+    recog.onerror = (event: any) => {
+      if (event.error !== 'no-speech' && event.error !== 'aborted') {
+        console.error('Speech recognition error:', event.error)
+      }
+    }
+
+    recog.onend = () => {
+      if (isListeningRef.current) {
+        try {
+          recog.start()
+        } catch (e) {}
+      }
+    }
+
+    recognition.current = recog
+
+    return () => {
+      try {
+        recog.stop()
+      } catch (e) {}
+    }
+  }, [])
+
+  const startListening = useCallback(async () => {
+    if (isListeningRef.current || !recognition.current) return
+
+    try {
+      stream.current = await navigator.mediaDevices.getUserMedia({ audio: true })
+      audioContext.current = new AudioContext()
+      analyser.current = audioContext.current.createAnalyser()
+      analyser.current.fftSize = 512
+      const source = audioContext.current.createMediaStreamSource(stream.current)
+      source.connect(analyser.current)
+
+      recognition.current.start()
+      setIsListening(true)
+      transcriptRef.current = ''
+
+      const checkVolume = () => {
+        if (!analyser.current) return
+        const dataArray = new Uint8Array(analyser.current.frequencyBinCount)
+        analyser.current.getByteFrequencyData(dataArray)
+        const avg = dataArray.reduce((a, b) => a + b, 0) / dataArray.length / 255
+        setVolume(avg)
+
+        if (avg > 0.03 && currentAudio.current && !currentAudio.current.paused) {
+          currentAudio.current.pause()
+          currentAudio.current = null
+          setIsPlaying(false)
+          onInterruptRef.current?.()
+        }
+
+        animationFrame.current = requestAnimationFrame(checkVolume)
+      }
+      checkVolume()
     } catch (err) {
       console.error('Mic access denied:', err)
     }
   }, [])
 
-  const stopRecording = useCallback(async (): Promise<string> => {
-    return new Promise((resolve) => {
-      if (!mediaRecorder.current) {
-        resolve('')
-        return
-      }
+  const stopListening = useCallback(() => {
+    setIsListening(false)
+    setIsRecording(false)
+    setVolume(0)
 
-      mediaRecorder.current.onstop = async () => {
-        const stream = mediaRecorder.current?.stream
-        stream?.getTracks().forEach((t) => t.stop())
+    if (animationFrame.current) {
+      cancelAnimationFrame(animationFrame.current)
+      animationFrame.current = null
+    }
 
-        const audioBlob = new Blob(audioChunks.current, { type: 'audio/webm' })
-        const formData = new FormData()
-        formData.append('audio', audioBlob, 'recording.webm')
+    if (recognition.current) {
+      try {
+        recognition.current.stop()
+      } catch (e) {}
+    }
 
-        try {
-          const res = await fetch('/api/transcribe', {
-            method: 'POST',
-            body: formData,
-          })
-          const data = await res.json()
-          const text = data.transcript || ''
-          setTranscript(text)
-          resolve(text)
-        } catch (err) {
-          console.error('Transcription failed:', err)
-          resolve('')
-        }
-      }
+    if (stream.current) {
+      stream.current.getTracks().forEach(t => t.stop())
+      stream.current = null
+    }
 
-      mediaRecorder.current.stop()
-      setIsRecording(false)
-    })
+    if (audioContext.current) {
+      audioContext.current.close()
+      audioContext.current = null
+    }
   }, [])
 
-  const speak = useCallback(async (text: string) => {
+  const startRecording = useCallback(async () => {
+    await startListening()
+  }, [startListening])
+
+  const stopRecording = useCallback(async (): Promise<string> => {
+    return new Promise((resolve) => {
+      setTimeout(() => {
+        const result = transcriptRef.current
+        transcriptRef.current = ''
+        stopListening()
+        resolve(result)
+      }, 500)
+    })
+  }, [stopListening])
+
+  const speak = useCallback(async (text: string, fast: boolean = true) => {
     if (!text) return
 
-    // Stop any current audio
     if (currentAudio.current) {
       currentAudio.current.pause()
       currentAudio.current = null
     }
+    speechSynthesis.cancel()
 
     setIsPlaying(true)
 
+    // Fast mode - use browser TTS (instant)
+    if (fast) {
+      const utterance = new SpeechSynthesisUtterance(text)
+      utterance.rate = 1.1  // Slightly faster
+      utterance.onend = () => setIsPlaying(false)
+      utterance.onerror = () => setIsPlaying(false)
+      speechSynthesis.speak(utterance)
+      return
+    }
+
+    // Quality mode - use Edge TTS
     try {
-      // Try backend TTS first
       const res = await fetch('/api/tts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -84,15 +209,22 @@ export function useVoice() {
         const blob = await res.blob()
         const url = URL.createObjectURL(blob)
         currentAudio.current = new Audio(url)
-        currentAudio.current.onended = () => setIsPlaying(false)
-        currentAudio.current.play()
+        currentAudio.current.onended = () => {
+          setIsPlaying(false)
+          URL.revokeObjectURL(url)
+        }
+        currentAudio.current.onerror = () => {
+          setIsPlaying(false)
+          URL.revokeObjectURL(url)
+        }
+        await currentAudio.current.play()
         return
       }
     } catch (err) {
-      console.log('Backend TTS failed, using browser')
+      console.log('Backend TTS failed')
     }
 
-    // Fallback to browser TTS
+    // Fallback
     const utterance = new SpeechSynthesisUtterance(text)
     utterance.onend = () => setIsPlaying(false)
     speechSynthesis.speak(utterance)
@@ -108,9 +240,12 @@ export function useVoice() {
   }, [])
 
   return {
+    isListening,
     isRecording,
     isPlaying,
-    transcript,
+    volume,
+    startListening,
+    stopListening,
     startRecording,
     stopRecording,
     speak,
