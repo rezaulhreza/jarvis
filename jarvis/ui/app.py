@@ -372,22 +372,24 @@ def create_app() -> FastAPI:
             import edge_tts
 
             # Limit text length for speed
-            short_text = text[:500]  # Shorter = faster
+            short_text = text[:500]
 
             communicate = edge_tts.Communicate(short_text, tts_voice)
 
-            # Stream audio chunks as they arrive
-            async def audio_stream():
-                async for chunk in communicate.stream():
-                    if chunk["type"] == "audio":
-                        yield chunk["data"]
+            # Collect all audio chunks
+            audio_data = b""
+            async for chunk in communicate.stream():
+                if chunk["type"] == "audio":
+                    audio_data += chunk["data"]
+
+            if not audio_data:
+                return {"error": "No audio generated"}
 
             return StreamingResponse(
-                audio_stream(),
+                io.BytesIO(audio_data),
                 media_type="audio/mpeg",
                 headers={
                     "Content-Disposition": "inline; filename=speech.mp3",
-                    "Cache-Control": "no-cache",
                 }
             )
         except Exception as e:
