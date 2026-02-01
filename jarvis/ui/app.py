@@ -108,20 +108,35 @@ def create_app() -> FastAPI:
             ]
         }
 
+    @app.get("/api/settings/voice")
+    async def get_voice_settings():
+        """Get current voice settings."""
+        from jarvis.assistant import load_config
+        config = load_config()
+        voice_config = config.get("voice", {})
+        return {
+            "tts_provider": voice_config.get("tts_provider", "browser"),
+            "tts_voice": voice_config.get("tts_voice", "en-GB-SoniaNeural"),
+            "stt_provider": voice_config.get("stt_provider", "browser"),
+        }
+
     @app.post("/api/settings/voice")
     async def set_voice(data: dict):
-        """Update TTS voice in settings."""
-        voice = data.get("voice")
-        if not voice:
-            return {"error": "No voice specified"}
-
+        """Update voice settings."""
         from jarvis.assistant import load_config, save_config
         config = load_config()
         if "voice" not in config:
             config["voice"] = {}
-        config["voice"]["tts_voice"] = voice
+
+        if "voice" in data:
+            config["voice"]["tts_voice"] = data["voice"]
+        if "tts_provider" in data:
+            config["voice"]["tts_provider"] = data["tts_provider"]
+        if "stt_provider" in data:
+            config["voice"]["stt_provider"] = data["stt_provider"]
+
         save_config(config)
-        return {"success": True, "voice": voice}
+        return {"success": True}
 
     @app.post("/api/settings/elevenlabs")
     async def set_elevenlabs(data: dict):

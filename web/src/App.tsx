@@ -64,7 +64,7 @@ export default function App() {
     }
   }, [isLoading])
 
-  // Fetch available models and voices
+  // Fetch available models, voices, and settings
   useEffect(() => {
     fetch('/api/models')
       .then(res => res.json())
@@ -83,7 +83,36 @@ export default function App() {
         }
       })
       .catch(() => {})
+    // Load saved voice settings
+    fetch('/api/settings/voice')
+      .then(res => res.json())
+      .then(data => {
+        if (data.tts_provider) setTtsProvider(data.tts_provider)
+        if (data.tts_voice) setCurrentVoice(data.tts_voice)
+        if (data.stt_provider) setSttProvider(data.stt_provider)
+      })
+      .catch(() => {})
   }, [])
+
+  // Save TTS provider when changed
+  const changeTtsProvider = (provider: 'browser' | 'edge' | 'elevenlabs') => {
+    setTtsProvider(provider)
+    fetch('/api/settings/voice', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tts_provider: provider })
+    }).catch(() => {})
+  }
+
+  // Save STT provider when changed
+  const changeSttProvider = (provider: 'browser' | 'whisper') => {
+    setSttProvider(provider)
+    fetch('/api/settings/voice', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ stt_provider: provider })
+    }).catch(() => {})
+  }
 
   const switchVoice = async (voiceId: string, provider: 'edge' | 'elevenlabs' = 'edge') => {
     setCurrentVoice(voiceId)
@@ -429,7 +458,7 @@ export default function App() {
                           {(['browser', 'edge', 'elevenlabs'] as const).map((p) => (
                             <button
                               key={p}
-                              onClick={() => setTtsProvider(p)}
+                              onClick={() => changeTtsProvider(p)}
                               className={cn(
                                 'px-2 py-1 text-xs rounded transition-colors flex-1',
                                 ttsProvider === p
@@ -526,7 +555,7 @@ export default function App() {
                         <span className="text-xs text-[#71717a] block mb-2">Speech-to-Text</span>
                         <div className="flex gap-1">
                           <button
-                            onClick={() => setSttProvider('browser')}
+                            onClick={() => changeSttProvider('browser')}
                             className={cn(
                               'px-3 py-1.5 text-xs rounded transition-colors flex-1',
                               sttProvider === 'browser'
@@ -537,7 +566,7 @@ export default function App() {
                             Browser (instant)
                           </button>
                           <button
-                            onClick={() => setSttProvider('whisper')}
+                            onClick={() => changeSttProvider('whisper')}
                             className={cn(
                               'px-3 py-1.5 text-xs rounded transition-colors flex-1',
                               sttProvider === 'whisper'
