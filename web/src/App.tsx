@@ -165,6 +165,7 @@ export default function App() {
     isRecording,
     isPlaying,
     volume,
+    playbackVolume,
     startListening,
     stopListening,
     startRecording,
@@ -283,17 +284,24 @@ export default function App() {
             isListening ? 'bg-purple-500/10' :
             'bg-[#1a1a24]'
           )}>
-            {/* Volume ring */}
-            {isListening && (
+            {/* Volume ring - listening (purple) */}
+            {isListening && !isPlaying && (
               <div
                 className="absolute inset-0 rounded-full border-2 border-purple-500/50 transition-transform duration-75"
                 style={{ transform: `scale(${1 + volume * 2})`, opacity: volume > 0.01 ? 1 : 0.3 }}
               />
             )}
+            {/* Volume ring - speaking (green) */}
+            {isPlaying && (
+              <div
+                className="absolute inset-0 rounded-full border-2 border-green-500/50 transition-transform duration-75"
+                style={{ transform: `scale(${1 + playbackVolume * 1.5})`, opacity: playbackVolume > 0.1 ? 1 : 0.5 }}
+              />
+            )}
 
             <div className={cn(
               'w-36 h-36 rounded-full flex items-center justify-center transition-all duration-300',
-              isPlaying ? 'bg-green-500/30 animate-pulse' :
+              isPlaying ? 'bg-green-500/30' :
               isLoading ? 'bg-blue-500/30 animate-pulse' :
               isRecording && volume > 0.02 ? 'bg-purple-500/30' :
               'bg-[#22222a]'

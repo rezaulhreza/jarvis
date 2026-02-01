@@ -215,7 +215,7 @@ def create_app() -> FastAPI:
         if not text:
             return {"error": "No text"}
 
-        # Strip emojis
+        # Strip emojis and markdown characters
         import re
         emoji_pattern = re.compile(
             "[\U0001F600-\U0001F64F\U0001F300-\U0001F5FF\U0001F680-\U0001F6FF"
@@ -223,7 +223,13 @@ def create_app() -> FastAPI:
             "\U0001FA00-\U0001FA6F\U0001FA70-\U0001FAFF\U00002600-\U000026FF]+",
             flags=re.UNICODE
         )
-        text = emoji_pattern.sub('', text).strip()
+        text = emoji_pattern.sub('', text)
+        text = re.sub(r'\*+', '', text)
+        text = re.sub(r'_+', ' ', text)
+        text = re.sub(r'#+\s*', '', text)
+        text = re.sub(r'`+', '', text)
+        text = re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', text)
+        text = re.sub(r'\s+', ' ', text).strip()
         if not text:
             return {"error": "No text"}
 
@@ -361,7 +367,7 @@ def create_app() -> FastAPI:
         if not text:
             return {"error": "No text provided"}
 
-        # Strip emojis
+        # Strip emojis and markdown characters that TTS reads literally
         import re
         emoji_pattern = re.compile(
             "[\U0001F600-\U0001F64F\U0001F300-\U0001F5FF\U0001F680-\U0001F6FF"
@@ -369,7 +375,14 @@ def create_app() -> FastAPI:
             "\U0001FA00-\U0001FA6F\U0001FA70-\U0001FAFF\U00002600-\U000026FF]+",
             flags=re.UNICODE
         )
-        text = emoji_pattern.sub('', text).strip()
+        text = emoji_pattern.sub('', text)
+        # Strip markdown: *bold*, _italic_, #headers, ```code```, etc.
+        text = re.sub(r'\*+', '', text)  # asterisks
+        text = re.sub(r'_+', ' ', text)  # underscores
+        text = re.sub(r'#+\s*', '', text)  # headers
+        text = re.sub(r'`+', '', text)  # code ticks
+        text = re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', text)  # [link](url) -> link
+        text = re.sub(r'\s+', ' ', text).strip()  # collapse whitespace
 
         if not text:
             return {"error": "No text"}

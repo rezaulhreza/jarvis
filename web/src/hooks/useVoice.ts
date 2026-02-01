@@ -13,12 +13,16 @@ export function useVoice(options: UseVoiceOptions = {}) {
   const [isRecording, setIsRecording] = useState(false)
   const [isPlaying, setIsPlaying] = useState(false)
   const [volume, setVolume] = useState(0)
+  const [playbackVolume, setPlaybackVolume] = useState(0)
 
   const recognition = useRef<any>(null)
   const mediaRecorder = useRef<MediaRecorder | null>(null)
   const audioChunks = useRef<Blob[]>([])
   const currentAudio = useRef<HTMLAudioElement | null>(null)
   const audioContext = useRef<AudioContext | null>(null)
+  const playbackContext = useRef<AudioContext | null>(null)
+  const playbackAnalyser = useRef<AnalyserNode | null>(null)
+  const playbackAnimFrame = useRef<number | null>(null)
   const analyser = useRef<AnalyserNode | null>(null)
   const animationFrame = useRef<number | null>(null)
   const stream = useRef<MediaStream | null>(null)
@@ -300,8 +304,60 @@ export function useVoice(options: UseVoiceOptions = {}) {
     })
   }, [stopListening])
 
+  // Stop playback volume animation
+  const stopPlaybackAnalysis = useCallback(() => {
+    if (playbackAnimFrame.current) {
+      cancelAnimationFrame(playbackAnimFrame.current)
+      playbackAnimFrame.current = null
+    }
+    if (playbackContext.current) {
+      playbackContext.current.close().catch(() => {})
+      playbackContext.current = null
+      playbackAnalyser.current = null
+    }
+    setPlaybackVolume(0)
+  }, [])
+
+  // Analyze audio element output for visualization
+  const startPlaybackAnalysis = useCallback((audioElement: HTMLAudioElement) => {
+    try {
+      playbackContext.current = new AudioContext()
+      playbackAnalyser.current = playbackContext.current.createAnalyser()
+      playbackAnalyser.current.fftSize = 256
+
+      const source = playbackContext.current.createMediaElementSource(audioElement)
+      source.connect(playbackAnalyser.current)
+      playbackAnalyser.current.connect(playbackContext.current.destination)
+
+      const analyzePlayback = () => {
+        if (!playbackAnalyser.current || !isPlayingRef.current) {
+          setPlaybackVolume(0)
+          return
+        }
+        const dataArray = new Uint8Array(playbackAnalyser.current.frequencyBinCount)
+        playbackAnalyser.current.getByteFrequencyData(dataArray)
+        const avg = dataArray.reduce((a, b) => a + b, 0) / dataArray.length / 255
+        setPlaybackVolume(avg)
+        playbackAnimFrame.current = requestAnimationFrame(analyzePlayback)
+      }
+      analyzePlayback()
+    } catch (e) {
+      // Fallback: simulate volume with a pulse
+      const pulse = () => {
+        if (!isPlayingRef.current) {
+          setPlaybackVolume(0)
+          return
+        }
+        setPlaybackVolume(0.3 + Math.random() * 0.4)
+        playbackAnimFrame.current = requestAnimationFrame(pulse)
+      }
+      pulse()
+    }
+  }, [])
+
   // Stop any current audio/speech
   const stopCurrentAudio = useCallback(() => {
+    stopPlaybackAnalysis()
     if (currentAudio.current) {
       currentAudio.current.pause()
       currentAudio.current.onended = null
@@ -312,7 +368,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
     setIsPlaying(false)
     isPlayingRef.current = false
     speakingRef.current = false
-  }, [])
+  }, [stopPlaybackAnalysis])
 
   // Pause recognition while speaking
   const pauseRecognition = useCallback(() => {
@@ -363,6 +419,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
     pauseRecognition()
 
     const onFinished = () => {
+      stopPlaybackAnalysis()
       setIsPlaying(false)
       isPlayingRef.current = false
       speakingRef.current = false
@@ -374,12 +431,22 @@ export function useVoice(options: UseVoiceOptions = {}) {
       }, 300)
     }
 
-    // Browser TTS
+    // Browser TTS - simulate volume pulse
     if (provider === 'browser') {
       const utterance = new SpeechSynthesisUtterance(text)
       utterance.rate = 1.1
       utterance.onend = onFinished
       utterance.onerror = onFinished
+      // Simulate volume animation for browser TTS
+      const simulatePulse = () => {
+        if (!isPlayingRef.current) {
+          setPlaybackVolume(0)
+          return
+        }
+        setPlaybackVolume(0.3 + Math.random() * 0.4)
+        playbackAnimFrame.current = requestAnimationFrame(simulatePulse)
+      }
+      simulatePulse()
       speechSynthesis.speak(utterance)
       return
     }
@@ -398,6 +465,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
           const blob = await res.blob()
           const url = URL.createObjectURL(blob)
           currentAudio.current = new Audio(url)
+          currentAudio.current.crossOrigin = 'anonymous'
           currentAudio.current.onended = () => {
             URL.revokeObjectURL(url)
             onFinished()
@@ -406,6 +474,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
             URL.revokeObjectURL(url)
             onFinished()
           }
+          startPlaybackAnalysis(currentAudio.current)
           await currentAudio.current.play()
           return
         } else {
@@ -435,6 +504,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
           const blob = await res.blob()
           const url = URL.createObjectURL(blob)
           currentAudio.current = new Audio(url)
+          currentAudio.current.crossOrigin = 'anonymous'
           currentAudio.current.onended = () => {
             URL.revokeObjectURL(url)
             onFinished()
@@ -443,6 +513,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
             URL.revokeObjectURL(url)
             onFinished()
           }
+          startPlaybackAnalysis(currentAudio.current)
           await currentAudio.current.play()
           return
         }
@@ -451,7 +522,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
       }
       onFinished()
     }
-  }, [stopCurrentAudio, pauseRecognition, resumeRecognition])
+  }, [stopCurrentAudio, pauseRecognition, resumeRecognition, startPlaybackAnalysis, stopPlaybackAnalysis])
 
   const stopSpeaking = useCallback(() => {
     stopCurrentAudio()
@@ -462,6 +533,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
     isRecording,
     isPlaying,
     volume,
+    playbackVolume,
     startListening,
     stopListening,
     startRecording,
