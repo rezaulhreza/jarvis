@@ -1,6 +1,11 @@
-# Jarvis
+<p align="center">
+  <img src="assets/banner.png" alt="Jarvis" />
+</p>
 
-A local-first personal AI assistant powered by Ollama. Features multiple models, tool execution, persistent memory, switchable personas, web UI, and voice input.
+<p align="center">
+  A local-first personal AI assistant powered by Ollama.<br>
+  Features multiple models, tool execution, persistent memory, switchable personas, web UI, and voice input.
+</p>
 
 ## Features
 
