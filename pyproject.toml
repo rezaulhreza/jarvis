@@ -1,0 +1,70 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "jarvis-ai-assistant"
+version = "0.1.0"
+description = "Local-first personal AI assistant powered by Ollama"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [
+    {name = "Boss"}
+]
+keywords = ["ai", "assistant", "ollama", "llm", "local"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+dependencies = [
+    "ollama>=0.3.0",
+    "rich>=13.0.0",
+    "pyyaml>=6.0",
+    "tiktoken>=0.5.0",
+    "duckduckgo-search>=4.0.0",
+    "chromadb>=0.4.0",
+    "python-dotenv>=1.0.0",
+    "click>=8.0.0",
+    "requests>=2.28.0",
+]
+
+[project.optional-dependencies]
+ui = [
+    "fastapi>=0.100.0",
+    "uvicorn>=0.23.0",
+    "websockets>=11.0",
+    "jinja2>=3.0.0",
+]
+voice = [
+    "openai-whisper>=20231117",
+    "sounddevice>=0.4.6",
+    "numpy>=1.24.0",
+]
+telegram = [
+    "python-telegram-bot>=20.0",
+]
+all = [
+    "jarvis-ai-assistant[ui,voice,telegram]",
+]
+
+[project.scripts]
+jarvis = "jarvis.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/rezaulhreza/jarvis"
+Repository = "https://github.com/rezaulhreza/jarvis"
+Issues = "https://github.com/rezaulhreza/jarvis/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["jarvis"]
