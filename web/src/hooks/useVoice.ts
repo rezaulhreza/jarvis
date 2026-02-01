@@ -24,11 +24,12 @@ export function useVoice(options: UseVoiceOptions = {}) {
   const stream = useRef<MediaStream | null>(null)
   const transcriptRef = useRef('')
   const isListeningRef = useRef(false)
+  const isPlayingRef = useRef(false) // Track if TTS is playing (to ignore mic input)
   const onSpeechEndRef = useRef(onSpeechEnd)
   const onInterruptRef = useRef(onInterrupt)
   const sttProviderRef = useRef(sttProvider)
   const silenceTimer = useRef<NodeJS.Timeout | null>(null)
-  const speakingRef = useRef(false) // Prevent concurrent speak calls
+  const speakingRef = useRef(false)
 
   // Keep refs in sync
   useEffect(() => {
@@ -40,6 +41,10 @@ export function useVoice(options: UseVoiceOptions = {}) {
   useEffect(() => {
     isListeningRef.current = isListening
   }, [isListening])
+
+  useEffect(() => {
+    isPlayingRef.current = isPlaying
+  }, [isPlaying])
 
   // Initialize browser speech recognition
   useEffect(() => {
@@ -55,6 +60,11 @@ export function useVoice(options: UseVoiceOptions = {}) {
     recog.lang = 'en-US'
 
     recog.onresult = (event: any) => {
+      // IGNORE input while TTS is playing (prevents feedback loop)
+      if (isPlayingRef.current) {
+        return
+      }
+
       let finalTranscript = ''
 
       for (let i = event.resultIndex; i < event.results.length; i++) {
@@ -88,7 +98,8 @@ export function useVoice(options: UseVoiceOptions = {}) {
     }
 
     recog.onend = () => {
-      if (isListeningRef.current && sttProviderRef.current === 'browser') {
+      // Only restart if we're supposed to be listening AND not playing audio
+      if (isListeningRef.current && sttProviderRef.current === 'browser' && !isPlayingRef.current) {
         try {
           recog.start()
         } catch (e) {}
@@ -106,6 +117,9 @@ export function useVoice(options: UseVoiceOptions = {}) {
 
   // Process audio with Whisper
   const processWithWhisper = useCallback(async (audioBlob: Blob) => {
+    // Don't process if audio is playing (feedback prevention)
+    if (isPlayingRef.current) return
+
     try {
       const formData = new FormData()
       formData.append('audio', audioBlob, 'recording.webm')
@@ -118,7 +132,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
       if (res.ok) {
         const data = await res.json()
         const text = data.transcript || data.text
-        if (text && onSpeechEndRef.current) {
+        if (text && onSpeechEndRef.current && !isPlayingRef.current) {
           onSpeechEndRef.current(text)
         }
       }
@@ -129,6 +143,8 @@ export function useVoice(options: UseVoiceOptions = {}) {
 
   const startListening = useCallback(async () => {
     if (isListeningRef.current) return
+    // Don't start listening if audio is playing
+    if (isPlayingRef.current) return
 
     try {
       stream.current = await navigator.mediaDevices.getUserMedia({ audio: true })
@@ -142,10 +158,9 @@ export function useVoice(options: UseVoiceOptions = {}) {
       transcriptRef.current = ''
 
       if (sttProviderRef.current === 'browser' && recognition.current) {
-        // Use browser speech recognition
         recognition.current.start()
       } else {
-        // Use Whisper - set up MediaRecorder
+        // Whisper mode - set up MediaRecorder
         audioChunks.current = []
         mediaRecorder.current = new MediaRecorder(stream.current, {
           mimeType: 'audio/webm;codecs=opus'
@@ -158,7 +173,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
         }
 
         mediaRecorder.current.onstop = async () => {
-          if (audioChunks.current.length > 0) {
+          if (audioChunks.current.length > 0 && !isPlayingRef.current) {
             const audioBlob = new Blob(audioChunks.current, { type: 'audio/webm' })
             await processWithWhisper(audioBlob)
           }
@@ -167,27 +182,32 @@ export function useVoice(options: UseVoiceOptions = {}) {
         mediaRecorder.current.start(100)
       }
 
-      // Volume monitoring and interrupt detection
+      // Volume monitoring
       const checkVolume = () => {
         if (!analyser.current) return
         const dataArray = new Uint8Array(analyser.current.frequencyBinCount)
         analyser.current.getByteFrequencyData(dataArray)
         const avg = dataArray.reduce((a, b) => a + b, 0) / dataArray.length / 255
-        setVolume(avg)
 
-        // Detect speech for Whisper mode
-        if (sttProviderRef.current === 'whisper') {
+        // Only update volume if not playing (prevents feedback detection)
+        if (!isPlayingRef.current) {
+          setVolume(avg)
+        }
+
+        // Whisper mode silence detection - 3 seconds of silence
+        if (sttProviderRef.current === 'whisper' && !isPlayingRef.current) {
           if (avg > 0.02) {
             setIsRecording(true)
             if (silenceTimer.current) {
               clearTimeout(silenceTimer.current)
             }
             silenceTimer.current = setTimeout(() => {
-              if (mediaRecorder.current?.state === 'recording') {
+              if (mediaRecorder.current?.state === 'recording' && !isPlayingRef.current) {
                 mediaRecorder.current.stop()
                 setIsRecording(false)
+                // Restart recording after processing
                 setTimeout(() => {
-                  if (isListeningRef.current && stream.current) {
+                  if (isListeningRef.current && stream.current && !isPlayingRef.current) {
                     audioChunks.current = []
                     mediaRecorder.current = new MediaRecorder(stream.current, {
                       mimeType: 'audio/webm;codecs=opus'
@@ -198,7 +218,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
                       }
                     }
                     mediaRecorder.current.onstop = async () => {
-                      if (audioChunks.current.length > 0) {
+                      if (audioChunks.current.length > 0 && !isPlayingRef.current) {
                         const audioBlob = new Blob(audioChunks.current, { type: 'audio/webm' })
                         await processWithWhisper(audioBlob)
                       }
@@ -207,15 +227,16 @@ export function useVoice(options: UseVoiceOptions = {}) {
                   }
                 }, 100)
               }
-            }, 1500)
+            }, 3000) // 3 seconds silence before processing
           }
         }
 
-        // Interrupt detection - user speaking while audio playing
-        if (avg > 0.03 && currentAudio.current && !currentAudio.current.paused) {
+        // Interrupt detection - only if user is LOUDLY speaking (not just ambient noise)
+        if (avg > 0.1 && currentAudio.current && !currentAudio.current.paused) {
           currentAudio.current.pause()
           currentAudio.current = null
           setIsPlaying(false)
+          isPlayingRef.current = false
           speakingRef.current = false
           onInterruptRef.current?.()
         }
@@ -289,7 +310,38 @@ export function useVoice(options: UseVoiceOptions = {}) {
     }
     speechSynthesis.cancel()
     setIsPlaying(false)
+    isPlayingRef.current = false
     speakingRef.current = false
+  }, [])
+
+  // Pause recognition while speaking
+  const pauseRecognition = useCallback(() => {
+    if (recognition.current && sttProviderRef.current === 'browser') {
+      try {
+        recognition.current.stop()
+      } catch (e) {}
+    }
+    if (mediaRecorder.current?.state === 'recording') {
+      try {
+        mediaRecorder.current.pause()
+      } catch (e) {}
+    }
+  }, [])
+
+  // Resume recognition after speaking
+  const resumeRecognition = useCallback(() => {
+    if (!isListeningRef.current) return
+
+    if (sttProviderRef.current === 'browser' && recognition.current) {
+      try {
+        recognition.current.start()
+      } catch (e) {}
+    }
+    if (mediaRecorder.current?.state === 'paused') {
+      try {
+        mediaRecorder.current.resume()
+      } catch (e) {}
+    }
   }, [])
 
   const speak = useCallback(async (text: string, provider: 'browser' | 'edge' | 'elevenlabs' = 'browser') => {
@@ -300,24 +352,34 @@ export function useVoice(options: UseVoiceOptions = {}) {
 
     // Prevent concurrent speak calls
     if (speakingRef.current) {
-      console.log('Already speaking, ignoring new request')
       return
     }
+
     speakingRef.current = true
     setIsPlaying(true)
+    isPlayingRef.current = true
 
-    // Browser TTS - instant, no network
+    // Pause mic input while speaking
+    pauseRecognition()
+
+    const onFinished = () => {
+      setIsPlaying(false)
+      isPlayingRef.current = false
+      speakingRef.current = false
+      // Resume listening after a short delay
+      setTimeout(() => {
+        if (isListeningRef.current) {
+          resumeRecognition()
+        }
+      }, 300)
+    }
+
+    // Browser TTS
     if (provider === 'browser') {
       const utterance = new SpeechSynthesisUtterance(text)
       utterance.rate = 1.1
-      utterance.onend = () => {
-        setIsPlaying(false)
-        speakingRef.current = false
-      }
-      utterance.onerror = () => {
-        setIsPlaying(false)
-        speakingRef.current = false
-      }
+      utterance.onend = onFinished
+      utterance.onerror = onFinished
       speechSynthesis.speak(utterance)
       return
     }
@@ -331,37 +393,31 @@ export function useVoice(options: UseVoiceOptions = {}) {
           body: JSON.stringify({ text }),
         })
 
-        // Check if we got audio back
         const contentType = res.headers.get('content-type') || ''
         if (res.ok && contentType.includes('audio')) {
           const blob = await res.blob()
           const url = URL.createObjectURL(blob)
           currentAudio.current = new Audio(url)
           currentAudio.current.onended = () => {
-            setIsPlaying(false)
-            speakingRef.current = false
             URL.revokeObjectURL(url)
+            onFinished()
           }
           currentAudio.current.onerror = () => {
-            setIsPlaying(false)
-            speakingRef.current = false
             URL.revokeObjectURL(url)
+            onFinished()
           }
           await currentAudio.current.play()
           return
         } else {
-          // Got JSON error response
           const data = await res.json().catch(() => ({}))
           console.error('ElevenLabs error:', data.error || 'Unknown error')
-          setIsPlaying(false)
-          speakingRef.current = false
-          return // Don't fallback - just fail silently
+          onFinished()
+          return
         }
       } catch (err) {
         console.error('ElevenLabs network error:', err)
-        setIsPlaying(false)
-        speakingRef.current = false
-        return // Don't fallback
+        onFinished()
+        return
       }
     }
 
@@ -380,14 +436,12 @@ export function useVoice(options: UseVoiceOptions = {}) {
           const url = URL.createObjectURL(blob)
           currentAudio.current = new Audio(url)
           currentAudio.current.onended = () => {
-            setIsPlaying(false)
-            speakingRef.current = false
             URL.revokeObjectURL(url)
+            onFinished()
           }
           currentAudio.current.onerror = () => {
-            setIsPlaying(false)
-            speakingRef.current = false
             URL.revokeObjectURL(url)
+            onFinished()
           }
           await currentAudio.current.play()
           return
@@ -395,10 +449,9 @@ export function useVoice(options: UseVoiceOptions = {}) {
       } catch (err) {
         console.error('Edge TTS error:', err)
       }
-      setIsPlaying(false)
-      speakingRef.current = false
+      onFinished()
     }
-  }, [stopCurrentAudio])
+  }, [stopCurrentAudio, pauseRecognition, resumeRecognition])
 
   const stopSpeaking = useCallback(() => {
     stopCurrentAudio()
