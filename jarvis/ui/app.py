@@ -744,10 +744,10 @@ def create_app() -> FastAPI:
                         # Get search results with source info
                         results = rag.search(user_input, n_results=5)
                         if results:
-                            # Filter by relevance - lower distance = more relevant
-                            # nomic-embed-text produces distances in 400-600 range typically
-                            RELEVANCE_THRESHOLD = 550
-                            relevant_results = [r for r in results if r.get("distance", 999) < RELEVANCE_THRESHOLD]
+                            # Filter by relevance - cosine distance: 0 = identical, 2 = opposite
+                            # Threshold of 1.0 means "at least somewhat related"
+                            RELEVANCE_THRESHOLD = 1.0
+                            relevant_results = [r for r in results if r.get("distance", 2.0) < RELEVANCE_THRESHOLD]
 
                             if relevant_results:
                                 rag_info["chunks"] = len(relevant_results)

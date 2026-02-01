@@ -44,9 +44,10 @@ class RAGEngine:
         )
 
         # Default collection for documents
+        # Use cosine distance for better relevance scoring (0-2 range, lower = more similar)
         self.collection = self.client.get_or_create_collection(
             name="jarvis_knowledge",
-            metadata={"description": "Jarvis knowledge base"}
+            metadata={"hnsw:space": "cosine", "description": "Jarvis knowledge base"}
         )
 
     def _get_embedding(self, text: str) -> list[float]:
