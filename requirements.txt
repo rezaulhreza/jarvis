@@ -19,7 +19,8 @@ edge-tts>=7.0.0
 pypdf>=4.0.0
 
 # Vector database (for RAG)
-chromadb>=0.4.0
+qdrant-client>=1.9.0  # Default: Qdrant cloud (when QDRANT_URL + QDRANT_API_KEY set)
+chromadb>=0.4.0  # Fallback: local vector store
 
 # Future additions (uncomment when needed)
 # python-telegram-bot>=20.0

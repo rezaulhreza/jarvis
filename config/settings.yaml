@@ -20,7 +20,8 @@ context:
 # Memory Settings
 memory:
   database: "memory/jarvis.db"
-  vector_store: "knowledge/chroma_db"
+  vector_store: "knowledge/chroma_db"  # ChromaDB local path (fallback when Qdrant not configured)
+  # Vector backend is auto-detected from env: QDRANT_URL + QDRANT_API_KEY → Qdrant, otherwise → ChromaDB
   facts_file: "memory/facts.md"
   entities_file: "memory/entities.json"
 
