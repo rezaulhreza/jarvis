@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.venv/
+ENV/
+env/
+*.egg-info/
+dist/
+build/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*.sublime-*
+
+# Project data (generated at runtime)
+memory/jarvis.db
+memory/jarvis.db-*
+knowledge/chroma_db/
+*.log
+logs/
+
+# Secrets - NEVER COMMIT
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*credentials*
+*secret*
+*token*
+config/secrets.yaml
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+ehthumbs.db
+
+# Temp files
+*.tmp
+*.temp
+*.bak
+*~
