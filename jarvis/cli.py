@@ -413,5 +413,77 @@ def knowledge_clear(yes):
     click.echo(f"Cleared {deleted} chunks from knowledge base")
 
 
+@knowledge.command("sync")
+@click.option("--projects", is_flag=True, help="Sync project README files from Developer folder")
+@click.option("--personal", is_flag=True, help="Sync personal documents from ~/.jarvis/knowledge/personal/")
+def knowledge_sync(projects, personal):
+    """Sync knowledge base with configured sources.
+
+    \b
+    Examples:
+        jarvis knowledge sync              # Sync project docs only
+        jarvis knowledge sync --personal   # Also sync personal knowledge
+        jarvis knowledge sync --projects   # Also sync project READMEs
+    """
+    from .knowledge import get_rag_engine
+    from pathlib import Path
+
+    rag = get_rag_engine()
+
+    # Sync Jarvis documentation (architecture, AI concepts)
+    docs_dir = Path(__file__).parent.parent / "docs"
+    if docs_dir.exists():
+        click.echo(f"Syncing Jarvis docs from {docs_dir}...")
+        results = rag.add_directory(str(docs_dir))
+        success = sum(1 for r in results.values() if r["status"] == "success")
+        click.echo(f"  Added {success} documentation files")
+
+    # Sync knowledge/documents folder (shared, in git)
+    shared_docs = Path(__file__).parent.parent / "knowledge" / "documents"
+    if shared_docs.exists():
+        click.echo(f"Syncing shared documents from {shared_docs}...")
+        results = rag.add_directory(str(shared_docs))
+        success = sum(1 for r in results.values() if r["status"] == "success")
+        click.echo(f"  Added {success} shared documents")
+
+    # Sync personal documents (outside git, in ~/.jarvis/)
+    if personal:
+        personal_dir = Path.home() / ".jarvis" / "knowledge" / "personal"
+        if personal_dir.exists():
+            click.echo(f"Syncing personal knowledge from {personal_dir}...")
+            results = rag.add_directory(str(personal_dir))
+            success = sum(1 for r in results.values() if r["status"] == "success")
+            click.echo(f"  Added {success} personal documents")
+        else:
+            click.echo(f"Personal knowledge directory not found: {personal_dir}")
+            click.echo("  Create it and add .txt/.md/.pdf files to sync personal knowledge")
+
+    # Optionally sync project READMEs
+    if projects:
+        dev_dir = Path.home() / "Developer"
+        if dev_dir.exists():
+            click.echo(f"Scanning projects in {dev_dir}...")
+            readme_count = 0
+            for project_dir in dev_dir.iterdir():
+                if not project_dir.is_dir():
+                    continue
+                readme = project_dir / "README.md"
+                if readme.exists():
+                    try:
+                        content = readme.read_text()
+                        if len(content) > 100:  # Skip tiny READMEs
+                            rag.add_document(
+                                content,
+                                f"project:{project_dir.name}",
+                                {"type": "project", "path": str(project_dir)}
+                            )
+                            readme_count += 1
+                    except Exception:
+                        pass
+            click.echo(f"  Added {readme_count} project READMEs")
+
+    click.echo(f"\nTotal: {rag.count()} chunks in knowledge base")
+
+
 if __name__ == "__main__":
     main()
