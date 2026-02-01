@@ -7,6 +7,7 @@ A local-first AI assistant with memory, tools, and multiple models.
 import sys
 import os
 import yaml
+import shutil
 from pathlib import Path
 from dotenv import load_dotenv
 from rich.console import Console
@@ -14,10 +15,11 @@ from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.prompt import Prompt
 
-from core.ollama_client import OllamaClient
-from core.context_manager import ContextManager
-from core.router import ToolRouter, should_use_reasoning, should_use_vision
-from skills import AVAILABLE_SKILLS, get_skills_schema, list_skills
+from .core.ollama_client import OllamaClient
+from .core.context_manager import ContextManager
+from .core.router import ToolRouter, should_use_reasoning, should_use_vision
+from .skills import AVAILABLE_SKILLS, get_skills_schema
+from . import get_data_dir, ensure_data_dir, PACKAGE_DIR
 
 # Load environment variables
 load_dotenv()
@@ -25,10 +27,45 @@ load_dotenv()
 # Initialize rich console for nice output
 console = Console()
 
+
+def _get_config_dir() -> Path:
+    """Get config directory, initializing from defaults if needed."""
+    data_dir = ensure_data_dir()
+    config_dir = data_dir / "config"
+
+    # Copy default configs if not present
+    default_config = PACKAGE_DIR.parent / "config"
+    if default_config.exists():
+        for item in default_config.iterdir():
+            dest = config_dir / item.name
+            if not dest.exists():
+                if item.is_dir():
+                    shutil.copytree(item, dest)
+                else:
+                    shutil.copy2(item, dest)
+
+    return config_dir
+
+
+def _get_memory_dir() -> Path:
+    """Get memory directory, initializing from defaults if needed."""
+    data_dir = ensure_data_dir()
+    memory_dir = data_dir / "memory"
+
+    # Copy default memory files if not present
+    default_memory = PACKAGE_DIR.parent / "memory"
+    if default_memory.exists():
+        for item in default_memory.iterdir():
+            dest = memory_dir / item.name
+            if not dest.exists():
+                shutil.copy2(item, dest)
+
+    return memory_dir
+
+
 # Paths
-BASE_DIR = Path(__file__).parent
-CONFIG_DIR = BASE_DIR / "config"
-MEMORY_DIR = BASE_DIR / "memory"
+CONFIG_DIR = _get_config_dir()
+MEMORY_DIR = _get_memory_dir()
 PERSONAS_DIR = CONFIG_DIR / "personas"
 
 
@@ -37,7 +74,7 @@ def load_config() -> dict:
     config_path = CONFIG_DIR / "settings.yaml"
     if config_path.exists():
         with open(config_path) as f:
-            return yaml.safe_load(f)
+            return yaml.safe_load(f) or {}
     return {}
 
 
@@ -96,7 +133,7 @@ class Jarvis:
         model_config = self.config.get('models', {})
         self.ollama = OllamaClient(default_model=model_config.get('default', 'qwen3:4b'))
         self.context = ContextManager(
-            db_path=str(BASE_DIR / "memory" / "jarvis.db"),
+            db_path=str(MEMORY_DIR / "jarvis.db"),
             max_tokens=self.config.get('context', {}).get('max_tokens', 8000)
         )
         self.router = ToolRouter(self.ollama, router_model=model_config.get('tools', 'functiongemma'))
@@ -153,25 +190,21 @@ When you need to use a tool, I'll do so automatically based on the user's reques
         if route_result.get('tool') and route_result['tool'] != 'none':
             tool_output = self._execute_tool(route_result)
             if tool_output:
-                # Include tool output in response generation
                 self.context.update_working_memory("last_tool", route_result['tool'])
                 self.context.update_working_memory("tool_output", tool_output)
 
-        # Generate response
         return self._generate_response()
 
     def _generate_response(self) -> str:
         """Generate a response using the default model."""
         messages = self.context.get_messages()
 
-        # Add tool output to context if available
         tool_output = self.context.get_working_memory().get("tool_output")
         if tool_output:
             messages.append({
                 "role": "system",
                 "content": f"Tool output:\n{tool_output}"
             })
-            # Clear tool output after using
             self.context.working_memory.pop("tool_output", None)
 
         response_text = ""
@@ -187,17 +220,13 @@ When you need to use a tool, I'll do so automatically based on the user's reques
             response_text = f"Error generating response: {e}"
             console.print(response_text)
 
-        console.print()  # Newline after streaming
-
-        # Save assistant response to context
+        console.print()
         self.context.add_message("assistant", response_text)
-
         return response_text
 
     def _handle_vision(self, user_input: str) -> str:
         """Handle image-related requests."""
         import re
-        # Match various image path patterns
         path_match = re.search(
             r'([/~][^\s]+\.(jpg|jpeg|png|gif|webp|bmp))',
             user_input,
@@ -229,7 +258,6 @@ When you need to use a tool, I'll do so automatically based on the user's reques
         """Handle requests that need deep reasoning."""
         reasoning_model = self.config.get('models', {}).get('reasoning', 'deepseek-r1:8b')
 
-        # Check if model is available
         available_models = self.ollama.list_models()
         if reasoning_model not in available_models:
             console.print(f"[yellow]Reasoning model {reasoning_model} not installed, using default[/yellow]")
@@ -255,7 +283,6 @@ When you need to use a tool, I'll do so automatically based on the user's reques
 
         console.print()
         self.context.add_message("assistant", response_text, model=reasoning_model)
-
         return response_text
 
     def _execute_tool(self, route_result: dict) -> str:
@@ -270,7 +297,6 @@ When you need to use a tool, I'll do so automatically based on the user's reques
 
         try:
             tool_func = AVAILABLE_SKILLS[tool_name]['function']
-            # Filter out empty params
             params = {k: v for k, v in params.items() if v}
             result = tool_func(**params)
             return str(result)
@@ -374,8 +400,8 @@ When you need to use a tool, I'll do so automatically based on the user's reques
             return ""
 
 
-def main():
-    """Main entry point."""
+def run_cli():
+    """Run the interactive CLI."""
     console.print(Panel.fit(
         "[bold blue]JARVIS[/bold blue] - Personal AI Assistant\n"
         "[dim]Type /help for commands, /quit to exit[/dim]",
@@ -410,4 +436,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    run_cli()
