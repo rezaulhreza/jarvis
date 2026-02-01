@@ -24,8 +24,6 @@ interface WSMessage {
   error?: string
   message?: string  // Error message from backend
   rag?: RagInfo
-  chat_id?: string
-  messages?: Array<{ role: 'user' | 'assistant' | 'system', content: string }>
 }
 
 export function useWebSocket() {
@@ -38,7 +36,6 @@ export function useWebSocket() {
   const [provider, setProvider] = useState('')
   const [project, setProject] = useState('')
   const [ragStatus, setRagStatus] = useState<RagInfo | null>(null)
-  const [chatId, setChatId] = useState<string | null>(null)
 
   useEffect(() => {
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null
@@ -88,17 +85,6 @@ export function useWebSocket() {
         setModel(data.model || '')
         setProvider(data.provider || '')
         setProject(data.project || '')
-        // Restore chat state if available
-        if (data.chat_id) {
-          setChatId(data.chat_id)
-        }
-        if (data.messages && data.messages.length > 0) {
-          setMessages(data.messages.map(m => ({
-            role: m.role,
-            content: m.content,
-            timestamp: new Date()
-          })))
-        }
         break
 
       case 'stream':
@@ -116,12 +102,7 @@ export function useWebSocket() {
 
       case 'error':
         const errorMsg = data.error || data.message
-        // If chat not found, clear the URL parameter
-        if (errorMsg === 'Chat not found') {
-          const url = new URL(window.location.href)
-          url.searchParams.delete('chat')
-          window.history.replaceState({}, '', url.toString())
-        } else if (errorMsg) {
+        if (errorMsg) {
           setMessages((prev) => [...prev, { role: 'system', content: `Error: ${errorMsg}`, timestamp: new Date() }])
         }
         setIsLoading(false)
@@ -140,30 +121,6 @@ export function useWebSocket() {
 
       case 'cleared':
         setMessages([])
-        setStreaming('')
-        setRagStatus(null)
-        if (data.chat_id) {
-          setChatId(data.chat_id)
-          // Update URL with new chat ID
-          const url = new URL(window.location.href)
-          url.searchParams.set('chat', data.chat_id)
-          window.history.replaceState({}, '', url.toString())
-        }
-        break
-
-      case 'chat_switched':
-        if (data.chat_id) {
-          setChatId(data.chat_id)
-        }
-        if (data.messages) {
-          setMessages(data.messages.map((m: { role: 'user' | 'assistant' | 'system', content: string }) => ({
-            role: m.role,
-            content: m.content,
-            timestamp: new Date()
-          })))
-        } else {
-          setMessages([])
-        }
         setStreaming('')
         setRagStatus(null)
         break
@@ -191,11 +148,6 @@ export function useWebSocket() {
     ws.current.send(JSON.stringify({ type: 'clear' }))
   }, [])
 
-  const switchChat = useCallback((chatId: string) => {
-    if (!ws.current || ws.current.readyState !== WebSocket.OPEN) return
-    ws.current.send(JSON.stringify({ type: 'switch_chat', chat_id: chatId }))
-  }, [])
-
   return {
     connected,
     messages,
@@ -205,10 +157,8 @@ export function useWebSocket() {
     provider,
     project,
     ragStatus,
-    chatId,
     send,
     switchModel,
     clear,
-    switchChat,
   }
 }
