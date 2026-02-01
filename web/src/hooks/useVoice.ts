@@ -28,6 +28,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
   const onInterruptRef = useRef(onInterrupt)
   const sttProviderRef = useRef(sttProvider)
   const silenceTimer = useRef<NodeJS.Timeout | null>(null)
+  const speakingRef = useRef(false) // Prevent concurrent speak calls
 
   // Keep refs in sync
   useEffect(() => {
@@ -163,7 +164,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
           }
         }
 
-        mediaRecorder.current.start(100) // Collect data every 100ms
+        mediaRecorder.current.start(100)
       }
 
       // Volume monitoring and interrupt detection
@@ -178,16 +179,13 @@ export function useVoice(options: UseVoiceOptions = {}) {
         if (sttProviderRef.current === 'whisper') {
           if (avg > 0.02) {
             setIsRecording(true)
-            // Reset silence timer
             if (silenceTimer.current) {
               clearTimeout(silenceTimer.current)
             }
             silenceTimer.current = setTimeout(() => {
-              // Silence detected - process audio
               if (mediaRecorder.current?.state === 'recording') {
                 mediaRecorder.current.stop()
                 setIsRecording(false)
-                // Restart recording for continuous listening
                 setTimeout(() => {
                   if (isListeningRef.current && stream.current) {
                     audioChunks.current = []
@@ -209,15 +207,16 @@ export function useVoice(options: UseVoiceOptions = {}) {
                   }
                 }, 100)
               }
-            }, 1500) // 1.5s silence = end of speech
+            }, 1500)
           }
         }
 
-        // Interrupt detection
+        // Interrupt detection - user speaking while audio playing
         if (avg > 0.03 && currentAudio.current && !currentAudio.current.paused) {
           currentAudio.current.pause()
           currentAudio.current = null
           setIsPlaying(false)
+          speakingRef.current = false
           onInterruptRef.current?.()
         }
 
@@ -280,28 +279,50 @@ export function useVoice(options: UseVoiceOptions = {}) {
     })
   }, [stopListening])
 
-  const speak = useCallback(async (text: string, provider: 'browser' | 'edge' | 'elevenlabs' = 'browser') => {
-    if (!text) return
-
+  // Stop any current audio/speech
+  const stopCurrentAudio = useCallback(() => {
     if (currentAudio.current) {
       currentAudio.current.pause()
+      currentAudio.current.onended = null
+      currentAudio.current.onerror = null
       currentAudio.current = null
     }
     speechSynthesis.cancel()
+    setIsPlaying(false)
+    speakingRef.current = false
+  }, [])
 
+  const speak = useCallback(async (text: string, provider: 'browser' | 'edge' | 'elevenlabs' = 'browser') => {
+    if (!text) return
+
+    // Stop any current audio first
+    stopCurrentAudio()
+
+    // Prevent concurrent speak calls
+    if (speakingRef.current) {
+      console.log('Already speaking, ignoring new request')
+      return
+    }
+    speakingRef.current = true
     setIsPlaying(true)
 
     // Browser TTS - instant, no network
     if (provider === 'browser') {
       const utterance = new SpeechSynthesisUtterance(text)
       utterance.rate = 1.1
-      utterance.onend = () => setIsPlaying(false)
-      utterance.onerror = () => setIsPlaying(false)
+      utterance.onend = () => {
+        setIsPlaying(false)
+        speakingRef.current = false
+      }
+      utterance.onerror = () => {
+        setIsPlaying(false)
+        speakingRef.current = false
+      }
       speechSynthesis.speak(utterance)
       return
     }
 
-    // ElevenLabs - streaming, low latency, best quality
+    // ElevenLabs TTS
     if (provider === 'elevenlabs') {
       try {
         const res = await fetch('/api/tts/elevenlabs', {
@@ -310,72 +331,78 @@ export function useVoice(options: UseVoiceOptions = {}) {
           body: JSON.stringify({ text }),
         })
 
-        if (res.ok && res.headers.get('content-type')?.includes('audio')) {
+        // Check if we got audio back
+        const contentType = res.headers.get('content-type') || ''
+        if (res.ok && contentType.includes('audio')) {
           const blob = await res.blob()
           const url = URL.createObjectURL(blob)
           currentAudio.current = new Audio(url)
           currentAudio.current.onended = () => {
             setIsPlaying(false)
+            speakingRef.current = false
             URL.revokeObjectURL(url)
           }
           currentAudio.current.onerror = () => {
             setIsPlaying(false)
+            speakingRef.current = false
+            URL.revokeObjectURL(url)
+          }
+          await currentAudio.current.play()
+          return
+        } else {
+          // Got JSON error response
+          const data = await res.json().catch(() => ({}))
+          console.error('ElevenLabs error:', data.error || 'Unknown error')
+          setIsPlaying(false)
+          speakingRef.current = false
+          return // Don't fallback - just fail silently
+        }
+      } catch (err) {
+        console.error('ElevenLabs network error:', err)
+        setIsPlaying(false)
+        speakingRef.current = false
+        return // Don't fallback
+      }
+    }
+
+    // Edge TTS
+    if (provider === 'edge') {
+      try {
+        const res = await fetch('/api/tts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text }),
+        })
+
+        const contentType = res.headers.get('content-type') || ''
+        if (res.ok && contentType.includes('audio')) {
+          const blob = await res.blob()
+          const url = URL.createObjectURL(blob)
+          currentAudio.current = new Audio(url)
+          currentAudio.current.onended = () => {
+            setIsPlaying(false)
+            speakingRef.current = false
+            URL.revokeObjectURL(url)
+          }
+          currentAudio.current.onerror = () => {
+            setIsPlaying(false)
+            speakingRef.current = false
             URL.revokeObjectURL(url)
           }
           await currentAudio.current.play()
           return
         }
       } catch (err) {
-        console.log('ElevenLabs TTS failed, falling back to browser')
+        console.error('Edge TTS error:', err)
       }
-      // Fallback to browser
-      const utterance = new SpeechSynthesisUtterance(text)
-      utterance.onend = () => setIsPlaying(false)
-      speechSynthesis.speak(utterance)
-      return
+      setIsPlaying(false)
+      speakingRef.current = false
     }
-
-    // Edge TTS - neural voices, free
-    try {
-      const res = await fetch('/api/tts', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text }),
-      })
-
-      if (res.ok && res.headers.get('content-type')?.includes('audio')) {
-        const blob = await res.blob()
-        const url = URL.createObjectURL(blob)
-        currentAudio.current = new Audio(url)
-        currentAudio.current.onended = () => {
-          setIsPlaying(false)
-          URL.revokeObjectURL(url)
-        }
-        currentAudio.current.onerror = () => {
-          setIsPlaying(false)
-          URL.revokeObjectURL(url)
-        }
-        await currentAudio.current.play()
-        return
-      }
-    } catch (err) {
-      console.log('Edge TTS failed')
-    }
-
-    // Fallback to browser
-    const utterance = new SpeechSynthesisUtterance(text)
-    utterance.onend = () => setIsPlaying(false)
-    speechSynthesis.speak(utterance)
-  }, [])
+  }, [stopCurrentAudio])
 
   const stopSpeaking = useCallback(() => {
-    if (currentAudio.current) {
-      currentAudio.current.pause()
-      currentAudio.current = null
-    }
-    speechSynthesis.cancel()
-    setIsPlaying(false)
-  }, [])
+    stopCurrentAudio()
+  }, [stopCurrentAudio])
 
   return {
     isListening,
