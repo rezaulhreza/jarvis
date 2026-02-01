@@ -3,7 +3,8 @@ Jarvis Web UI - Modern interface with voice, model selection, and diff view
 """
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 import tempfile
 import subprocess
 import base64
@@ -16,6 +17,9 @@ import os
 
 # Add parent to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+
+# React build directory
+REACT_BUILD_DIR = Path(__file__).parent.parent.parent / "web" / "dist"
 
 
 class DummyConsole:
@@ -65,8 +69,17 @@ def create_app() -> FastAPI:
     connections: dict[str, WebSocket] = {}
     instances: dict[str, any] = {}
 
+    # Serve React build if available
+    if REACT_BUILD_DIR.exists():
+        app.mount("/assets", StaticFiles(directory=REACT_BUILD_DIR / "assets"), name="assets")
+
     @app.get("/", response_class=HTMLResponse)
     async def index():
+        # Serve React build if it exists
+        react_index = REACT_BUILD_DIR / "index.html"
+        if react_index.exists():
+            return FileResponse(react_index)
+        # Fallback to inline HTML
         return get_html_template()
 
     @app.get("/api/personas")
