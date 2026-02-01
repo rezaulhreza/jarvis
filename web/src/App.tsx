@@ -28,12 +28,15 @@ export default function App() {
 
   const [models, setModels] = useState<string[]>([])
   const [voices, setVoices] = useState<{id: string, name: string}[]>([])
+  const [elevenVoices, setElevenVoices] = useState<{id: string, name: string}[]>([])
   const [currentVoice, setCurrentVoice] = useState('en-GB-SoniaNeural')
   const [showSettings, setShowSettings] = useState(false)
   const [settingsTab, setSettingsTab] = useState<'model' | 'voice'>('model')
   const [isMuted, setIsMuted] = useState(false)
   const [loadingText, setLoadingText] = useState('')
-  const [fastTTS, setFastTTS] = useState(true) // true = instant browser TTS, false = quality Edge TTS
+  const [ttsProvider, setTtsProvider] = useState<'browser' | 'edge' | 'elevenlabs'>('browser')
+  const [elevenLabsKey, setElevenLabsKey] = useState('')
+  const [showApiKeyInput, setShowApiKeyInput] = useState(false)
 
   const {
     connected,
@@ -70,16 +73,48 @@ export default function App() {
       .then(res => res.json())
       .then(data => setVoices(data.voices || []))
       .catch(() => {})
+    // Fetch ElevenLabs voices if configured
+    fetch('/api/elevenlabs/voices')
+      .then(res => res.json())
+      .then(data => {
+        if (data.voices?.length > 0) {
+          setElevenVoices(data.voices)
+        }
+      })
+      .catch(() => {})
   }, [])
 
-  const switchVoice = async (voiceId: string) => {
+  const switchVoice = async (voiceId: string, provider: 'edge' | 'elevenlabs' = 'edge') => {
     setCurrentVoice(voiceId)
-    // Save to backend
-    await fetch('/api/settings/voice', {
+    if (provider === 'elevenlabs') {
+      await fetch('/api/settings/elevenlabs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ voice_id: voiceId })
+      }).catch(() => {})
+    } else {
+      await fetch('/api/settings/voice', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ voice: voiceId })
+      }).catch(() => {})
+    }
+  }
+
+  const saveElevenLabsKey = async () => {
+    if (!elevenLabsKey) return
+    await fetch('/api/settings/elevenlabs', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ voice: voiceId })
-    }).catch(() => {})
+      body: JSON.stringify({ api_key: elevenLabsKey })
+    })
+    // Refresh voices
+    const res = await fetch('/api/elevenlabs/voices')
+    const data = await res.json()
+    if (data.voices?.length > 0) {
+      setElevenVoices(data.voices)
+      setShowApiKeyInput(false)
+    }
   }
 
   // Callback for when voice input is detected and processed
@@ -134,11 +169,11 @@ export default function App() {
       const lastIndex = messages.length - 1
       const last = messages[lastIndex]
       if (last.role === 'assistant' && lastIndex > lastSpokenIndex) {
-        speak(last.content, fastTTS)
+        speak(last.content, ttsProvider)
         setLastSpokenIndex(lastIndex)
       }
     }
-  }, [messages, mode, voiceOutput, speak, lastSpokenIndex, fastTTS])
+  }, [messages, mode, voiceOutput, speak, lastSpokenIndex, ttsProvider])
 
   // Auto-resume listening after Jarvis stops speaking (voice mode only, if not muted)
   useEffect(() => {
@@ -378,39 +413,100 @@ export default function App() {
                   )}
                   {settingsTab === 'voice' && (
                     <>
-                      {/* TTS Speed Toggle */}
+                      {/* TTS Provider Selection */}
                       <div className="px-3 py-2 border-b border-[#2a2a3a]">
-                        <div className="flex items-center justify-between">
-                          <span className="text-xs text-[#71717a]">TTS Mode</span>
-                          <button
-                            onClick={() => setFastTTS(!fastTTS)}
-                            className={cn(
-                              'px-2 py-1 text-xs rounded transition-colors',
-                              fastTTS ? 'bg-green-500/20 text-green-400' : 'bg-purple-500/20 text-purple-400'
-                            )}
-                          >
-                            {fastTTS ? 'Fast (instant)' : 'Quality (neural)'}
-                          </button>
+                        <span className="text-xs text-[#71717a] block mb-2">TTS Provider</span>
+                        <div className="flex gap-1">
+                          {(['browser', 'edge', 'elevenlabs'] as const).map((p) => (
+                            <button
+                              key={p}
+                              onClick={() => setTtsProvider(p)}
+                              className={cn(
+                                'px-2 py-1 text-xs rounded transition-colors flex-1',
+                                ttsProvider === p
+                                  ? p === 'elevenlabs' ? 'bg-purple-500/30 text-purple-300'
+                                    : p === 'edge' ? 'bg-blue-500/30 text-blue-300'
+                                    : 'bg-green-500/30 text-green-300'
+                                  : 'bg-[#2a2a3a] text-[#71717a] hover:text-white'
+                              )}
+                            >
+                              {p === 'browser' ? 'Fast' : p === 'edge' ? 'Edge' : '11Labs'}
+                            </button>
+                          ))}
                         </div>
                       </div>
-                      {/* Voice selection - only shown when using quality mode */}
-                      {!fastTTS && voices.map((v) => (
-                        <button
-                          key={v.id}
-                          onClick={() => { switchVoice(v.id); setShowSettings(false) }}
-                          className={cn(
-                            'w-full px-3 py-2 text-left text-sm hover:bg-[#2a2a3a] transition-colors',
-                            v.id === currentVoice ? 'text-blue-400' : 'text-white'
-                          )}
-                        >
-                          {v.name}
-                        </button>
-                      ))}
-                      {fastTTS && (
+
+                      {/* Browser TTS info */}
+                      {ttsProvider === 'browser' && (
                         <div className="px-3 py-2 text-xs text-[#51515a]">
-                          Using browser's built-in voice for instant response.
-                          Switch to Quality mode for neural voices.
+                          Instant response using browser's built-in voice.
                         </div>
+                      )}
+
+                      {/* Edge TTS voices */}
+                      {ttsProvider === 'edge' && (
+                        <>
+                          <div className="px-3 py-1 text-xs text-[#51515a]">Neural voices (free)</div>
+                          {voices.map((v) => (
+                            <button
+                              key={v.id}
+                              onClick={() => { switchVoice(v.id, 'edge'); setShowSettings(false) }}
+                              className={cn(
+                                'w-full px-3 py-2 text-left text-sm hover:bg-[#2a2a3a] transition-colors',
+                                v.id === currentVoice ? 'text-blue-400' : 'text-white'
+                              )}
+                            >
+                              {v.name}
+                            </button>
+                          ))}
+                        </>
+                      )}
+
+                      {/* ElevenLabs */}
+                      {ttsProvider === 'elevenlabs' && (
+                        <>
+                          {elevenVoices.length === 0 ? (
+                            <div className="px-3 py-2">
+                              <p className="text-xs text-[#71717a] mb-2">Enter your ElevenLabs API key:</p>
+                              <input
+                                type="password"
+                                value={elevenLabsKey}
+                                onChange={(e) => setElevenLabsKey(e.target.value)}
+                                placeholder="xi-xxxxxxxx..."
+                                className="w-full px-2 py-1 text-sm bg-[#12121a] border border-[#3a3a4a] rounded mb-2"
+                              />
+                              <button
+                                onClick={saveElevenLabsKey}
+                                disabled={!elevenLabsKey}
+                                className="w-full px-2 py-1 text-xs bg-purple-500/30 text-purple-300 rounded hover:bg-purple-500/50 disabled:opacity-50"
+                              >
+                                Save & Load Voices
+                              </button>
+                            </div>
+                          ) : (
+                            <>
+                              <div className="px-3 py-1 text-xs text-[#51515a]">ElevenLabs voices (streaming)</div>
+                              {elevenVoices.map((v) => (
+                                <button
+                                  key={v.id}
+                                  onClick={() => { switchVoice(v.id, 'elevenlabs'); setShowSettings(false) }}
+                                  className={cn(
+                                    'w-full px-3 py-2 text-left text-sm hover:bg-[#2a2a3a] transition-colors',
+                                    v.id === currentVoice ? 'text-purple-400' : 'text-white'
+                                  )}
+                                >
+                                  {v.name}
+                                </button>
+                              ))}
+                              <button
+                                onClick={() => setElevenVoices([])}
+                                className="w-full px-3 py-1 text-xs text-[#51515a] hover:text-red-400"
+                              >
+                                Change API Key
+                              </button>
+                            </>
+                          )}
+                        </>
                       )}
                     </>
                   )}

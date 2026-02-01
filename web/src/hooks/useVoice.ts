@@ -176,7 +176,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
     })
   }, [stopListening])
 
-  const speak = useCallback(async (text: string, fast: boolean = true) => {
+  const speak = useCallback(async (text: string, provider: 'browser' | 'edge' | 'elevenlabs' = 'browser') => {
     if (!text) return
 
     if (currentAudio.current) {
@@ -187,17 +187,51 @@ export function useVoice(options: UseVoiceOptions = {}) {
 
     setIsPlaying(true)
 
-    // Fast mode - use browser TTS (instant)
-    if (fast) {
+    // Browser TTS - instant, no network
+    if (provider === 'browser') {
       const utterance = new SpeechSynthesisUtterance(text)
-      utterance.rate = 1.1  // Slightly faster
+      utterance.rate = 1.1
       utterance.onend = () => setIsPlaying(false)
       utterance.onerror = () => setIsPlaying(false)
       speechSynthesis.speak(utterance)
       return
     }
 
-    // Quality mode - use Edge TTS
+    // ElevenLabs - streaming, low latency, best quality
+    if (provider === 'elevenlabs') {
+      try {
+        const res = await fetch('/api/tts/elevenlabs', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text }),
+        })
+
+        if (res.ok && res.headers.get('content-type')?.includes('audio')) {
+          const blob = await res.blob()
+          const url = URL.createObjectURL(blob)
+          currentAudio.current = new Audio(url)
+          currentAudio.current.onended = () => {
+            setIsPlaying(false)
+            URL.revokeObjectURL(url)
+          }
+          currentAudio.current.onerror = () => {
+            setIsPlaying(false)
+            URL.revokeObjectURL(url)
+          }
+          await currentAudio.current.play()
+          return
+        }
+      } catch (err) {
+        console.log('ElevenLabs TTS failed, falling back to browser')
+      }
+      // Fallback to browser
+      const utterance = new SpeechSynthesisUtterance(text)
+      utterance.onend = () => setIsPlaying(false)
+      speechSynthesis.speak(utterance)
+      return
+    }
+
+    // Edge TTS - neural voices, free
     try {
       const res = await fetch('/api/tts', {
         method: 'POST',
@@ -221,10 +255,10 @@ export function useVoice(options: UseVoiceOptions = {}) {
         return
       }
     } catch (err) {
-      console.log('Backend TTS failed')
+      console.log('Edge TTS failed')
     }
 
-    // Fallback
+    // Fallback to browser
     const utterance = new SpeechSynthesisUtterance(text)
     utterance.onend = () => setIsPlaying(false)
     speechSynthesis.speak(utterance)

@@ -119,6 +119,110 @@ def create_app() -> FastAPI:
         save_config(config)
         return {"success": True, "voice": voice}
 
+    @app.post("/api/settings/elevenlabs")
+    async def set_elevenlabs(data: dict):
+        """Configure ElevenLabs API key and voice."""
+        from jarvis.assistant import load_config, save_config
+        config = load_config()
+        if "voice" not in config:
+            config["voice"] = {}
+
+        if "api_key" in data:
+            config["voice"]["elevenlabs_key"] = data["api_key"]
+        if "voice_id" in data:
+            config["voice"]["elevenlabs_voice"] = data["voice_id"]
+        if "provider" in data:
+            config["voice"]["tts_provider"] = data["provider"]  # "elevenlabs", "edge", or "browser"
+
+        save_config(config)
+        return {"success": True}
+
+    @app.get("/api/elevenlabs/voices")
+    async def get_elevenlabs_voices():
+        """Get available ElevenLabs voices."""
+        from jarvis.assistant import load_config
+        config = load_config()
+        api_key = config.get("voice", {}).get("elevenlabs_key")
+
+        if not api_key:
+            return {"voices": [], "error": "No API key configured"}
+
+        try:
+            import httpx
+            async with httpx.AsyncClient() as client:
+                res = await client.get(
+                    "https://api.elevenlabs.io/v1/voices",
+                    headers={"xi-api-key": api_key}
+                )
+                if res.status_code == 200:
+                    data = res.json()
+                    voices = [{"id": v["voice_id"], "name": v["name"]} for v in data.get("voices", [])]
+                    return {"voices": voices}
+        except Exception as e:
+            return {"voices": [], "error": str(e)}
+
+        return {"voices": []}
+
+    @app.post("/api/tts/elevenlabs")
+    async def elevenlabs_tts(data: dict):
+        """Stream TTS from ElevenLabs - very low latency."""
+        text = data.get("text", "")
+        if not text:
+            return {"error": "No text"}
+
+        # Strip emojis
+        import re
+        emoji_pattern = re.compile(
+            "[\U0001F600-\U0001F64F\U0001F300-\U0001F5FF\U0001F680-\U0001F6FF"
+            "\U0001F1E0-\U0001F1FF\U00002702-\U000027B0\U0001F900-\U0001F9FF"
+            "\U0001FA00-\U0001FA6F\U0001FA70-\U0001FAFF\U00002600-\U000026FF]+",
+            flags=re.UNICODE
+        )
+        text = emoji_pattern.sub('', text).strip()
+        if not text:
+            return {"error": "No text"}
+
+        from jarvis.assistant import load_config
+        config = load_config()
+        api_key = config.get("voice", {}).get("elevenlabs_key")
+        voice_id = config.get("voice", {}).get("elevenlabs_voice", "21m00Tcm4TlvDq8ikWAM")  # Default: Rachel
+
+        if not api_key:
+            return {"error": "No ElevenLabs API key configured"}
+
+        try:
+            import httpx
+
+            async def stream_audio():
+                async with httpx.AsyncClient() as client:
+                    async with client.stream(
+                        "POST",
+                        f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}/stream",
+                        headers={
+                            "xi-api-key": api_key,
+                            "Content-Type": "application/json",
+                        },
+                        json={
+                            "text": text[:1000],  # Limit for speed
+                            "model_id": "eleven_turbo_v2_5",  # Fastest model
+                            "voice_settings": {
+                                "stability": 0.5,
+                                "similarity_boost": 0.75,
+                            }
+                        },
+                        timeout=30.0
+                    ) as response:
+                        async for chunk in response.aiter_bytes():
+                            yield chunk
+
+            return StreamingResponse(
+                stream_audio(),
+                media_type="audio/mpeg",
+                headers={"Cache-Control": "no-cache"}
+            )
+        except Exception as e:
+            return {"error": str(e)}
+
     @app.get("/api/models")
     async def get_models():
         """Get available models from Ollama."""
@@ -205,7 +309,7 @@ def create_app() -> FastAPI:
 
     @app.post("/api/tts")
     async def text_to_speech(data: dict):
-        """Convert text to speech - fast mode uses browser, quality mode uses Edge TTS."""
+        """Convert text to speech - streams audio chunks as they're generated."""
         text = data.get("text", "")
         fast_mode = data.get("fast", False)  # Use browser TTS for speed
 
@@ -241,18 +345,21 @@ def create_app() -> FastAPI:
             short_text = text[:500]  # Shorter = faster
 
             communicate = edge_tts.Communicate(short_text, tts_voice)
-            audio_chunks = []
-            async for chunk in communicate.stream():
-                if chunk["type"] == "audio":
-                    audio_chunks.append(chunk["data"])
 
-            if audio_chunks:
-                audio_data = b"".join(audio_chunks)
-                return StreamingResponse(
-                    io.BytesIO(audio_data),
-                    media_type="audio/mpeg",
-                    headers={"Content-Disposition": "inline; filename=speech.mp3"}
-                )
+            # Stream audio chunks as they arrive
+            async def audio_stream():
+                async for chunk in communicate.stream():
+                    if chunk["type"] == "audio":
+                        yield chunk["data"]
+
+            return StreamingResponse(
+                audio_stream(),
+                media_type="audio/mpeg",
+                headers={
+                    "Content-Disposition": "inline; filename=speech.mp3",
+                    "Cache-Control": "no-cache",
+                }
+            )
         except Exception as e:
             print(f"[TTS] Edge TTS failed: {e}")
 
@@ -453,7 +560,7 @@ def create_app() -> FastAPI:
                         messages=all_messages,
                         system=chat_system,
                         stream=True,
-                        options={"num_predict": 150}  # Limit response length for speed
+                        options={"num_predict": 500}  # Reasonable response length
                     )
                 except Exception as e:
                     jarvis.provider.model = original_model
