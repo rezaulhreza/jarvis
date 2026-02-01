@@ -745,7 +745,7 @@ def create_app() -> FastAPI:
                         results = rag.search(user_input, n_results=5)
                         if results:
                             # Top-k retrieval - let LLM decide relevance
-                            relevant_results = results[:3]
+                            relevant_results = results[:5]
 
                             if relevant_results:
                                 rag_info["chunks"] = len(relevant_results)
