@@ -6,6 +6,14 @@ interface Message {
   timestamp: Date
 }
 
+interface RagInfo {
+  enabled: boolean
+  chunks: number
+  total_chunks?: number
+  sources: string[]
+  error?: string
+}
+
 interface WSMessage {
   type: string
   content?: string
@@ -14,6 +22,7 @@ interface WSMessage {
   project?: string
   done?: boolean
   error?: string
+  rag?: RagInfo
 }
 
 export function useWebSocket() {
@@ -25,9 +34,10 @@ export function useWebSocket() {
   const [model, setModel] = useState('')
   const [provider, setProvider] = useState('')
   const [project, setProject] = useState('')
+  const [ragStatus, setRagStatus] = useState<RagInfo | null>(null)
 
   useEffect(() => {
-    let reconnectTimer: NodeJS.Timeout | null = null
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null
     let isCleaningUp = false
 
     const connect = () => {
@@ -99,9 +109,16 @@ export function useWebSocket() {
         setModel(data.model || '')
         break
 
+      case 'rag_status':
+        if (data.rag) {
+          setRagStatus(data.rag)
+        }
+        break
+
       case 'cleared':
         setMessages([])
         setStreaming('')
+        setRagStatus(null)
         break
     }
   }
@@ -112,6 +129,7 @@ export function useWebSocket() {
     setMessages((prev) => [...prev, { role: 'user', content, timestamp: new Date() }])
     setIsLoading(true)
     setStreaming('')
+    setRagStatus(null)  // Reset RAG status for new query
 
     ws.current.send(JSON.stringify({ type: 'message', content, chat_mode: chatMode }))
   }, [])
@@ -134,6 +152,7 @@ export function useWebSocket() {
     model,
     provider,
     project,
+    ragStatus,
     send,
     switchModel,
     clear,

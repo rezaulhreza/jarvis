@@ -32,7 +32,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
   const onSpeechEndRef = useRef(onSpeechEnd)
   const onInterruptRef = useRef(onInterrupt)
   const sttProviderRef = useRef(sttProvider)
-  const silenceTimer = useRef<NodeJS.Timeout | null>(null)
+  const silenceTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const speakingRef = useRef(false)
 
   // Keep refs in sync

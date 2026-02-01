@@ -276,7 +276,9 @@ def create_app() -> FastAPI:
 
     @app.get("/api/models")
     async def get_models():
-        """Get available models from Ollama."""
+        """Get available chat models from Ollama (excludes embedding models)."""
+        # Embedding models can't do chat - filter them out
+        EMBEDDING_MODELS = {"nomic-embed-text", "mxbai-embed-large", "all-minilm", "snowflake-arctic-embed"}
         try:
             import subprocess
             result = subprocess.run(
@@ -287,7 +289,10 @@ def create_app() -> FastAPI:
             for line in result.stdout.strip().split('\n')[1:]:
                 if line.strip():
                     name = line.split()[0]
-                    models.append(name)
+                    # Filter out embedding models
+                    base_name = name.split(":")[0]  # Remove :latest tag
+                    if base_name not in EMBEDDING_MODELS:
+                        models.append(name)
             return {"models": models}
         except Exception as e:
             return {"models": [], "error": str(e)}
@@ -606,15 +611,42 @@ def create_app() -> FastAPI:
 
                 # RAG: Retrieve relevant context from knowledge base
                 rag_context = ""
+                rag_info = {"enabled": False, "chunks": 0, "sources": []}
                 try:
                     from jarvis.knowledge import get_rag_engine
                     rag = get_rag_engine(jarvis.config)
-                    if rag.count() > 0:
-                        rag_context = rag.get_context(user_input, n_results=3, max_tokens=800)
-                        if rag_context:
+                    count = rag.count()
+                    print(f"[RAG] Knowledge base has {count} chunks")
+                    if count > 0:
+                        rag_info["enabled"] = True
+                        rag_info["total_chunks"] = count
+                        # Get search results with source info
+                        results = rag.search(user_input, n_results=3)
+                        if results:
+                            rag_info["chunks"] = len(results)
+                            rag_info["sources"] = list(set(r.get("source", "unknown") for r in results))
+                            # Build context from results
+                            context_parts = []
+                            for doc in results:
+                                source = doc.get("source", "unknown")
+                                content = doc.get("content", "").strip()
+                                context_parts.append(f"[From: {source}]\n{content}")
+                            rag_context = "Relevant knowledge:\n\n" + "\n\n---\n\n".join(context_parts)
+                            print(f"[RAG] Found {len(results)} chunks from: {rag_info['sources']}")
                             chat_system += f"\n\n{rag_context}"
+                        else:
+                            print("[RAG] No relevant context found")
                 except Exception as e:
+                    import traceback
                     print(f"[RAG] Error retrieving context: {e}")
+                    traceback.print_exc()
+                    rag_info["error"] = str(e)
+
+                # Send RAG status to frontend
+                await websocket.send_json({
+                    "type": "rag_status",
+                    "rag": rag_info
+                })
 
                 # Minimal context - just last 2 exchanges for speed
                 recent = history[-2:] if len(history) > 2 else history

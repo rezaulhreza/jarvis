@@ -37,7 +37,6 @@ export default function App() {
   const [ttsProvider, setTtsProvider] = useState<'browser' | 'edge' | 'elevenlabs'>('browser')
   const [sttProvider, setSttProvider] = useState<'browser' | 'whisper'>('browser')
   const [elevenLabsKey, setElevenLabsKey] = useState('')
-  const [showApiKeyInput, setShowApiKeyInput] = useState(false)
 
   const {
     connected,
@@ -46,6 +45,7 @@ export default function App() {
     isLoading,
     project,
     model,
+    ragStatus,
     send,
     clear,
     switchModel,
@@ -143,7 +143,6 @@ export default function App() {
     const data = await res.json()
     if (data.voices?.length > 0) {
       setElevenVoices(data.voices)
-      setShowApiKeyInput(false)
     }
   }
 
@@ -657,6 +656,33 @@ export default function App() {
               <p className="whitespace-pre-wrap">{msg.content}</p>
             </div>
           ))}
+
+          {/* RAG Status Indicator */}
+          {ragStatus && (streaming || isLoading) && (
+            <div className="flex items-center gap-2 text-xs mb-2">
+              {ragStatus.chunks > 0 ? (
+                <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                  <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                  <span>RAG: {ragStatus.chunks} chunks from {ragStatus.sources.join(', ')}</span>
+                </div>
+              ) : ragStatus.enabled ? (
+                <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-yellow-500/10 text-yellow-400 border border-yellow-500/20">
+                  <div className="w-2 h-2 rounded-full bg-yellow-400" />
+                  <span>RAG: No relevant chunks found</span>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-zinc-500/10 text-zinc-400 border border-zinc-500/20">
+                  <div className="w-2 h-2 rounded-full bg-zinc-400" />
+                  <span>RAG: Disabled (no knowledge base)</span>
+                </div>
+              )}
+              {ragStatus.error && (
+                <div className="px-3 py-1.5 rounded-full bg-red-500/10 text-red-400 border border-red-500/20">
+                  Error: {ragStatus.error}
+                </div>
+              )}
+            </div>
+          )}
 
           {streaming && (
             <div className="p-4 rounded-xl bg-[#12121a] mr-12">
