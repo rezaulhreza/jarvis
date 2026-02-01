@@ -744,29 +744,19 @@ def create_app() -> FastAPI:
                         # Get search results with source info
                         results = rag.search(user_input, n_results=5)
                         if results:
-                            # Filter by relevance - cosine distance: 0 = identical, 2 = opposite
-                            # Threshold of 1.0 means "at least somewhat related"
-                            RELEVANCE_THRESHOLD = 1.0
-                            relevant_results = [r for r in results if r.get("distance", 2.0) < RELEVANCE_THRESHOLD]
+                            # Top-k retrieval - let LLM decide relevance
+                            relevant_results = results[:3]
 
                             if relevant_results:
                                 rag_info["chunks"] = len(relevant_results)
                                 rag_info["sources"] = list(set(r.get("source", "unknown") for r in relevant_results))
-                                # Build context from relevant results only
                                 context_parts = []
                                 for doc in relevant_results:
                                     source = doc.get("source", "unknown")
                                     content = doc.get("content", "").strip()
-                                    distance = doc.get("distance", 0)
                                     context_parts.append(f"[From: {source}]\n{content}")
-                                    print(f"[RAG] Including {source} (distance: {distance:.3f})")
                                 rag_context = "Relevant knowledge:\n\n" + "\n\n---\n\n".join(context_parts)
                                 chat_system += f"\n\n{rag_context}"
-                            else:
-                                # Results found but none relevant enough
-                                print(f"[RAG] Found {len(results)} chunks but none relevant (all distance > {RELEVANCE_THRESHOLD})")
-                                for r in results[:3]:
-                                    print(f"[RAG]   - {r.get('source', '?')}: distance {r.get('distance', 0):.3f}")
                         else:
                             print("[RAG] No context found")
                 except Exception as e:
