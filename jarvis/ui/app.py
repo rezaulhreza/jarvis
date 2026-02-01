@@ -1,65 +1,272 @@
 """
-Jarvis Web UI using FastAPI
+Jarvis Web UI - Modern interface with voice, model selection, and diff view
 """
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
-from fastapi.responses import HTMLResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File
+from fastapi.responses import HTMLResponse, StreamingResponse
+import tempfile
+import subprocess
+import base64
+import io
 from pathlib import Path
 import json
 import asyncio
+import sys
+import os
 
-# Import will fail if UI deps not installed - that's expected
-try:
-    from ..assistant import Jarvis, list_personas
-except ImportError:
-    Jarvis = None
-    list_personas = lambda: ["default"]
+# Add parent to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+
+
+class DummyConsole:
+    """Mock console that captures output."""
+    def __init__(self, messages_list):
+        self._messages = messages_list
+
+    def print(self, *args, **kwargs):
+        text = " ".join(str(a) for a in args)
+        self._messages.append(("console", text))
+
+
+class WebUI:
+    """Minimal UI adapter for web context."""
+    def __init__(self):
+        self._messages = []
+        self.console = DummyConsole(self._messages)
+        self.is_streaming = False
+        self.stop_requested = False
+
+    def print_tool(self, msg): self._messages.append(("tool", msg))
+    def print_error(self, msg): self._messages.append(("error", msg))
+    def print_warning(self, msg): self._messages.append(("warning", msg))
+    def print_success(self, msg): self._messages.append(("success", msg))
+    def print_info(self, msg): self._messages.append(("info", msg))
+    def print_system(self, msg): self._messages.append(("system", msg))
+    def show_spinner(self, msg="Thinking"): return DummySpinner()
+    def setup_signal_handlers(self): pass
+    def print_header(self, *args, **kwargs): pass
+    def confirm(self, msg): return True  # Auto-confirm in web UI
+
+    def get_messages(self):
+        msgs = self._messages.copy()
+        self._messages.clear()
+        return msgs
+
+
+class DummySpinner:
+    def __enter__(self): return self
+    def __exit__(self, *args): pass
 
 
 def create_app() -> FastAPI:
     """Create the FastAPI application."""
     app = FastAPI(title="Jarvis", description="Personal AI Assistant")
 
-    # Store active connections and jarvis instances
     connections: dict[str, WebSocket] = {}
-    instances: dict[str, Jarvis] = {}
+    instances: dict[str, any] = {}
 
     @app.get("/", response_class=HTMLResponse)
     async def index():
-        """Serve the main UI."""
         return get_html_template()
 
     @app.get("/api/personas")
     async def get_personas():
         """Get available personas."""
-        return {"personas": list_personas()}
+        # For now, just return default. Can be expanded later.
+        return {"personas": ["default"]}
 
-    @app.get("/api/health")
-    async def health():
-        """Health check."""
-        return {"status": "ok"}
+    @app.get("/api/models")
+    async def get_models():
+        """Get available models from Ollama."""
+        try:
+            import subprocess
+            result = subprocess.run(
+                ["ollama", "list"],
+                capture_output=True, text=True, timeout=10
+            )
+            models = []
+            for line in result.stdout.strip().split('\n')[1:]:
+                if line.strip():
+                    name = line.split()[0]
+                    models.append(name)
+            return {"models": models}
+        except Exception as e:
+            return {"models": [], "error": str(e)}
+
+    @app.post("/api/transcribe")
+    async def transcribe_audio(audio: UploadFile = File(...)):
+        """Transcribe audio using Whisper."""
+        tmp_path = None
+        try:
+            # Save uploaded audio to temp file
+            with tempfile.NamedTemporaryFile(suffix=".webm", delete=False) as tmp:
+                content = await audio.read()
+                tmp.write(content)
+                tmp_path = tmp.name
+
+            # Convert webm to wav using ffmpeg
+            wav_path = tmp_path.replace(".webm", ".wav")
+            conv_result = subprocess.run(
+                ["ffmpeg", "-i", tmp_path, "-ar", "16000", "-ac", "1", "-y", wav_path],
+                capture_output=True, timeout=10
+            )
+
+            if not Path(wav_path).exists():
+                return {"transcript": "", "error": "ffmpeg conversion failed", "use_browser": True}
+
+            # Try mlx-whisper (fast on Mac)
+            try:
+                result = subprocess.run(
+                    ["mlx_whisper", wav_path, "--model", "mlx-community/whisper-base-mlx"],
+                    capture_output=True, text=True, timeout=60
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    return {"transcript": result.stdout.strip()}
+            except FileNotFoundError:
+                pass
+
+            # Try openai-whisper CLI
+            try:
+                result = subprocess.run(
+                    ["whisper", wav_path, "--model", "base", "--output_format", "txt", "--output_dir", "/tmp"],
+                    capture_output=True, text=True, timeout=60
+                )
+                txt_path = wav_path.replace(".wav", ".txt")
+                if Path(txt_path).exists():
+                    transcript = Path(txt_path).read_text().strip()
+                    Path(txt_path).unlink(missing_ok=True)
+                    return {"transcript": transcript}
+            except FileNotFoundError:
+                pass
+
+            # Try Python whisper library directly
+            try:
+                import whisper
+                model = whisper.load_model("base")
+                result = model.transcribe(wav_path)
+                return {"transcript": result["text"].strip()}
+            except ImportError:
+                pass
+
+            # No whisper available - tell frontend to use browser
+            return {"transcript": "", "error": "No whisper installed", "use_browser": True}
+
+        except Exception as e:
+            return {"transcript": "", "error": str(e), "use_browser": True}
+        finally:
+            # Cleanup temp files
+            if tmp_path:
+                Path(tmp_path).unlink(missing_ok=True)
+                Path(tmp_path.replace(".webm", ".wav")).unlink(missing_ok=True)
+
+    @app.post("/api/tts")
+    async def text_to_speech(data: dict):
+        """Convert text to speech using best available method."""
+        text = data.get("text", "")
+        if not text:
+            return {"error": "No text provided"}
+
+        try:
+            # Option 1: OpenAI TTS (best quality)
+            import os
+            openai_key = os.getenv("OPENAI_API_KEY")
+            if openai_key:
+                try:
+                    import openai
+                    client = openai.OpenAI(api_key=openai_key)
+                    response = client.audio.speech.create(
+                        model="tts-1",
+                        voice="alloy",  # or: echo, fable, onyx, nova, shimmer
+                        input=text[:4096]
+                    )
+                    audio_data = response.content
+                    return StreamingResponse(
+                        io.BytesIO(audio_data),
+                        media_type="audio/mpeg",
+                        headers={"Content-Disposition": "inline; filename=speech.mp3"}
+                    )
+                except Exception as e:
+                    pass  # Fall through to other options
+
+            # Option 2: macOS say command (decent quality, free)
+            import platform
+            if platform.system() == "Darwin":
+                with tempfile.NamedTemporaryFile(suffix=".aiff", delete=False) as tmp:
+                    tmp_path = tmp.name
+
+                # Use a good macOS voice
+                voices = ["Samantha", "Daniel", "Karen", "Moira", "Alex"]
+                voice = voices[0]  # Samantha is usually good
+
+                result = subprocess.run(
+                    ["say", "-v", voice, "-o", tmp_path, text[:1000]],
+                    capture_output=True, timeout=30
+                )
+
+                if Path(tmp_path).exists():
+                    audio_data = Path(tmp_path).read_bytes()
+                    Path(tmp_path).unlink()
+                    return StreamingResponse(
+                        io.BytesIO(audio_data),
+                        media_type="audio/aiff",
+                        headers={"Content-Disposition": "inline; filename=speech.aiff"}
+                    )
+
+            return {"error": "No TTS available"}
+
+        except Exception as e:
+            return {"error": str(e)}
+
+    @app.get("/api/commands")
+    async def get_commands():
+        """Get available slash commands."""
+        return {
+            "commands": [
+                {"cmd": "/help", "desc": "Show help"},
+                {"cmd": "/models", "desc": "List models"},
+                {"cmd": "/model", "desc": "Change model"},
+                {"cmd": "/provider", "desc": "Change provider"},
+                {"cmd": "/project", "desc": "Project info"},
+                {"cmd": "/clear", "desc": "Clear chat"},
+                {"cmd": "/init", "desc": "Init project config"},
+            ]
+        }
 
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket):
-        """WebSocket endpoint for real-time chat."""
         await websocket.accept()
         session_id = str(id(websocket))
         connections[session_id] = websocket
 
-        # Create Jarvis instance for this session
+        jarvis = None
         try:
-            jarvis = Jarvis()
+            # Import here to avoid circular imports
+            from jarvis.assistant import Jarvis, load_config
+            from jarvis.providers import get_provider
+
+            # Create WebUI adapter
+            ui = WebUI()
+
+            # Get working directory from query params or use home
+            working_dir = Path.home()
+
+            # Create Jarvis with web UI
+            jarvis = Jarvis(ui=ui, working_dir=working_dir)
             instances[session_id] = jarvis
+
             await websocket.send_json({
                 "type": "connected",
-                "persona": jarvis.current_persona,
-                "model": jarvis.ollama.default_model
+                "provider": jarvis.provider.name,
+                "model": jarvis.provider.model,
+                "project": jarvis.project.project_name,
+                "projectRoot": str(jarvis.project.project_root),
             })
+
         except Exception as e:
+            import traceback
             await websocket.send_json({
                 "type": "error",
-                "message": f"Failed to initialize: {e}"
+                "message": f"Failed to initialize: {e}\n{traceback.format_exc()}"
             })
             await websocket.close()
             return
@@ -70,294 +277,730 @@ def create_app() -> FastAPI:
                 msg_type = data.get("type", "message")
 
                 if msg_type == "message":
-                    user_input = data.get("content", "")
+                    user_input = data.get("content", "").strip()
+                    chat_mode = data.get("chat_mode", False)
                     if user_input:
-                        # Process in background to allow streaming
-                        await process_message(websocket, jarvis, user_input)
+                        await process_message(websocket, jarvis, user_input, chat_mode)
 
-                elif msg_type == "persona":
-                    persona_name = data.get("name", "default")
-                    result = jarvis.switch_persona(persona_name)
-                    await websocket.send_json({
-                        "type": "persona_changed",
-                        "persona": jarvis.current_persona,
-                        "message": result
-                    })
+                elif msg_type == "switch_model":
+                    model = data.get("model")
+                    if model and jarvis:
+                        jarvis.switch_model(model)
+                        await websocket.send_json({
+                            "type": "model_changed",
+                            "model": model
+                        })
+
+                elif msg_type == "switch_provider":
+                    provider = data.get("provider")
+                    if provider and jarvis:
+                        jarvis.switch_provider(provider)
+                        await websocket.send_json({
+                            "type": "provider_changed",
+                            "provider": provider,
+                            "model": jarvis.provider.model
+                        })
 
                 elif msg_type == "clear":
-                    jarvis.context.clear()
-                    await websocket.send_json({
-                        "type": "cleared"
-                    })
+                    if jarvis:
+                        jarvis.context.clear()
+                    await websocket.send_json({"type": "cleared"})
+
+                elif msg_type == "set_working_dir":
+                    # Reinitialize with new working directory
+                    new_dir = Path(data.get("path", "")).expanduser()
+                    if new_dir.exists() and new_dir.is_dir():
+                        ui = WebUI()
+                        jarvis = Jarvis(ui=ui, working_dir=new_dir)
+                        instances[session_id] = jarvis
+                        await websocket.send_json({
+                            "type": "project_changed",
+                            "project": jarvis.project.project_name,
+                            "projectRoot": str(jarvis.project.project_root),
+                        })
 
         except WebSocketDisconnect:
             pass
+        except Exception as e:
+            await websocket.send_json({"type": "error", "message": str(e)})
         finally:
             connections.pop(session_id, None)
             instances.pop(session_id, None)
 
-    async def process_message(websocket: WebSocket, jarvis: Jarvis, user_input: str):
+    async def process_message(websocket: WebSocket, jarvis, user_input: str, chat_mode: bool = False):
         """Process a message and stream the response."""
-        # Send acknowledgment
         await websocket.send_json({
             "type": "processing",
             "content": user_input
         })
 
-        # Check for commands
-        if user_input.startswith('/'):
-            result = jarvis._handle_command(user_input)
-            await websocket.send_json({
-                "type": "response",
-                "content": result or "Command executed.",
-                "done": True
-            })
-            return
-
-        # Add to context
-        jarvis.context.add_message("user", user_input)
-
-        # Generate response (simplified - not streaming in UI for now)
         try:
-            messages = jarvis.context.get_messages()
-            response_text = ""
+            # Handle commands
+            if user_input.startswith('/'):
+                result = jarvis._handle_command(user_input)
+                ui_msgs = jarvis.ui.get_messages()
+                await websocket.send_json({
+                    "type": "response",
+                    "content": result or "\n".join(m[1] for m in ui_msgs) or "Done.",
+                    "done": True
+                })
+                return
 
-            # Use non-streaming for simplicity in WebSocket
-            response = jarvis.ollama.chat(
-                messages=messages,
-                system=jarvis.system_prompt,
-                stream=False
-            )
+            # Add to context
+            jarvis.context.add_message("user", user_input)
 
-            if isinstance(response, str):
-                response_text = response
-            else:
-                # Collect streamed response
-                for chunk in response:
+            # Build history
+            from jarvis.providers import Message
+            history = []
+            for m in jarvis.context.get_messages()[:-1]:
+                history.append(Message(role=m["role"], content=m["content"]))
+
+            if chat_mode:
+                # CHAT MODE: Fast, streaming, minimal overhead
+                chat_system = "You are Jarvis. Be concise and friendly."
+
+                # Only keep last 4 messages for speed
+                recent = history[-4:] if len(history) > 4 else history
+                all_messages = recent + [Message(role="user", content=user_input)]
+
+                # Stream response for instant feedback
+                response_text = ""
+                stream = jarvis.provider.chat(
+                    messages=all_messages,
+                    system=chat_system,
+                    stream=True
+                )
+
+                for chunk in stream:
                     response_text += chunk
                     await websocket.send_json({
-                        "type": "response",
+                        "type": "stream",
                         "content": chunk,
                         "done": False
                     })
 
-            jarvis.context.add_message("assistant", response_text)
+                await websocket.send_json({
+                    "type": "response",
+                    "content": response_text,
+                    "done": True
+                })
 
-            await websocket.send_json({
-                "type": "response",
-                "content": response_text,
-                "done": True
-            })
+                if response_text.strip():
+                    jarvis.context.add_message("assistant", response_text.strip())
+
+            else:
+                # AGENT MODE: Use tools for coding tasks
+                response = jarvis.agent.run(user_input, jarvis.system_prompt, history)
+
+                if response:
+                    if "```diff" in response or "wrote:" in response.lower():
+                        await websocket.send_json({
+                            "type": "diff",
+                            "content": response,
+                            "done": False
+                        })
+
+                    await websocket.send_json({
+                        "type": "response",
+                        "content": response,
+                        "done": True
+                    })
+
+                    clean = response.replace("[dim]", "").replace("[/dim]", "")
+                    clean = clean.replace("[red]", "").replace("[/red]", "")
+                    if clean.strip():
+                        jarvis.context.add_message("assistant", clean.strip())
 
         except Exception as e:
+            import traceback
             await websocket.send_json({
                 "type": "error",
-                "message": str(e)
+                "message": f"{e}\n{traceback.format_exc()}"
             })
 
     return app
 
 
 def get_html_template() -> str:
-    """Return the HTML template for the UI."""
-    return '''<!DOCTYPE html>
+    return r'''<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Jarvis</title>
     <style>
-        * {
-            box-sizing: border-box;
-            margin: 0;
-            padding: 0;
+        :root {
+            --bg-primary: #0d1117;
+            --bg-secondary: #161b22;
+            --bg-tertiary: #21262d;
+            --border: #30363d;
+            --text-primary: #e6edf3;
+            --text-secondary: #8b949e;
+            --accent: #58a6ff;
+            --accent-hover: #79c0ff;
+            --success: #3fb950;
+            --error: #f85149;
+            --warning: #d29922;
         }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: #1a1a2e;
-            color: #eee;
+            background: var(--bg-primary);
+            color: var(--text-primary);
             height: 100vh;
             display: flex;
             flex-direction: column;
         }
         header {
-            background: #16213e;
-            padding: 1rem 2rem;
+            background: var(--bg-secondary);
+            padding: 12px 20px;
             display: flex;
             justify-content: space-between;
             align-items: center;
-            border-bottom: 1px solid #0f3460;
+            border-bottom: 1px solid var(--border);
+            gap: 16px;
+            flex-wrap: wrap;
         }
-        header h1 {
-            font-size: 1.5rem;
-            color: #e94560;
-        }
+        .logo { display: flex; align-items: center; gap: 10px; }
+        .logo h1 { font-size: 1.25rem; color: var(--accent); }
+        .header-controls { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
         .status {
+            font-size: 0.8rem;
+            padding: 4px 10px;
+            border-radius: 12px;
+            background: var(--bg-tertiary);
+        }
+        .status.connected { color: var(--success); }
+        .status.disconnected { color: var(--error); }
+        select, button {
+            padding: 8px 12px;
+            border-radius: 6px;
+            border: 1px solid var(--border);
+            background: var(--bg-tertiary);
+            color: var(--text-primary);
             font-size: 0.875rem;
-            color: #888;
+            cursor: pointer;
         }
-        .status.connected {
-            color: #4ade80;
+        select:hover, button:hover { border-color: var(--accent); }
+        button.primary {
+            background: var(--accent);
+            color: #000;
+            border: none;
         }
+        button.primary:hover { background: var(--accent-hover); }
+        button:disabled { opacity: 0.5; cursor: not-allowed; }
         main {
             flex: 1;
             overflow-y: auto;
-            padding: 1rem 2rem;
+            padding: 20px;
         }
-        .messages {
-            max-width: 900px;
-            margin: 0 auto;
-        }
+        .messages { max-width: 900px; margin: 0 auto; }
         .message {
-            margin-bottom: 1rem;
-            padding: 1rem;
+            margin-bottom: 16px;
+            padding: 16px;
             border-radius: 8px;
-            max-width: 80%;
+            animation: fadeIn 0.2s ease;
         }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
         .message.user {
-            background: #0f3460;
-            margin-left: auto;
+            background: var(--bg-tertiary);
+            margin-left: 15%;
+            border: 1px solid var(--border);
         }
         .message.assistant {
-            background: #16213e;
-            border: 1px solid #0f3460;
+            background: var(--bg-secondary);
+            margin-right: 15%;
+            border: 1px solid var(--border);
+        }
+        .message.system {
+            background: transparent;
+            text-align: center;
+            color: var(--text-secondary);
+            font-size: 0.875rem;
+            padding: 8px;
         }
         .message .role {
             font-size: 0.75rem;
-            color: #888;
-            margin-bottom: 0.5rem;
+            color: var(--text-secondary);
+            margin-bottom: 8px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
         }
         .message .content {
             line-height: 1.6;
             white-space: pre-wrap;
+            word-break: break-word;
         }
-        .message.assistant .content code {
-            background: #0f3460;
-            padding: 0.125rem 0.375rem;
+        .message pre {
+            background: var(--bg-primary);
+            padding: 12px;
+            border-radius: 6px;
+            overflow-x: auto;
+            margin: 8px 0;
+            font-family: 'SF Mono', Monaco, Consolas, monospace;
+            font-size: 0.875rem;
+        }
+        .message code {
+            background: var(--bg-primary);
+            padding: 2px 6px;
             border-radius: 4px;
-            font-family: 'SF Mono', Monaco, monospace;
+            font-family: 'SF Mono', Monaco, Consolas, monospace;
         }
+        /* Diff styling */
+        .diff-add { color: var(--success); background: rgba(63, 185, 80, 0.15); }
+        .diff-remove { color: var(--error); background: rgba(248, 81, 73, 0.15); }
+        .diff-header { color: var(--accent); }
         footer {
-            background: #16213e;
-            padding: 1rem 2rem;
-            border-top: 1px solid #0f3460;
+            background: var(--bg-secondary);
+            padding: 16px 20px;
+            border-top: 1px solid var(--border);
         }
+        .input-area { max-width: 900px; margin: 0 auto; }
         .input-container {
-            max-width: 900px;
-            margin: 0 auto;
             display: flex;
-            gap: 1rem;
+            gap: 12px;
+            align-items: flex-end;
         }
-        input[type="text"] {
+        .input-wrapper {
             flex: 1;
-            padding: 0.75rem 1rem;
-            border: 1px solid #0f3460;
+            position: relative;
+        }
+        textarea {
+            width: 100%;
+            padding: 12px 16px;
+            border: 1px solid var(--border);
             border-radius: 8px;
-            background: #1a1a2e;
-            color: #eee;
+            background: var(--bg-primary);
+            color: var(--text-primary);
             font-size: 1rem;
+            resize: none;
+            min-height: 48px;
+            max-height: 200px;
+            font-family: inherit;
         }
-        input[type="text"]:focus {
-            outline: none;
-            border-color: #e94560;
-        }
-        button {
-            padding: 0.75rem 1.5rem;
-            background: #e94560;
-            color: white;
-            border: none;
+        textarea:focus { outline: none; border-color: var(--accent); }
+        .suggestions {
+            position: absolute;
+            bottom: 100%;
+            left: 0;
+            right: 0;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
             border-radius: 8px;
+            margin-bottom: 4px;
+            display: none;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+        .suggestions.active { display: block; }
+        .suggestion {
+            padding: 10px 16px;
             cursor: pointer;
-            font-size: 1rem;
-        }
-        button:hover {
-            background: #d63850;
-        }
-        button:disabled {
-            background: #555;
-            cursor: not-allowed;
-        }
-        .controls {
             display: flex;
-            gap: 0.5rem;
-            margin-top: 0.5rem;
+            justify-content: space-between;
         }
-        .controls select {
-            padding: 0.5rem;
-            background: #1a1a2e;
-            color: #eee;
-            border: 1px solid #0f3460;
-            border-radius: 4px;
+        .suggestion:hover, .suggestion.selected {
+            background: var(--bg-tertiary);
+        }
+        .suggestion .cmd { color: var(--accent); font-family: monospace; }
+        .suggestion .desc { color: var(--text-secondary); font-size: 0.875rem; }
+        .voice-btn {
+            width: 48px;
+            height: 48px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.25rem;
+        }
+        .voice-btn.recording {
+            background: var(--error);
+            animation: pulse 1s infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { transform: scale(1); }
+            50% { transform: scale(1.1); }
         }
         .typing {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 12px 16px;
+            color: var(--text-secondary);
+        }
+        .typing-dots span {
+            width: 8px;
+            height: 8px;
+            background: var(--text-secondary);
+            border-radius: 50%;
             display: inline-block;
-            padding: 0.5rem 1rem;
-            background: #16213e;
-            border-radius: 8px;
-            color: #888;
+            animation: bounce 1.4s infinite ease-in-out both;
         }
-        .typing::after {
-            content: '...';
-            animation: dots 1.5s infinite;
+        .typing-dots span:nth-child(1) { animation-delay: -0.32s; }
+        .typing-dots span:nth-child(2) { animation-delay: -0.16s; }
+        @keyframes bounce {
+            0%, 80%, 100% { transform: scale(0); }
+            40% { transform: scale(1); }
         }
-        @keyframes dots {
-            0%, 20% { content: '.'; }
-            40% { content: '..'; }
-            60%, 100% { content: '...'; }
+        .project-badge {
+            background: var(--bg-tertiary);
+            padding: 4px 10px;
+            border-radius: 4px;
+            font-size: 0.8rem;
+            color: var(--text-secondary);
         }
     </style>
 </head>
 <body>
     <header>
-        <h1>🤖 Jarvis</h1>
-        <div class="status" id="status">Connecting...</div>
+        <div class="logo">
+            <span style="font-size:1.5rem">🤖</span>
+            <h1>Jarvis</h1>
+            <span class="project-badge" id="project">Loading...</span>
+        </div>
+        <div class="header-controls">
+            <select id="model" title="Select model">
+                <option>Loading models...</option>
+            </select>
+            <button id="chatMode" title="Chat mode (no tools)" style="opacity:0.5">💬</button>
+            <button id="tts" title="Voice output">🔇</button>
+            <button id="clear">Clear</button>
+            <span class="status disconnected" id="status">Connecting...</span>
+        </div>
     </header>
+
     <main>
         <div class="messages" id="messages"></div>
     </main>
+
     <footer>
-        <div class="input-container">
-            <input type="text" id="input" placeholder="Type a message..." autofocus>
-            <button id="send" disabled>Send</button>
-        </div>
-        <div class="input-container controls">
-            <select id="persona">
-                <option value="default">Default Persona</option>
-            </select>
-            <button id="clear" style="background:#333">Clear</button>
+        <div class="input-area">
+            <div class="input-container">
+                <div class="input-wrapper">
+                    <div class="suggestions" id="suggestions"></div>
+                    <textarea id="input" placeholder="Type a message or / for commands..." rows="1"></textarea>
+                </div>
+                <button class="voice-btn" id="voice" title="Voice input">🎤</button>
+                <button class="primary" id="send" disabled>Send</button>
+            </div>
         </div>
     </footer>
 
     <script>
-        const messagesEl = document.getElementById('messages');
-        const inputEl = document.getElementById('input');
-        const sendBtn = document.getElementById('send');
-        const statusEl = document.getElementById('status');
-        const personaEl = document.getElementById('persona');
-        const clearBtn = document.getElementById('clear');
+        const $ = id => document.getElementById(id);
+        const messagesEl = $('messages');
+        const inputEl = $('input');
+        const sendBtn = $('send');
+        const statusEl = $('status');
+        const modelEl = $('model');
+        const clearBtn = $('clear');
+        const voiceBtn = $('voice');
+        const suggestionsEl = $('suggestions');
+        const projectEl = $('project');
 
         let ws = null;
-        let currentPersona = 'default';
+        let commands = [];
+        let selectedSuggestion = -1;
+        let isRecording = false;
+        let recognition = null;
+        let ttsEnabled = false;
+        let chatMode = false;
+        let currentModel = null;
+        const ttsBtn = $('tts');
+        const chatModeBtn = $('chatMode');
 
+        // Chat mode toggle
+        chatModeBtn.addEventListener('click', () => {
+            chatMode = !chatMode;
+            chatModeBtn.style.opacity = chatMode ? '1' : '0.5';
+            chatModeBtn.title = chatMode ? 'Chat mode ON (no tools)' : 'Chat mode OFF (uses tools)';
+            addSystemMessage(chatMode ? '💬 Chat mode - just conversation, no tools' : '🔧 Agent mode - can use tools');
+        });
+
+        // Text-to-Speech using backend API (better quality) with browser fallback
+        let currentAudio = null;
+
+        async function speak(text) {
+            if (!ttsEnabled) return;
+
+            // Stop any ongoing audio
+            if (currentAudio) {
+                currentAudio.pause();
+                currentAudio = null;
+            }
+            speechSynthesis.cancel();
+
+            // Clean text - remove code blocks, markdown, etc.
+            let cleanText = text
+                .replace(/```[\s\S]*?```/g, '')
+                .replace(/`[^`]+`/g, '')
+                .replace(/\[.*?\]\(.*?\)/g, '')
+                .replace(/[#*_~]/g, '')
+                .replace(/\n+/g, '. ')
+                .trim();
+
+            if (!cleanText || cleanText.length < 2) return;
+
+            // Try backend TTS first (better quality)
+            try {
+                const res = await fetch('/api/tts', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ text: cleanText })
+                });
+
+                if (res.ok && res.headers.get('content-type')?.includes('audio')) {
+                    const blob = await res.blob();
+                    const url = URL.createObjectURL(blob);
+                    currentAudio = new Audio(url);
+                    currentAudio.play();
+                    return;
+                }
+            } catch (e) {
+                console.log('Backend TTS failed, using browser:', e);
+            }
+
+            // Fallback to browser speech synthesis
+            const utterance = new SpeechSynthesisUtterance(cleanText);
+            utterance.rate = 1.0;
+            utterance.pitch = 1.0;
+
+            const voices = speechSynthesis.getVoices();
+            const preferredVoice = voices.find(v =>
+                v.name.includes('Samantha') ||
+                v.name.includes('Daniel') ||
+                v.lang.startsWith('en')
+            );
+            if (preferredVoice) utterance.voice = preferredVoice;
+
+            speechSynthesis.speak(utterance);
+        }
+
+        ttsBtn.addEventListener('click', () => {
+            ttsEnabled = !ttsEnabled;
+            ttsBtn.textContent = ttsEnabled ? '🔊' : '🔇';
+            ttsBtn.title = ttsEnabled ? 'Voice ON' : 'Voice OFF';
+            if (ttsEnabled) {
+                speak('Voice enabled');
+            } else {
+                if (currentAudio) currentAudio.pause();
+                speechSynthesis.cancel();
+            }
+        });
+
+        // Load voices when available
+        if ('speechSynthesis' in window) {
+            speechSynthesis.onvoiceschanged = () => speechSynthesis.getVoices();
+        }
+
+        // Auto-resize textarea
+        inputEl.addEventListener('input', () => {
+            inputEl.style.height = 'auto';
+            inputEl.style.height = Math.min(inputEl.scrollHeight, 200) + 'px';
+            handleSlashCommands();
+        });
+
+        // Slash command suggestions
+        function handleSlashCommands() {
+            const val = inputEl.value;
+            if (val.startsWith('/') && !val.includes(' ')) {
+                const query = val.slice(1).toLowerCase();
+                const filtered = commands.filter(c =>
+                    c.cmd.slice(1).toLowerCase().startsWith(query)
+                );
+                if (filtered.length > 0) {
+                    suggestionsEl.innerHTML = filtered.map((c, i) => `
+                        <div class="suggestion ${i === selectedSuggestion ? 'selected' : ''}" data-cmd="${c.cmd}">
+                            <span class="cmd">${c.cmd}</span>
+                            <span class="desc">${c.desc}</span>
+                        </div>
+                    `).join('');
+                    suggestionsEl.classList.add('active');
+                    return;
+                }
+            }
+            suggestionsEl.classList.remove('active');
+            selectedSuggestion = -1;
+        }
+
+        suggestionsEl.addEventListener('click', e => {
+            const suggestion = e.target.closest('.suggestion');
+            if (suggestion) {
+                inputEl.value = suggestion.dataset.cmd + ' ';
+                suggestionsEl.classList.remove('active');
+                inputEl.focus();
+            }
+        });
+
+        inputEl.addEventListener('keydown', e => {
+            if (suggestionsEl.classList.contains('active')) {
+                const items = suggestionsEl.querySelectorAll('.suggestion');
+                if (e.key === 'ArrowDown') {
+                    e.preventDefault();
+                    selectedSuggestion = Math.min(selectedSuggestion + 1, items.length - 1);
+                    updateSelectedSuggestion(items);
+                } else if (e.key === 'ArrowUp') {
+                    e.preventDefault();
+                    selectedSuggestion = Math.max(selectedSuggestion - 1, 0);
+                    updateSelectedSuggestion(items);
+                } else if (e.key === 'Tab' || e.key === 'Enter') {
+                    if (selectedSuggestion >= 0 && items[selectedSuggestion]) {
+                        e.preventDefault();
+                        inputEl.value = items[selectedSuggestion].dataset.cmd + ' ';
+                        suggestionsEl.classList.remove('active');
+                    }
+                } else if (e.key === 'Escape') {
+                    suggestionsEl.classList.remove('active');
+                }
+            } else if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                send();
+            }
+        });
+
+        function updateSelectedSuggestion(items) {
+            items.forEach((el, i) => {
+                el.classList.toggle('selected', i === selectedSuggestion);
+            });
+        }
+
+        // Voice input using MediaRecorder + backend Whisper (with browser fallback)
+        let mediaRecorder = null;
+        let audioChunks = [];
+        let useBrowserTranscription = false;
+        let browserRecognition = null;
+
+        // Setup browser speech recognition as fallback
+        if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
+            const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+            browserRecognition = new SpeechRecognition();
+            browserRecognition.continuous = false;
+            browserRecognition.interimResults = false;
+
+            browserRecognition.onresult = e => {
+                const transcript = e.results[0][0].transcript;
+                inputEl.value = transcript;
+                inputEl.dispatchEvent(new Event('input'));
+                setTimeout(send, 300);
+            };
+
+            browserRecognition.onend = () => {
+                isRecording = false;
+                voiceBtn.classList.remove('recording');
+                voiceBtn.textContent = '🎤';
+            };
+        }
+
+        async function startRecording() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+                audioChunks = [];
+
+                mediaRecorder.ondataavailable = e => {
+                    if (e.data.size > 0) audioChunks.push(e.data);
+                };
+
+                mediaRecorder.onstop = async () => {
+                    stream.getTracks().forEach(t => t.stop());
+                    const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+
+                    // Show transcribing status
+                    inputEl.placeholder = 'Transcribing...';
+                    voiceBtn.disabled = true;
+
+                    // Send to backend for Whisper transcription
+                    const formData = new FormData();
+                    formData.append('audio', audioBlob, 'recording.webm');
+
+                    try {
+                        const res = await fetch('/api/transcribe', {
+                            method: 'POST',
+                            body: formData
+                        });
+                        const data = await res.json();
+
+                        if (data.transcript) {
+                            inputEl.value = data.transcript;
+                            inputEl.dispatchEvent(new Event('input'));
+                            // Auto-send
+                            setTimeout(send, 300);
+                        } else if (data.use_browser) {
+                            // Fallback to browser speech recognition
+                            addSystemMessage('Using browser transcription (install whisper for better results)');
+                            useBrowserTranscription = true;
+                        } else if (data.error) {
+                            addSystemMessage('Transcription: ' + data.error);
+                        }
+                    } catch (e) {
+                        addSystemMessage('Transcription failed, using browser fallback');
+                        useBrowserTranscription = true;
+                    }
+
+                    inputEl.placeholder = 'Type a message or / for commands...';
+                    voiceBtn.disabled = false;
+                };
+
+                mediaRecorder.start();
+                isRecording = true;
+                voiceBtn.classList.add('recording');
+                voiceBtn.textContent = '⏹️';
+            } catch (e) {
+                addSystemMessage('Microphone access denied');
+            }
+        }
+
+        function stopRecording() {
+            if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+                mediaRecorder.stop();
+            }
+            isRecording = false;
+            voiceBtn.classList.remove('recording');
+            voiceBtn.textContent = '🎤';
+        }
+
+        voiceBtn.addEventListener('click', () => {
+            if (isRecording) {
+                stopRecording();
+            } else {
+                // Use browser recognition if backend whisper not available
+                if (useBrowserTranscription && browserRecognition) {
+                    browserRecognition.start();
+                    isRecording = true;
+                    voiceBtn.classList.add('recording');
+                    voiceBtn.textContent = '⏹️';
+                } else {
+                    startRecording();
+                }
+            }
+        });
+
+        // WebSocket connection
         function connect() {
-            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
+            const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+            ws = new WebSocket(`${protocol}//${location.host}/ws`);
 
             ws.onopen = () => {
                 statusEl.textContent = 'Connected';
-                statusEl.classList.add('connected');
+                statusEl.className = 'status connected';
                 sendBtn.disabled = false;
+                loadModels();
+                loadCommands();
             };
 
             ws.onclose = () => {
                 statusEl.textContent = 'Disconnected';
-                statusEl.classList.remove('connected');
+                statusEl.className = 'status disconnected';
                 sendBtn.disabled = true;
-                setTimeout(connect, 2000);
+                setTimeout(connect, 3000);
             };
 
-            ws.onmessage = (event) => {
-                const data = JSON.parse(event.data);
+            ws.onerror = () => {
+                addSystemMessage('Connection error. Retrying...');
+            };
+
+            ws.onmessage = e => {
+                const data = JSON.parse(e.data);
                 handleMessage(data);
             };
         }
@@ -365,65 +1008,166 @@ def get_html_template() -> str:
         function handleMessage(data) {
             switch (data.type) {
                 case 'connected':
-                    currentPersona = data.persona;
-                    personaEl.value = data.persona;
-                    addSystemMessage(`Connected. Persona: ${data.persona}, Model: ${data.model}`);
-                    loadPersonas();
+                    projectEl.textContent = data.project || 'No project';
+                    currentModel = data.model;
+                    // Set dropdown after a short delay to ensure models are loaded
+                    setTimeout(() => {
+                        if (currentModel) modelEl.value = currentModel;
+                    }, 500);
+                    addSystemMessage(`Connected to ${data.provider} (${data.model})`);
                     break;
 
                 case 'processing':
-                    addMessage('user', data.content);
-                    showTyping();
+                    // Message already shown immediately in send()
+                    break;
+
+                case 'stream':
+                    // Streaming chunk - show immediately
+                    hideTyping();
+                    appendToLastMessage(data.content);
                     break;
 
                 case 'response':
                     hideTyping();
                     if (data.done) {
-                        addMessage('assistant', data.content);
+                        finalizeLastMessage(data.content);
+                        speak(data.content);
                     }
+                    break;
+
+                case 'diff':
                     break;
 
                 case 'error':
                     hideTyping();
-                    addSystemMessage(`Error: ${data.message}`);
+                    addMessage('system', '❌ ' + data.message);
                     break;
 
-                case 'persona_changed':
-                    addSystemMessage(data.message);
+                case 'model_changed':
+                    addSystemMessage(`Model changed to ${data.model}`);
+                    break;
+
+                case 'project_changed':
+                    projectEl.textContent = data.project;
+                    addSystemMessage(`Project: ${data.project}`);
                     break;
 
                 case 'cleared':
                     messagesEl.innerHTML = '';
-                    addSystemMessage('Conversation cleared.');
+                    addSystemMessage('Chat cleared');
                     break;
+            }
+        }
+
+        async function loadModels() {
+            try {
+                const res = await fetch('/api/models');
+                const data = await res.json();
+                if (data.models && data.models.length > 0) {
+                    modelEl.innerHTML = data.models.map(m =>
+                        `<option value="${m}">${m}</option>`
+                    ).join('');
+                    // Set to current model if known
+                    if (currentModel) modelEl.value = currentModel;
+                }
+            } catch (e) {
+                console.error('Failed to load models:', e);
+            }
+        }
+
+        async function loadCommands() {
+            try {
+                const res = await fetch('/api/commands');
+                const data = await res.json();
+                commands = data.commands || [];
+            } catch (e) {
+                console.error('Failed to load commands:', e);
             }
         }
 
         function addMessage(role, content) {
             const div = document.createElement('div');
             div.className = `message ${role}`;
-            div.innerHTML = `
-                <div class="role">${role === 'user' ? 'You' : 'Jarvis'}</div>
-                <div class="content">${escapeHtml(content)}</div>
-            `;
+
+            // Format content (basic markdown)
+            let formatted = escapeHtml(content);
+            // Code blocks
+            formatted = formatted.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
+                // Check for diff
+                if (lang === 'diff') {
+                    code = code.split('\n').map(line => {
+                        if (line.startsWith('+')) return `<span class="diff-add">${line}</span>`;
+                        if (line.startsWith('-')) return `<span class="diff-remove">${line}</span>`;
+                        if (line.startsWith('@@')) return `<span class="diff-header">${line}</span>`;
+                        return line;
+                    }).join('\n');
+                }
+                return `<pre><code>${code}</code></pre>`;
+            });
+            // Inline code
+            formatted = formatted.replace(/`([^`]+)`/g, '<code>$1</code>');
+
+            if (role === 'system') {
+                div.innerHTML = formatted;
+            } else {
+                div.innerHTML = `
+                    <div class="role">${role === 'user' ? 'You' : 'Jarvis'}</div>
+                    <div class="content">${formatted}</div>
+                `;
+            }
+
             messagesEl.appendChild(div);
             messagesEl.scrollTop = messagesEl.scrollHeight;
         }
 
         function addSystemMessage(content) {
-            const div = document.createElement('div');
-            div.style.cssText = 'text-align:center;color:#888;font-size:0.875rem;margin:1rem 0;';
-            div.textContent = content;
-            messagesEl.appendChild(div);
+            addMessage('system', content);
+        }
+
+        // Streaming support
+        let streamingDiv = null;
+        let streamingText = '';
+
+        function appendToLastMessage(chunk) {
+            if (!streamingDiv) {
+                // Create new streaming message
+                streamingDiv = document.createElement('div');
+                streamingDiv.className = 'message assistant';
+                streamingDiv.innerHTML = `
+                    <div class="role">Jarvis</div>
+                    <div class="content"></div>
+                `;
+                messagesEl.appendChild(streamingDiv);
+                streamingText = '';
+            }
+            streamingText += chunk;
+            const contentEl = streamingDiv.querySelector('.content');
+            contentEl.textContent = streamingText;
+            messagesEl.scrollTop = messagesEl.scrollHeight;
+        }
+
+        function finalizeLastMessage(fullContent) {
+            if (streamingDiv) {
+                // Format the final content properly
+                let formatted = escapeHtml(fullContent);
+                formatted = formatted.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => `<pre><code>${code}</code></pre>`);
+                formatted = formatted.replace(/`([^`]+)`/g, '<code>$1</code>');
+                const contentEl = streamingDiv.querySelector('.content');
+                contentEl.innerHTML = formatted;
+            }
+            streamingDiv = null;
+            streamingText = '';
         }
 
         function showTyping() {
-            const existing = document.getElementById('typing');
-            if (!existing) {
+            if (!document.getElementById('typing')) {
                 const div = document.createElement('div');
                 div.id = 'typing';
                 div.className = 'typing';
-                div.textContent = 'Jarvis is thinking';
+                div.innerHTML = `
+                    <div class="typing-dots"><span></span><span></span><span></span></div>
+                    <span>Jarvis is thinking...</span>
+                `;
                 messagesEl.appendChild(div);
                 messagesEl.scrollTop = messagesEl.scrollHeight;
             }
@@ -440,41 +1184,46 @@ def get_html_template() -> str:
             return div.innerHTML;
         }
 
-        async function loadPersonas() {
-            try {
-                const res = await fetch('/api/personas');
-                const data = await res.json();
-                personaEl.innerHTML = data.personas.map(p =>
-                    `<option value="${p}" ${p === currentPersona ? 'selected' : ''}>${p}</option>`
-                ).join('');
-            } catch (e) {
-                console.error('Failed to load personas:', e);
-            }
-        }
-
         function send() {
             const text = inputEl.value.trim();
             if (!text || !ws || ws.readyState !== WebSocket.OPEN) return;
 
-            ws.send(JSON.stringify({ type: 'message', content: text }));
-            inputEl.value = '';
-        }
+            // Show message immediately
+            addMessage('user', text);
+            showTyping();
 
-        inputEl.addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') send();
-        });
+            ws.send(JSON.stringify({ type: 'message', content: text, chat_mode: chatMode }));
+            inputEl.value = '';
+            inputEl.style.height = 'auto';
+            suggestionsEl.classList.remove('active');
+        }
 
         sendBtn.addEventListener('click', send);
 
-        personaEl.addEventListener('change', () => {
-            ws.send(JSON.stringify({ type: 'persona', name: personaEl.value }));
+        modelEl.addEventListener('change', () => {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'switch_model', model: modelEl.value }));
+            }
         });
 
         clearBtn.addEventListener('click', () => {
-            ws.send(JSON.stringify({ type: 'clear' }));
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'clear' }));
+            }
         });
 
         connect();
     </script>
 </body>
 </html>'''
+
+
+def run_server(host: str = "0.0.0.0", port: int = 8080):
+    """Run the web server."""
+    import uvicorn
+    app = create_app()
+    uvicorn.run(app, host=host, port=port)
+
+
+if __name__ == "__main__":
+    run_server()

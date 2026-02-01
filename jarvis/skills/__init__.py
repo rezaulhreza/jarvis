@@ -10,7 +10,7 @@ from pathlib import Path
 
 from .web_search import web_search
 from .shell import shell_run, is_safe_command
-from .file_ops import read_file, list_directory
+from .file_ops import read_file, list_directory, write_file, edit_file, search_files
 from .memory_ops import save_fact, get_facts
 from .weather import get_weather, get_forecast
 from .github_ops import list_repos, repo_info, list_issues, create_issue, list_prs
@@ -48,6 +48,33 @@ BUILT_IN_SKILLS = {
         "function": list_directory,
         "description": "List files in a directory",
         "parameters": {"path": "string - path to the directory"}
+    },
+    "write_file": {
+        "function": write_file,
+        "description": "Write content to a file (creates or overwrites)",
+        "parameters": {
+            "path": "string - path to the file",
+            "content": "string - content to write",
+            "create_dirs": "bool - create parent directories if needed (optional)"
+        }
+    },
+    "edit_file": {
+        "function": edit_file,
+        "description": "Edit a file by replacing a specific string with new content",
+        "parameters": {
+            "path": "string - path to the file",
+            "old_string": "string - exact string to find and replace",
+            "new_string": "string - replacement string"
+        }
+    },
+    "search_files": {
+        "function": search_files,
+        "description": "Search for a pattern in files",
+        "parameters": {
+            "pattern": "string - text to search for",
+            "path": "string - directory to search (default: current)",
+            "file_pattern": "string - file glob pattern (e.g., *.py)"
+        }
     },
 
     # Memory

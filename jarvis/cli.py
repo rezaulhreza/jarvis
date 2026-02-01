@@ -15,9 +15,10 @@ from . import __version__, ensure_data_dir
 @click.option('--ui', is_flag=True, help='Launch web UI')
 @click.option('--voice', is_flag=True, help='Enable voice input mode')
 @click.option('--port', default=7777, help='Port for web UI (default: 7777)')
+@click.option('--reload', is_flag=True, help='Enable hot reload for development')
 @click.option('--daemon', is_flag=True, help='Run as background daemon')
 @click.pass_context
-def main(ctx, version, ui, voice, port, daemon):
+def main(ctx, version, ui, voice, port, reload, daemon):
     """
     Jarvis - Your local AI assistant.
 
@@ -27,6 +28,7 @@ def main(ctx, version, ui, voice, port, daemon):
     Examples:
         jarvis              # Interactive CLI
         jarvis --ui         # Web UI at localhost:7777
+        jarvis --ui --reload # Web UI with hot reload
         jarvis --voice      # Voice input mode
         jarvis chat "hello" # Single query
     """
@@ -38,7 +40,7 @@ def main(ctx, version, ui, voice, port, daemon):
     ensure_data_dir()
 
     if ui:
-        _launch_ui(port)
+        _launch_ui(port, reload=reload)
     elif voice:
         _launch_voice_mode()
     elif daemon:
@@ -100,16 +102,29 @@ def models():
         import ollama
         result = ollama.list()
 
-        if not result.get('models'):
+        # Handle both dict and object response formats
+        models_list = []
+        if hasattr(result, 'models'):
+            models_list = result.models
+        elif isinstance(result, dict) and 'models' in result:
+            models_list = result['models']
+
+        if not models_list:
             click.echo("No models installed.")
             click.echo("Install with: ollama pull <model>")
             return
 
         click.echo("Available models:")
-        for model in result['models']:
-            name = model.get('name', 'unknown')
-            size = model.get('size', 0) / (1024**3)  # Convert to GB
-            click.echo(f"  {name:<30} {size:.1f} GB")
+        for model in models_list:
+            # Handle both dict and object model formats
+            if hasattr(model, 'model'):
+                name = model.model
+                size = getattr(model, 'size', 0)
+            else:
+                name = model.get('model', model.get('name', 'unknown'))
+                size = model.get('size', 0)
+            size_gb = size / (1024**3)  # Convert to GB
+            click.echo(f"  {name:<30} {size_gb:.1f} GB")
 
     except Exception as e:
         click.echo(f"Error: {e}")
@@ -148,17 +163,31 @@ def _launch_cli():
     run_cli()
 
 
-def _launch_ui(port: int):
+def _launch_ui(port: int, reload: bool = False):
     """Launch web UI."""
     try:
-        from .ui import create_app
         import uvicorn
 
         click.echo(f"Starting Jarvis UI at http://localhost:{port}")
+        if reload:
+            click.echo("Hot reload enabled - changes will auto-refresh")
         click.echo("Press Ctrl+C to stop")
 
-        app = create_app()
-        uvicorn.run(app, host="0.0.0.0", port=port, log_level="warning")
+        if reload:
+            # Use string path for reload support
+            uvicorn.run(
+                "jarvis.ui:create_app",
+                host="0.0.0.0",
+                port=port,
+                reload=True,
+                reload_dirs=["jarvis"],
+                factory=True,
+                log_level="info"
+            )
+        else:
+            from .ui import create_app
+            app = create_app()
+            uvicorn.run(app, host="0.0.0.0", port=port, log_level="warning")
 
     except ImportError:
         click.echo("UI dependencies not installed.")

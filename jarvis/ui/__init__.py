@@ -1,7 +1,13 @@
 """
-Jarvis Web UI
+Jarvis UI components
 """
 
-from .app import create_app
+# Terminal UI is always available
+from .terminal import TerminalUI
 
-__all__ = ["create_app"]
+# Web UI is optional (requires fastapi)
+try:
+    from .app import create_app
+    __all__ = ["TerminalUI", "create_app"]
+except ImportError:
+    __all__ = ["TerminalUI"]

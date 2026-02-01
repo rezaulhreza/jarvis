@@ -37,6 +37,8 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "click>=8.0.0",
     "requests>=2.28.0",
+    "prompt-toolkit>=3.0.50",
+    "questionary>=2.0.0",
 ]
 
 [project.optional-dependencies]
@@ -54,8 +56,24 @@ voice = [
 telegram = [
     "python-telegram-bot>=20.0",
 ]
+anthropic = [
+    "anthropic>=0.40.0",
+]
+openai = [
+    "openai>=1.50.0",
+]
+gemini = [
+    "google-generativeai>=0.8.0",
+    "pillow>=10.0.0",
+]
+providers = [
+    "anthropic>=0.40.0",
+    "openai>=1.50.0",
+    "google-generativeai>=0.8.0",
+    "pillow>=10.0.0",
+]
 all = [
-    "jarvis-ai-assistant[ui,voice,telegram]",
+    "jarvis-ai-assistant[ui,voice,telegram,providers]",
 ]
 
 [project.scripts]
