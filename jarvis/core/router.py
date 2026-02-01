@@ -1,110 +1,223 @@
-"""Tool router using FunctionGemma or similar model"""
+"""
+Tool router - determines which skill to use for a request.
 
-import json
+Uses simple keyword matching for reliability, with LLM fallback for complex cases.
+"""
+
 import re
 from typing import Optional
 
 
-# Tool definitions for the router
-TOOLS_SCHEMA = """
-Available tools:
-1. web_search(query: str) - Search the web for information
-2. shell_run(command: str) - Run a shell command (safe commands only)
-3. read_file(path: str) - Read contents of a file
-4. list_directory(path: str) - List files in a directory
-5. save_fact(fact: str) - Remember a fact about the user
-6. get_facts() - Recall facts about the user
-7. analyze_image(path: str, question: str) - Analyze an image
-8. think(problem: str) - Use deep reasoning for complex problems
-9. none() - No tool needed, just respond conversationally
+# Keyword patterns for common tools (fast, reliable)
+TOOL_PATTERNS = {
+    "get_weather": [
+        r"weather\s+(in|for|at)\s+(\w+[\w\s]*)",
+        r"(what'?s?|how'?s?|hows)\s+(the\s+)?weather",
+        r"temperature\s+(in|for|at)",
+        r"forecast\s+(in|for|at)",
+    ],
+    "web_search": [
+        r"search\s+(for|about|the web)",
+        r"google\s+",
+        r"look\s+up\s+",
+        r"find\s+(information|info)\s+(about|on)",
+    ],
+    "current_time": [
+        r"(what|whats|what's)\s+(time|the time)",
+        r"(current|right now)\s+time",
+        r"time\s+(in|at)\s+\w+",
+    ],
+    "calculate": [
+        r"calculate\s+",
+        r"(what|whats|what's)\s+\d+\s*[\+\-\*\/]",
+        r"\d+\s*[\+\-\*\/\^]\s*\d+",
+        r"(sum|add|multiply|divide|subtract)\s+",
+    ],
+    "convert_units": [
+        r"\d+\s*(kg|lb|km|mi|c|f|celsius|fahrenheit|meters?|feet|inches)",
+        r"convert\s+\d+",
+    ],
+    "read_file": [
+        r"(read|show|display|cat|open)\s+(the\s+)?(file|contents)",
+        r"(what'?s?|show)\s+(in|inside)\s+",
+    ],
+    "list_directory": [
+        r"(list|show|ls)\s+(files|directory|folder|dir)",
+        r"(what'?s?|whats)\s+in\s+(the\s+)?(folder|directory|dir)",
+    ],
+    "shell_run": [
+        r"run\s+(command|cmd)\s+",
+        r"execute\s+",
+    ],
+    "quick_note": [
+        r"(save|write|add|make)\s+(a\s+)?(note|reminder)",
+        r"(remember|note)\s+(that|this|:)",
+    ],
+    "github_repos": [
+        r"(my|list)\s+(github\s+)?repos",
+        r"github\s+repositories",
+    ],
+}
 
-Respond with JSON: {"tool": "tool_name", "params": {...}, "reasoning": "why this tool"}
-"""
+
+def extract_params(user_input: str, tool: str) -> dict:
+    """Extract parameters from user input based on tool type."""
+    input_lower = user_input.lower()
+    params = {}
+
+    if tool == "get_weather":
+        # Extract city name
+        match = re.search(r"weather\s+(?:in|for|at)\s+([a-zA-Z\s]+?)(?:\s+now|\s+today|\s*\?|$)", input_lower)
+        if match:
+            params["city"] = match.group(1).strip().title()
+        else:
+            # Try to find any capitalized words as city
+            words = re.findall(r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\b', user_input)
+            if words:
+                params["city"] = words[-1]
+
+    elif tool == "web_search":
+        # Everything after "search for" or similar
+        match = re.search(r"(?:search|look up|find|google)\s+(?:for\s+|about\s+)?(.+)", input_lower)
+        if match:
+            params["query"] = match.group(1).strip()
+        else:
+            params["query"] = user_input
+
+    elif tool == "current_time":
+        # Extract timezone if mentioned
+        match = re.search(r"time\s+(?:in|at)\s+([a-zA-Z_/]+)", input_lower)
+        if match:
+            params["timezone"] = match.group(1)
+
+    elif tool == "calculate":
+        # Extract expression
+        match = re.search(r"(?:calculate|compute|what'?s?)\s+(.+)", input_lower)
+        if match:
+            params["expression"] = match.group(1).strip()
+        else:
+            # Look for math expression
+            match = re.search(r'(\d+[\s\d\+\-\*\/\^\(\)\.]+)', user_input)
+            if match:
+                params["expression"] = match.group(1).strip()
+
+    elif tool == "read_file":
+        # Extract file path
+        match = re.search(r'([/~][\w/\.\-]+)', user_input)
+        if match:
+            params["path"] = match.group(1)
+
+    elif tool == "list_directory":
+        # Extract directory path
+        match = re.search(r'([/~][\w/\.\-]+)', user_input)
+        if match:
+            params["path"] = match.group(1)
+        else:
+            params["path"] = "."
+
+    elif tool == "quick_note":
+        # Extract note content
+        match = re.search(r"(?:note|remember|save)(?:\s+that)?\s*:?\s*(.+)", input_lower)
+        if match:
+            params["content"] = match.group(1).strip()
+        else:
+            params["content"] = user_input
+
+    return params
 
 
 class ToolRouter:
-    """Routes user requests to appropriate tools using a fast model."""
+    """Routes user requests to appropriate tools."""
 
-    def __init__(self, ollama_client, router_model: str = "functiongemma"):
+    def __init__(self, ollama_client=None, router_model: str = "functiongemma"):
         self.client = ollama_client
         self.router_model = router_model
 
     def route(self, user_input: str, context: dict = None) -> dict:
         """
-        Determine which tool to use for a given input.
+        Determine which tool to use.
 
-        Args:
-            user_input: The user's message
-            context: Optional context (working memory, etc.)
-
-        Returns:
-            Dict with tool name and parameters
+        Uses fast keyword matching first, LLM fallback for unclear cases.
         """
-        prompt = f"""{TOOLS_SCHEMA}
+        input_lower = user_input.lower()
+
+        # Try keyword patterns first (fast and reliable)
+        for tool, patterns in TOOL_PATTERNS.items():
+            for pattern in patterns:
+                if re.search(pattern, input_lower):
+                    params = extract_params(user_input, tool)
+                    return {
+                        "tool": tool,
+                        "params": params,
+                        "method": "pattern"
+                    }
+
+        # Check for simple greetings - no tool needed
+        greetings = ['hello', 'hi', 'hey', 'good morning', 'good evening', 'how are you']
+        if any(g in input_lower for g in greetings):
+            return {"tool": "none", "params": {}}
+
+        # For complex requests, use LLM router if available
+        if self.client and self._is_complex_request(user_input):
+            return self._llm_route(user_input, context)
+
+        # Default: no tool, just chat
+        return {"tool": "none", "params": {}}
+
+    def _is_complex_request(self, user_input: str) -> bool:
+        """Check if request needs LLM routing."""
+        # Long requests or questions might need routing
+        return len(user_input) > 50 or '?' in user_input
+
+    def _llm_route(self, user_input: str, context: dict) -> dict:
+        """Use LLM to determine tool (slower but handles edge cases)."""
+        try:
+            from ..skills import get_skills_schema
+
+            prompt = f"""You are a tool router. Given a user request, output JSON for which tool to use.
+
+Available tools:
+{get_skills_schema()}
 
 User request: {user_input}
 
-Context: {json.dumps(context) if context else 'None'}
+Respond with ONLY JSON: {{"tool": "tool_name", "params": {{...}}}}
+If no tool needed, respond: {{"tool": "none", "params": {{}}}}"""
 
-What tool should be used? Respond with JSON only."""
-
-        try:
             response = self.client.chat(
                 messages=[{"role": "user", "content": prompt}],
                 model=self.router_model,
                 stream=False
             )
 
-            # Parse JSON from response
-            return self._parse_response(response)
+            return self._parse_json(response)
 
-        except Exception as e:
-            # Default to no tool on error
-            return {"tool": "none", "params": {}, "error": str(e)}
+        except Exception:
+            return {"tool": "none", "params": {}}
 
-    def _parse_response(self, response: str) -> dict:
-        """Extract JSON from model response."""
-        # Try to find JSON in the response
+    def _parse_json(self, response: str) -> dict:
+        """Extract JSON from response."""
+        import json
         try:
-            # Look for JSON pattern
-            json_match = re.search(r'\{[^{}]*\}', response, re.DOTALL)
-            if json_match:
-                return json.loads(json_match.group())
-        except json.JSONDecodeError:
+            match = re.search(r'\{[^{}]*\}', response, re.DOTALL)
+            if match:
+                return json.loads(match.group())
+        except:
             pass
-
-        # If parsing fails, try to infer from keywords
-        response_lower = response.lower()
-
-        if 'search' in response_lower or 'web' in response_lower:
-            return {"tool": "web_search", "params": {"query": ""}, "inferred": True}
-        elif 'file' in response_lower or 'read' in response_lower:
-            return {"tool": "read_file", "params": {"path": ""}, "inferred": True}
-        elif 'image' in response_lower or 'picture' in response_lower:
-            return {"tool": "analyze_image", "params": {}, "inferred": True}
-
         return {"tool": "none", "params": {}}
 
 
 def should_use_reasoning(user_input: str) -> bool:
-    """Heuristic to decide if deep reasoning is needed."""
-    reasoning_keywords = [
-        'why', 'explain', 'analyze', 'compare', 'plan',
-        'strategy', 'think through', 'reason', 'debug',
-        'figure out', 'solve', 'complex', 'tricky'
-    ]
-
-    input_lower = user_input.lower()
-    return any(kw in input_lower for kw in reasoning_keywords)
+    """Check if deep reasoning is needed."""
+    keywords = ['why', 'explain', 'analyze', 'compare', 'debug', 'figure out']
+    return any(kw in user_input.lower() for kw in keywords)
 
 
 def should_use_vision(user_input: str) -> bool:
     """Check if vision model is needed."""
-    vision_keywords = [
-        'image', 'picture', 'photo', 'screenshot', 'see',
-        'look at', 'what is this', 'describe this', '.jpg',
-        '.png', '.jpeg', '.gif', '.webp'
+    patterns = [
+        r'\.(jpg|jpeg|png|gif|webp|bmp)\b',
+        r'(this|the)\s+(image|picture|photo|screenshot)',
     ]
-
     input_lower = user_input.lower()
-    return any(kw in input_lower for kw in vision_keywords)
+    return any(re.search(p, input_lower) for p in patterns)
