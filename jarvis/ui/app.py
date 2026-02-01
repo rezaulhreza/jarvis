@@ -609,31 +609,12 @@ def create_app() -> FastAPI:
             jarvis = Jarvis(ui=ui, working_dir=working_dir)
             instances[session_id] = jarvis
 
-            # Resume most recent chat or clean up empty ones
-            recent_chats = jarvis.context.list_chats(limit=10)
-            current_chat_id = None
-
-            # Clean up empty chats first
-            for chat in recent_chats:
-                if chat.get("message_count", 0) == 0:
-                    jarvis.context.delete_chat(chat["id"])
-
-            # Find a chat with messages to resume
-            recent_chats = jarvis.context.list_chats(limit=1)
-            if recent_chats and recent_chats[0].get("message_count", 0) > 0:
-                chat_id = recent_chats[0]["id"]
-                jarvis.context.switch_chat(chat_id)
-                current_chat_id = chat_id
-            # Don't auto-create - will be created on first message
-
             await websocket.send_json({
                 "type": "connected",
                 "provider": jarvis.provider.name,
                 "model": jarvis.provider.model,
                 "project": jarvis.project.project_name,
                 "projectRoot": str(jarvis.project.project_root),
-                "chat_id": current_chat_id,
-                "messages": jarvis.context.get_messages() if current_chat_id else [],
             })
 
         except Exception as e:
@@ -676,47 +657,9 @@ def create_app() -> FastAPI:
                         })
 
                 elif msg_type == "clear":
-                    new_chat_id = None
                     if jarvis:
-                        # Extract facts from conversation before clearing
-                        if len(jarvis.context.messages) >= 4:  # At least 2 exchanges
-                            try:
-                                from jarvis.core.fact_extractor import get_fact_extractor
-                                extractor = get_fact_extractor()
-                                facts_added = extractor.process_conversation(
-                                    jarvis.context.messages,
-                                    jarvis.provider
-                                )
-                                if facts_added > 0:
-                                    print(f"[Facts] Extracted {facts_added} facts from conversation")
-                            except Exception as e:
-                                print(f"[Facts] Extraction error: {e}")
-
                         jarvis.context.clear()
-                        # Create a new chat for the next conversation
-                        new_chat_id = jarvis.context.create_chat()
-
-                        # Update URL with new chat ID
-                        await websocket.send_json({
-                            "type": "cleared",
-                            "chat_id": new_chat_id
-                        })
-
-                elif msg_type == "switch_chat":
-                    chat_id = data.get("chat_id")
-                    if chat_id and jarvis:
-                        success = jarvis.context.switch_chat(chat_id)
-                        if success:
-                            await websocket.send_json({
-                                "type": "chat_switched",
-                                "chat_id": chat_id,
-                                "messages": jarvis.context.get_messages()
-                            })
-                        else:
-                            await websocket.send_json({
-                                "type": "error",
-                                "message": "Chat not found"
-                            })
+                    await websocket.send_json({"type": "cleared"})
 
                 elif msg_type == "set_working_dir":
                     # Reinitialize with new working directory
