@@ -134,9 +134,6 @@ Techniques to get better responses:
 
 ### Context Window
 The maximum amount of text (in tokens) an LLM can process at once.
-- GPT-4: 128K tokens
-- Llama 3.2: 128K tokens
-- Local models: Often 4K-32K
 
 ### Conversation Memory
 Strategies for long conversations:
