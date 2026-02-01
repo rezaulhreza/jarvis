@@ -1,56 +1,57 @@
 # Jarvis
 
-A local-first personal AI assistant powered by Ollama. Features multiple models, tool execution, persistent memory, and switchable personas.
+A local-first personal AI assistant powered by Ollama. Features multiple models, tool execution, persistent memory, switchable personas, web UI, and voice input.
 
 ## Features
 
 - **Multi-Model Architecture**: Automatically selects the right model for the task
-  - General chat (qwen3)
-  - Deep reasoning (deepseek-r1)
-  - Vision/images (llava)
-  - Code generation (qwen2.5-coder)
-  - Tool routing (functiongemma)
+- **Built-in Skills**: Web search, weather, GitHub, file ops, calculator, notes, and more
+- **Memory System**: Conversation history with auto-compaction and persistent storage
+- **Personas**: Switch between different assistant modes (coder, researcher, creative, planner)
+- **Web UI**: Browser-based interface with `jarvis --ui`
+- **Voice Input**: Speech-to-text with Whisper using `jarvis --voice`
 
-- **Built-in Skills**
-  - Web search (DuckDuckGo)
-  - Weather lookup
-  - GitHub operations
-  - File operations
-  - Shell commands (sandboxed)
-  - Calculator & unit conversion
-  - Note-taking
-  - Date/time utilities
+## Installation
 
-- **Memory System**
-  - Conversation history with auto-compaction
-  - Long-term fact storage
-  - Entity tracking (people, projects)
-  - SQLite persistence
+### Quick Install (Recommended)
 
-- **Personas**
-  - Default (balanced assistant)
-  - Coder (pair programming)
-  - Researcher (information analysis)
-  - Creative (brainstorming)
-  - Planner (productivity)
+```bash
+curl -fsSL https://raw.githubusercontent.com/rezaulhreza/jarvis/main/install.sh | bash
+```
 
-## Requirements
+### Using pip
 
-- macOS or Linux
+```bash
+# Basic installation
+pip install jarvis-ai-assistant
+
+# With UI support
+pip install jarvis-ai-assistant[ui]
+
+# With voice support
+pip install jarvis-ai-assistant[voice]
+
+# Everything
+pip install jarvis-ai-assistant[all]
+```
+
+### From Source
+
+```bash
+git clone https://github.com/rezaulhreza/jarvis.git
+cd jarvis
+python -m venv venv
+source venv/bin/activate
+pip install -e .
+```
+
+### Requirements
+
 - Python 3.10+
 - [Ollama](https://ollama.ai) installed and running
 - 16GB RAM recommended
 
-## Installation
-
-### 1. Clone the repository
-
-```bash
-git clone git@github.com:YOUR_USERNAME/jarvis.git
-cd jarvis
-```
-
-### 2. Install Ollama models
+### Install Ollama Models
 
 ```bash
 # Required
@@ -58,214 +59,158 @@ ollama pull qwen3:4b
 ollama pull llava
 ollama pull functiongemma
 
-# Optional (for enhanced features)
-ollama pull deepseek-r1:8b      # Deep reasoning
-ollama pull qwen2.5-coder:7b    # Code generation
-ollama pull nomic-embed-text    # Embeddings for RAG
-```
-
-### 3. Set up Python environment
-
-```bash
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-```
-
-### 4. Configure environment variables
-
-```bash
-cp .env.example .env
-# Edit .env with your API keys (optional)
-```
-
-### 5. Run
-
-```bash
-python main.py
+# Optional
+ollama pull deepseek-r1:8b    # Deep reasoning
+ollama pull qwen2.5-coder:7b  # Code generation
 ```
 
 ## Usage
 
-### Basic Chat
+### CLI Mode (Default)
 
-```
-You: What's the weather in London?
-Jarvis: [Uses weather skill to fetch current conditions]
-
-You: Explain how async/await works in Python
-Jarvis: [Provides technical explanation]
-
-You: /Users/me/screenshot.jpg what's in this image?
-Jarvis: [Uses llava to analyze the image]
+```bash
+jarvis
 ```
 
-### Commands
+### Web UI
+
+```bash
+jarvis --ui
+# Opens at http://localhost:7777
+```
+
+### Voice Mode
+
+```bash
+jarvis --voice
+# Requires: pip install jarvis-ai-assistant[voice]
+```
+
+### Single Query
+
+```bash
+jarvis chat "What's the weather in London?"
+```
+
+### Other Commands
+
+```bash
+jarvis --help      # Show all options
+jarvis setup       # Run setup wizard
+jarvis models      # List Ollama models
+jarvis personas    # List personas
+```
+
+## CLI Commands
+
+Inside the interactive CLI:
 
 | Command | Description |
 |---------|-------------|
-| `/help` | Show available commands |
-| `/models` | List installed Ollama models |
-| `/persona <name>` | Switch persona (default, coder, researcher, creative, planner) |
-| `/facts` | Show stored facts about you |
-| `/memory` | Show current working memory |
-| `/clear` | Clear conversation history |
-| `/history` | Show recent conversation |
+| `/help` | Show help |
+| `/models` | List available models |
+| `/persona <name>` | Switch persona |
+| `/personas` | List personas |
 | `/skills` | List available skills |
-| `/quit` | Exit Jarvis |
-
-### Switching Personas
-
-```
-You: /persona coder
-Jarvis: Switched to coder persona.
-
-You: Review this function for performance issues
-Jarvis: [Responds with code-focused analysis]
-```
-
-## Project Structure
-
-```
-jarvis/
-├── main.py                    # CLI entry point
-├── requirements.txt           # Python dependencies
-├── .env.example              # Environment template
-│
-├── config/
-│   ├── settings.yaml         # Main configuration
-│   ├── rules.md              # Safety rules
-│   └── personas/             # Persona definitions
-│       ├── default.md
-│       ├── coder.md
-│       ├── researcher.md
-│       ├── creative.md
-│       └── planner.md
-│
-├── core/
-│   ├── ollama_client.py      # Ollama API wrapper
-│   ├── context_manager.py    # Memory & context
-│   └── router.py             # Tool selection
-│
-├── memory/
-│   ├── facts.md              # User facts
-│   └── entities.json         # Tracked entities
-│
-├── skills/                   # Tool implementations
-│   ├── web_search.py
-│   ├── weather.py
-│   ├── github_ops.py
-│   ├── shell.py
-│   ├── file_ops.py
-│   ├── calculator.py
-│   ├── datetime_ops.py
-│   ├── notes.py
-│   └── telegram.py
-│
-└── knowledge/                # RAG storage
-    ├── documents/            # Your documents
-    └── notes/                # Quick notes
-```
+| `/facts` | Show stored facts |
+| `/memory` | Show working memory |
+| `/clear` | Clear conversation |
+| `/history` | Show recent history |
+| `/quit` | Exit |
 
 ## Configuration
 
-### Settings (config/settings.yaml)
+Configuration is stored in `~/.jarvis/`:
 
-```yaml
-models:
-  default: "qwen3:4b"         # Change default model
-  reasoning: "deepseek-r1:8b" # For complex problems
-
-context:
-  max_tokens: 8000            # Auto-compact threshold
-  keep_recent_messages: 5     # Messages to keep after compaction
-
-persona: "default"            # Starting persona
+```
+~/.jarvis/
+├── config/
+│   ├── settings.yaml     # Main config
+│   ├── rules.md          # Safety rules
+│   └── personas/         # Persona definitions
+├── memory/
+│   ├── facts.md          # User facts
+│   └── jarvis.db         # SQLite history
+└── knowledge/
+    └── notes/            # Quick notes
 ```
 
-### Environment Variables (.env)
+### Environment Variables
+
+Create `~/.jarvis/.env`:
 
 ```bash
 # Telegram (optional)
 TELEGRAM_BOT_TOKEN=your_token
 
-# Weather (optional - falls back to wttr.in)
+# Weather API (optional)
 OPENWEATHER_API_KEY=your_key
 
-# GitHub (optional - uses gh CLI auth)
+# GitHub (optional)
 GITHUB_TOKEN=your_token
 ```
 
+## Available Skills
+
+| Skill | Description |
+|-------|-------------|
+| `web_search` | Search with DuckDuckGo |
+| `get_weather` | Current weather |
+| `get_forecast` | Weather forecast |
+| `github_repos` | List repositories |
+| `github_issues` | List issues |
+| `read_file` | Read file contents |
+| `list_directory` | List directory |
+| `shell_run` | Run safe commands |
+| `calculate` | Math expressions |
+| `convert_units` | Unit conversion |
+| `current_time` | Get time |
+| `quick_note` | Save notes |
+| `search_notes` | Search notes |
+
+## Personas
+
+- **default**: Balanced general assistant
+- **coder**: Pair programming mode
+- **researcher**: Information analysis
+- **creative**: Brainstorming partner
+- **planner**: Productivity coach
+
+Switch with `/persona coder` or `jarvis persona coder`.
+
 ## Adding Custom Skills
 
-1. Create a new file in `skills/`:
+Create `~/.jarvis/skills/my_skill.py`:
 
 ```python
-# skills/my_skill.py
-
 def my_function(param: str) -> dict:
     """Do something useful."""
     return {"success": True, "result": "..."}
 ```
 
-2. Register in `skills/__init__.py`:
-
-```python
-from .my_skill import my_function
-
-AVAILABLE_SKILLS["my_skill"] = {
-    "function": my_function,
-    "description": "Does something useful",
-    "parameters": {"param": "string - description"}
-}
-```
-
 ## Adding Custom Personas
 
-Create a new file in `config/personas/`:
+Create `~/.jarvis/config/personas/my_persona.md`:
 
 ```markdown
 # My Persona
 
-You are Jarvis in [mode] mode.
+You are Jarvis in custom mode.
 
-## Core Traits
-- Trait 1
-- Trait 2
-
-## Communication Style
-- Style guidelines
+## Traits
+- Custom trait 1
+- Custom trait 2
 ```
 
-Then use: `/persona my_persona`
+## Development
 
-## Roadmap
-
-- [ ] Voice input/output (Whisper + TTS)
-- [ ] Telegram bot integration
-- [ ] RAG with local documents
-- [ ] Calendar integration
-- [ ] Scheduled tasks
-- [ ] Web UI option
-
-## Troubleshooting
-
-### Ollama connection failed
 ```bash
-# Make sure Ollama is running
-ollama serve
+git clone https://github.com/rezaulhreza/jarvis.git
+cd jarvis
+python -m venv venv
+source venv/bin/activate
+pip install -e ".[all]"
 ```
-
-### Model not found
-```bash
-# Pull the required model
-ollama pull model_name
-```
-
-### Out of memory
-- Use smaller models (3b/4b variants)
-- Reduce `max_tokens` in settings.yaml
-- Close other applications
 
 ## License
 

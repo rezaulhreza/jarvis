@@ -1,7 +1,7 @@
-# Facts About Rez
+# Facts About Boss
 
 ## Identity
-- Name: Rez
+- Name: Boss
 - Timezone: Europe/London (GMT/BST)
 
 ## Technical Background
