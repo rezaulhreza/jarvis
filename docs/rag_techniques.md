@@ -80,9 +80,9 @@ export RAG_RERANK=true
 
 ---
 
-## Techniques To Implement
+## Implemented Techniques (continued)
 
-### 2. Hybrid Search (BM25 + Vector)
+### 2. Hybrid Search (BM25 + Vector) - IMPLEMENTED
 
 **Problem:** Pure vector search misses exact keyword matches. Pure keyword search misses semantic similarity.
 
@@ -122,6 +122,53 @@ final_score = rrf_score(bm25_rank) + rrf_score(vector_rank)
 **Why it helps:**
 - BM25 finds "Laravel developer" when query is "Laravel developer"
 - Vectors find "PHP framework expert" for same query
+- Combined: "What is my website" matches both semantically AND the keyword "website"
+
+**Implementation in Jarvis:**
+
+```python
+# jarvis/knowledge/rag.py
+
+class SparseEncoder:
+    """Simple BM25-style sparse encoder for keyword matching."""
+
+    def encode(self, text: str) -> tuple[list[int], list[float]]:
+        """Encode text to sparse vector (indices, values)."""
+        tokens = self._tokenize(text)
+        tf = Counter(tokens)
+
+        indices, values = [], []
+        for token, count in tf.items():
+            if token in self.vocab:
+                tf_score = 1 + (count / len(tokens))
+                idf_score = self.idf.get(token, 1.0)
+                indices.append(self.vocab[token])
+                values.append(tf_score * idf_score)
+
+        return indices, values
+
+
+class QdrantVectorStore:
+    def query(self, embedding, query_text, n_results=5):
+        # Hybrid search with RRF fusion
+        sparse_indices, sparse_values = self.sparse_encoder.encode(query_text)
+
+        response = self.client.query_points(
+            collection_name=self.collection_name,
+            prefetch=[
+                Prefetch(query=embedding, using="dense", limit=n_results * 2),
+                Prefetch(
+                    query=SparseVector(indices=sparse_indices, values=sparse_values),
+                    using="sparse",
+                    limit=n_results * 2
+                ),
+            ],
+            query=FusionQuery(fusion=Fusion.RRF),  # Reciprocal Rank Fusion
+            limit=n_results,
+        )
+```
+
+**Enabled by default** when using Qdrant backend. No configuration needed
 - Combined: best of both worlds
 
 ---

@@ -37,8 +37,8 @@ class VectorStore(ABC):
 
     @abstractmethod
     def query(self, embedding: list[float], n_results: int = 5,
-              filter_metadata: dict = None) -> dict:
-        """Query for similar documents."""
+              filter_metadata: dict = None, query_text: str = None) -> dict:
+        """Query for similar documents. query_text enables hybrid search if supported."""
         pass
 
     @abstractmethod
@@ -93,7 +93,8 @@ class ChromaVectorStore(VectorStore):
         )
 
     def query(self, embedding: list[float], n_results: int = 5,
-              filter_metadata: dict = None) -> dict:
+              filter_metadata: dict = None, query_text: str = None) -> dict:
+        # query_text ignored - ChromaDB doesn't support hybrid search
         results = self.collection.query(
             query_embeddings=[embedding],
             n_results=n_results,
@@ -131,10 +132,76 @@ class ChromaVectorStore(VectorStore):
         return count
 
 
-class QdrantVectorStore(VectorStore):
-    """Qdrant vector store backend (cloud)."""
+class SparseEncoder:
+    """Simple BM25-style sparse encoder for keyword matching."""
 
-    def __init__(self, url: str, api_key: str, collection_name: str = "jarvis_knowledge"):
+    def __init__(self):
+        self.vocab: dict[str, int] = {}  # word -> index
+        self.idf: dict[str, float] = {}  # word -> IDF score
+        self.doc_count = 0
+
+    def _tokenize(self, text: str) -> list[str]:
+        """Simple tokenization: lowercase, split on non-alphanumeric."""
+        import re
+        text = text.lower()
+        tokens = re.findall(r'\b[a-z0-9]+\b', text)
+        # Remove very short tokens and stopwords
+        stopwords = {'the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been',
+                     'to', 'of', 'and', 'in', 'that', 'it', 'for', 'on', 'with',
+                     'as', 'at', 'by', 'from', 'or', 'this', 'which', 'you', 'we'}
+        return [t for t in tokens if len(t) > 2 and t not in stopwords]
+
+    def fit(self, documents: list[str]):
+        """Build vocabulary and IDF from documents."""
+        import math
+        self.doc_count = len(documents)
+        doc_freq: dict[str, int] = {}
+
+        for doc in documents:
+            tokens = set(self._tokenize(doc))
+            for token in tokens:
+                if token not in self.vocab:
+                    self.vocab[token] = len(self.vocab)
+                doc_freq[token] = doc_freq.get(token, 0) + 1
+
+        # Calculate IDF
+        for token, df in doc_freq.items():
+            self.idf[token] = math.log((self.doc_count + 1) / (df + 1)) + 1
+
+    def encode(self, text: str) -> tuple[list[int], list[float]]:
+        """Encode text to sparse vector (indices, values)."""
+        from collections import Counter
+        tokens = self._tokenize(text)
+        tf = Counter(tokens)
+
+        indices = []
+        values = []
+
+        for token, count in tf.items():
+            if token in self.vocab:
+                idx = self.vocab[token]
+                # TF-IDF score
+                tf_score = 1 + (count / len(tokens)) if tokens else 0
+                idf_score = self.idf.get(token, 1.0)
+                score = tf_score * idf_score
+
+                indices.append(idx)
+                values.append(score)
+
+        # Sort by index for Qdrant
+        if indices:
+            sorted_pairs = sorted(zip(indices, values))
+            indices, values = zip(*sorted_pairs)
+            return list(indices), list(values)
+
+        return [], []
+
+
+class QdrantVectorStore(VectorStore):
+    """Qdrant vector store backend with hybrid search (dense + sparse)."""
+
+    def __init__(self, url: str, api_key: str, collection_name: str = "jarvis_knowledge",
+                 hybrid: bool = True):
         try:
             from qdrant_client import QdrantClient
         except ImportError:
@@ -145,21 +212,41 @@ class QdrantVectorStore(VectorStore):
 
         self.client = QdrantClient(url=url, api_key=api_key)
         self.collection_name = collection_name
+        self.hybrid = hybrid
+        self.sparse_encoder = SparseEncoder() if hybrid else None
         self._ensure_collection()
 
     def _ensure_collection(self):
         """Create collection if it doesn't exist."""
-        from qdrant_client.models import Distance, VectorParams, PayloadSchemaType
+        from qdrant_client.models import (
+            Distance, VectorParams, PayloadSchemaType,
+            SparseVectorParams, SparseIndexParams
+        )
 
         collections = self.client.get_collections().collections
         exists = any(c.name == self.collection_name for c in collections)
 
         if not exists:
-            # nomic-embed-text produces 768-dimensional vectors
-            self.client.create_collection(
-                collection_name=self.collection_name,
-                vectors_config=VectorParams(size=768, distance=Distance.COSINE)
-            )
+            if self.hybrid:
+                # Hybrid collection with both dense and sparse vectors
+                self.client.create_collection(
+                    collection_name=self.collection_name,
+                    vectors_config={
+                        "dense": VectorParams(size=768, distance=Distance.COSINE)
+                    },
+                    sparse_vectors_config={
+                        "sparse": SparseVectorParams(
+                            index=SparseIndexParams(on_disk=False)
+                        )
+                    }
+                )
+            else:
+                # Dense-only collection
+                self.client.create_collection(
+                    collection_name=self.collection_name,
+                    vectors_config=VectorParams(size=768, distance=Distance.COSINE)
+                )
+
             # Create payload indexes for filtering
             self.client.create_payload_index(
                 collection_name=self.collection_name,
@@ -174,29 +261,55 @@ class QdrantVectorStore(VectorStore):
 
     def add(self, ids: list[str], embeddings: list[list[float]],
             documents: list[str], metadatas: list[dict]) -> None:
-        from qdrant_client.models import PointStruct
+        from qdrant_client.models import PointStruct, SparseVector
+
+        # Fit sparse encoder on documents if hybrid
+        if self.hybrid and self.sparse_encoder:
+            self.sparse_encoder.fit(documents)
 
         points = []
         for doc_id, embedding, document, metadata in zip(
             ids, embeddings, documents, metadatas
         ):
-            # Qdrant needs numeric IDs, so we hash the string ID
             numeric_id = int(hashlib.md5(doc_id.encode()).hexdigest()[:16], 16)
-            points.append(PointStruct(
-                id=numeric_id,
-                vector=embedding,
-                payload={
-                    "document": document,
-                    "doc_id": doc_id,
-                    **metadata
-                }
-            ))
+
+            if self.hybrid and self.sparse_encoder:
+                # Hybrid: both dense and sparse vectors
+                sparse_indices, sparse_values = self.sparse_encoder.encode(document)
+                point = PointStruct(
+                    id=numeric_id,
+                    vector={
+                        "dense": embedding,
+                        "sparse": SparseVector(indices=sparse_indices, values=sparse_values)
+                    },
+                    payload={
+                        "document": document,
+                        "doc_id": doc_id,
+                        **metadata
+                    }
+                )
+            else:
+                # Dense only
+                point = PointStruct(
+                    id=numeric_id,
+                    vector=embedding,
+                    payload={
+                        "document": document,
+                        "doc_id": doc_id,
+                        **metadata
+                    }
+                )
+            points.append(point)
 
         self.client.upsert(collection_name=self.collection_name, points=points)
 
     def query(self, embedding: list[float], n_results: int = 5,
-              filter_metadata: dict = None) -> dict:
-        from qdrant_client.models import Filter, FieldCondition, MatchValue
+              filter_metadata: dict = None, query_text: str = None) -> dict:
+        """Query with hybrid search (dense + sparse with RRF fusion)."""
+        from qdrant_client.models import (
+            Filter, FieldCondition, MatchValue,
+            Prefetch, FusionQuery, Fusion, SparseVector
+        )
 
         # Build filter if provided
         qdrant_filter = None
@@ -207,13 +320,52 @@ class QdrantVectorStore(VectorStore):
             ]
             qdrant_filter = Filter(must=conditions)
 
-        response = self.client.query_points(
-            collection_name=self.collection_name,
-            query=embedding,
-            limit=n_results,
-            query_filter=qdrant_filter,
-            with_payload=True
-        )
+        if self.hybrid and query_text and self.sparse_encoder:
+            # Hybrid search with RRF fusion
+            sparse_indices, sparse_values = self.sparse_encoder.encode(query_text)
+
+            if sparse_indices:
+                # Use prefetch for both dense and sparse, then fuse with RRF
+                response = self.client.query_points(
+                    collection_name=self.collection_name,
+                    prefetch=[
+                        Prefetch(
+                            query=embedding,
+                            using="dense",
+                            limit=n_results * 2,
+                            filter=qdrant_filter
+                        ),
+                        Prefetch(
+                            query=SparseVector(indices=sparse_indices, values=sparse_values),
+                            using="sparse",
+                            limit=n_results * 2,
+                            filter=qdrant_filter
+                        ),
+                    ],
+                    query=FusionQuery(fusion=Fusion.RRF),
+                    limit=n_results,
+                    with_payload=True
+                )
+            else:
+                # No sparse matches, fall back to dense only
+                response = self.client.query_points(
+                    collection_name=self.collection_name,
+                    query=embedding,
+                    using="dense",
+                    limit=n_results,
+                    query_filter=qdrant_filter,
+                    with_payload=True
+                )
+        else:
+            # Dense-only search
+            response = self.client.query_points(
+                collection_name=self.collection_name,
+                query=embedding,
+                using="dense" if self.hybrid else None,
+                limit=n_results,
+                query_filter=qdrant_filter,
+                with_payload=True
+            )
 
         results = response.points
         return {
@@ -221,7 +373,7 @@ class QdrantVectorStore(VectorStore):
             "documents": [r.payload.get("document", "") for r in results],
             "metadatas": [{k: v for k, v in r.payload.items()
                          if k not in ("document", "doc_id")} for r in results],
-            "distances": [1 - r.score for r in results]  # Convert similarity to distance
+            "distances": [1 - r.score if r.score else 0 for r in results]
         }
 
     def delete(self, ids: list[str]) -> None:
@@ -484,7 +636,8 @@ class RAGEngine:
         results = self.store.query(
             embedding=query_embedding,
             n_results=retrieve_count,
-            filter_metadata=filter_metadata
+            filter_metadata=filter_metadata,
+            query_text=query  # For hybrid search (keyword matching)
         )
 
         documents = []
