@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { useWebSocket } from './hooks/useWebSocket'
 import { useVoice } from './hooks/useVoice'
+import { ChatSidebar } from './components/ChatSidebar'
 import { cn } from './lib/utils'
 import {
   Mic,
@@ -8,6 +9,7 @@ import {
   Send,
   Volume2,
   VolumeX,
+  Menu,
   MessageSquare,
   Phone,
   Trash2,
@@ -37,6 +39,8 @@ export default function App() {
   const [ttsProvider, setTtsProvider] = useState<'browser' | 'edge' | 'elevenlabs'>('browser')
   const [sttProvider, setSttProvider] = useState<'browser' | 'whisper'>('browser')
   const [elevenLabsKey, setElevenLabsKey] = useState('')
+  const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [currentChatId, setCurrentChatId] = useState<string | null>(null)
 
   const {
     connected,
@@ -46,10 +50,18 @@ export default function App() {
     project,
     model,
     ragStatus,
+    chatId: wsChatId,
     send,
     clear,
     switchModel,
   } = useWebSocket()
+
+  // Sync chat ID from WebSocket with local state
+  useEffect(() => {
+    if (wsChatId) {
+      setCurrentChatId(wsChatId)
+    }
+  }, [wsChatId])
 
   // Randomize loading text when loading starts
   useEffect(() => {
@@ -143,6 +155,54 @@ export default function App() {
     const data = await res.json()
     if (data.voices?.length > 0) {
       setElevenVoices(data.voices)
+    }
+  }
+
+  // ============== Chat History Management ==============
+
+  // Fetch current chat ID on mount
+  useEffect(() => {
+    fetch('/api/chats/current')
+      .then(res => res.json())
+      .then(data => {
+        if (data.chat_id) setCurrentChatId(data.chat_id)
+      })
+      .catch(() => {})
+  }, [])
+
+  // Auto-generate title after 3 messages
+  useEffect(() => {
+    if (currentChatId && messages.length === 3) {
+      fetch(`/api/chats/${currentChatId}/generate-title`, { method: 'POST' })
+        .catch(() => {})
+    }
+  }, [currentChatId, messages.length])
+
+  const handleSelectChat = async (chatId: string) => {
+    try {
+      const res = await fetch(`/api/chats/${chatId}/switch`, { method: 'POST' })
+      const data = await res.json()
+      if (data.success) {
+        setCurrentChatId(chatId)
+        // Reload the page to refresh messages (simple approach)
+        // In a more sophisticated implementation, you'd update the WebSocket state
+        window.location.reload()
+      }
+    } catch (e) {
+      console.error('Failed to switch chat:', e)
+    }
+  }
+
+  const handleNewChat = async () => {
+    try {
+      const res = await fetch('/api/chats', { method: 'POST' })
+      const data = await res.json()
+      if (data.id) {
+        setCurrentChatId(data.id)
+        clear() // Clear current messages
+      }
+    } catch (e) {
+      console.error('Failed to create chat:', e)
     }
   }
 
@@ -383,15 +443,37 @@ export default function App() {
 
   // Chat mode
   return (
-    <div className="flex flex-col h-full">
-      <header className="flex items-center justify-between px-6 py-4 border-b border-[#2a2a3a]">
-        <div className="flex items-center gap-3">
-          <img src="/jarvis.jpeg" alt="Jarvis" className="w-8 h-8 rounded-full" />
-          <h1 className="text-xl font-semibold">Jarvis</h1>
-          {project && (
-            <span className="text-sm px-2 py-1 rounded bg-[#1a1a24] text-[#71717a]">{project}</span>
-          )}
-        </div>
+    <div className="flex h-full">
+      {/* Chat History Sidebar */}
+      <ChatSidebar
+        isOpen={sidebarOpen}
+        onToggle={() => setSidebarOpen(!sidebarOpen)}
+        currentChatId={currentChatId}
+        onSelectChat={handleSelectChat}
+        onNewChat={handleNewChat}
+      />
+
+      {/* Main Content - shifts when sidebar is open on desktop */}
+      <div className={cn(
+        "flex flex-col flex-1 h-full transition-all duration-300",
+        sidebarOpen && "lg:ml-72"
+      )}>
+        <header className="flex items-center justify-between px-6 py-4 border-b border-[#2a2a3a]">
+          <div className="flex items-center gap-3">
+            {/* Sidebar toggle button */}
+            <button
+              onClick={() => setSidebarOpen(!sidebarOpen)}
+              className="p-2 rounded-lg bg-[#1a1a24] text-[#71717a] hover:text-white hover:bg-[#2a2a3a] transition-colors"
+              title="Chat history"
+            >
+              <Menu size={18} />
+            </button>
+            <img src="/jarvis.jpeg" alt="Jarvis" className="w-8 h-8 rounded-full" />
+            <h1 className="text-xl font-semibold">Jarvis</h1>
+            {project && (
+              <span className="text-sm px-2 py-1 rounded bg-[#1a1a24] text-[#71717a]">{project}</span>
+            )}
+          </div>
         <div className="flex items-center gap-2">
           {/* Model selector */}
           <div className="relative">
@@ -733,6 +815,7 @@ export default function App() {
           </button>
         </div>
       </footer>
+      </div>{/* End of main content wrapper */}
     </div>
   )
 }

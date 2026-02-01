@@ -23,6 +23,7 @@ interface WSMessage {
   done?: boolean
   error?: string
   rag?: RagInfo
+  chat_id?: string
 }
 
 export function useWebSocket() {
@@ -35,6 +36,7 @@ export function useWebSocket() {
   const [provider, setProvider] = useState('')
   const [project, setProject] = useState('')
   const [ragStatus, setRagStatus] = useState<RagInfo | null>(null)
+  const [chatId, setChatId] = useState<string | null>(null)
 
   useEffect(() => {
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null
@@ -119,6 +121,9 @@ export function useWebSocket() {
         setMessages([])
         setStreaming('')
         setRagStatus(null)
+        if (data.chat_id) {
+          setChatId(data.chat_id)
+        }
         break
     }
   }
@@ -153,6 +158,7 @@ export function useWebSocket() {
     provider,
     project,
     ragStatus,
+    chatId,
     send,
     switchModel,
     clear,

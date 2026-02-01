@@ -297,6 +297,88 @@ def create_app() -> FastAPI:
         except Exception as e:
             return {"models": [], "error": str(e)}
 
+    # ============== Chat History API ==============
+
+    @app.get("/api/chats")
+    async def list_chats(search: str = None, limit: int = 50):
+        """List all chats, optionally filtered by search."""
+        chats = jarvis.context.list_chats(limit=limit, search=search)
+        return {"chats": chats}
+
+    @app.post("/api/chats")
+    async def create_chat(title: str = "New Chat"):
+        """Create a new chat."""
+        chat_id = jarvis.context.create_chat(title)
+        return {"id": chat_id, "title": title}
+
+    @app.get("/api/chats/{chat_id}")
+    async def get_chat(chat_id: str):
+        """Get a chat with its messages."""
+        chat = jarvis.context.get_chat(chat_id)
+        if not chat:
+            return {"error": "Chat not found"}, 404
+        return chat
+
+    @app.patch("/api/chats/{chat_id}")
+    async def update_chat(chat_id: str, title: str = None):
+        """Update a chat's title."""
+        success = jarvis.context.update_chat(chat_id, title=title)
+        if not success:
+            return {"error": "Chat not found"}, 404
+        return {"success": True}
+
+    @app.delete("/api/chats/{chat_id}")
+    async def delete_chat(chat_id: str):
+        """Delete a chat."""
+        success = jarvis.context.delete_chat(chat_id)
+        if not success:
+            return {"error": "Chat not found"}, 404
+        return {"success": True}
+
+    @app.post("/api/chats/{chat_id}/switch")
+    async def switch_chat(chat_id: str):
+        """Switch to a different chat."""
+        success = jarvis.context.switch_chat(chat_id)
+        if not success:
+            return {"error": "Chat not found"}, 404
+        return {"success": True, "messages": jarvis.context.messages}
+
+    @app.post("/api/chats/{chat_id}/generate-title")
+    async def generate_chat_title(chat_id: str):
+        """Generate a title for a chat using AI."""
+        snippet = jarvis.context.generate_chat_title(chat_id)
+        if not snippet:
+            return {"error": "No messages to generate title from"}
+
+        # Use LLM to generate a short title
+        try:
+            prompt = f"Generate a short title (3-6 words, no quotes) for this conversation:\n\n{snippet}\n\nTitle:"
+            response = jarvis.provider.chat(
+                messages=[{"role": "user", "content": prompt}],
+                system="You are a helpful assistant. Generate only a short, descriptive title. No quotes, no punctuation at the end.",
+                stream=False,
+                options={"num_predict": 20}
+            )
+
+            # Get the response text
+            title = ""
+            for chunk in response:
+                title += chunk
+            title = title.strip().strip('"\'').strip()[:50]  # Clean up and limit length
+
+            if title:
+                jarvis.context.update_chat(chat_id, title=title)
+                return {"title": title}
+            else:
+                return {"error": "Failed to generate title"}
+        except Exception as e:
+            return {"error": str(e)}
+
+    @app.get("/api/chats/current")
+    async def get_current_chat():
+        """Get the current chat ID."""
+        return {"chat_id": jarvis.context.get_current_chat_id()}
+
     @app.post("/api/transcribe")
     async def transcribe_audio(audio: UploadFile = File(...)):
         """Transcribe audio using Whisper."""
@@ -549,7 +631,9 @@ def create_app() -> FastAPI:
                 elif msg_type == "clear":
                     if jarvis:
                         jarvis.context.clear()
-                    await websocket.send_json({"type": "cleared"})
+                        # Create a new chat for the next conversation
+                        new_chat_id = jarvis.context.create_chat()
+                    await websocket.send_json({"type": "cleared", "chat_id": new_chat_id if jarvis else None})
 
                 elif msg_type == "set_working_dir":
                     # Reinitialize with new working directory
@@ -591,8 +675,8 @@ def create_app() -> FastAPI:
                 })
                 return
 
-            # Add to context
-            jarvis.context.add_message("user", user_input)
+            # Add to context (creates chat if needed)
+            jarvis.context.add_message_to_chat("user", user_input)
 
             # Build history
             from jarvis.providers import Message
@@ -688,7 +772,7 @@ def create_app() -> FastAPI:
                 })
 
                 if response_text.strip():
-                    jarvis.context.add_message("assistant", response_text.strip())
+                    jarvis.context.add_message_to_chat("assistant", response_text.strip())
 
             else:
                 # AGENT MODE: Use tools for coding tasks
@@ -711,7 +795,7 @@ def create_app() -> FastAPI:
                     clean = response.replace("[dim]", "").replace("[/dim]", "")
                     clean = clean.replace("[red]", "").replace("[/red]", "")
                     if clean.strip():
-                        jarvis.context.add_message("assistant", clean.strip())
+                        jarvis.context.add_message_to_chat("assistant", clean.strip())
 
         except Exception as e:
             import traceback
