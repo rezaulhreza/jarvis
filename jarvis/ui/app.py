@@ -604,6 +604,18 @@ def create_app() -> FastAPI:
                 if user_nickname:
                     chat_system += f" Call user '{user_nickname}'."
 
+                # RAG: Retrieve relevant context from knowledge base
+                rag_context = ""
+                try:
+                    from jarvis.knowledge import get_rag_engine
+                    rag = get_rag_engine(jarvis.config)
+                    if rag.count() > 0:
+                        rag_context = rag.get_context(user_input, n_results=3, max_tokens=800)
+                        if rag_context:
+                            chat_system += f"\n\n{rag_context}"
+                except Exception as e:
+                    print(f"[RAG] Error retrieving context: {e}")
+
                 # Minimal context - just last 2 exchanges for speed
                 recent = history[-2:] if len(history) > 2 else history
                 all_messages = recent + [Message(role="user", content=user_input)]

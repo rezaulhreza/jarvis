@@ -276,5 +276,142 @@ def _launch_daemon():
     sys.exit(1)
 
 
+# ============== Knowledge Base Commands ==============
+
+@main.group()
+def knowledge():
+    """Manage the RAG knowledge base."""
+    pass
+
+
+@knowledge.command("add")
+@click.argument("path")
+@click.option("--recursive", "-r", is_flag=True, help="Recursively add directory contents")
+def knowledge_add(path, recursive):
+    """Add a file or directory to the knowledge base.
+
+    \b
+    Examples:
+        jarvis knowledge add document.pdf
+        jarvis knowledge add ./docs --recursive
+    """
+    from .knowledge import get_rag_engine
+    from pathlib import Path
+
+    rag = get_rag_engine()
+    p = Path(path)
+
+    if not p.exists():
+        click.echo(f"Error: Path not found: {path}")
+        sys.exit(1)
+
+    if p.is_file():
+        try:
+            chunks = rag.add_file(str(p))
+            click.echo(f"Added {p.name}: {chunks} chunks")
+        except Exception as e:
+            click.echo(f"Error: {e}")
+            sys.exit(1)
+    elif p.is_dir():
+        if not recursive:
+            click.echo("Use --recursive to add directory contents")
+            sys.exit(1)
+        results = rag.add_directory(str(p))
+        success = sum(1 for r in results.values() if r["status"] == "success")
+        click.echo(f"Added {success}/{len(results)} files")
+        for file, result in results.items():
+            status = "OK" if result["status"] == "success" else f"Error: {result.get('error', 'unknown')}"
+            click.echo(f"  {Path(file).name}: {status}")
+
+
+@knowledge.command("list")
+def knowledge_list():
+    """List all sources in the knowledge base."""
+    from .knowledge import get_rag_engine
+
+    rag = get_rag_engine()
+    sources = rag.list_sources()
+
+    if not sources:
+        click.echo("Knowledge base is empty.")
+        return
+
+    total = rag.count()
+    click.echo(f"Knowledge base: {total} chunks from {len(sources)} sources\n")
+
+    for src in sources:
+        click.echo(f"  {src['source']}: {src['chunks']} chunks")
+
+
+@knowledge.command("search")
+@click.argument("query")
+@click.option("--limit", "-n", default=5, help="Number of results")
+def knowledge_search(query, limit):
+    """Search the knowledge base.
+
+    \b
+    Examples:
+        jarvis knowledge search "how to deploy"
+        jarvis knowledge search "API authentication" -n 10
+    """
+    from .knowledge import get_rag_engine
+
+    rag = get_rag_engine()
+    results = rag.search(query, n_results=limit)
+
+    if not results:
+        click.echo("No results found.")
+        return
+
+    click.echo(f"Found {len(results)} results:\n")
+    for i, doc in enumerate(results, 1):
+        click.echo(f"[{i}] {doc['source']} (distance: {doc['distance']:.4f})")
+        # Show first 200 chars
+        preview = doc["content"][:200].replace("\n", " ")
+        click.echo(f"    {preview}...")
+        click.echo()
+
+
+@knowledge.command("remove")
+@click.argument("source")
+@click.option("--yes", "-y", is_flag=True, help="Skip confirmation")
+def knowledge_remove(source, yes):
+    """Remove a source from the knowledge base.
+
+    \b
+    Examples:
+        jarvis knowledge remove document.pdf
+    """
+    from .knowledge import get_rag_engine
+
+    rag = get_rag_engine()
+
+    if not yes:
+        confirm = click.confirm(f"Remove all chunks from '{source}'?")
+        if not confirm:
+            click.echo("Cancelled.")
+            return
+
+    deleted = rag.delete_source(source)
+    click.echo(f"Deleted {deleted} chunks from {source}")
+
+
+@knowledge.command("clear")
+@click.option("--yes", "-y", is_flag=True, help="Skip confirmation")
+def knowledge_clear(yes):
+    """Clear the entire knowledge base."""
+    from .knowledge import get_rag_engine
+
+    if not yes:
+        confirm = click.confirm("Clear ALL documents from knowledge base?")
+        if not confirm:
+            click.echo("Cancelled.")
+            return
+
+    rag = get_rag_engine()
+    deleted = rag.clear()
+    click.echo(f"Cleared {deleted} chunks from knowledge base")
+
+
 if __name__ == "__main__":
     main()
