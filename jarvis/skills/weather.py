@@ -54,7 +54,8 @@ def _get_weather_wttr(city: str) -> dict:
     """Fallback weather using wttr.in (no API key needed)."""
     try:
         url = f"https://wttr.in/{city}?format=j1"
-        response = requests.get(url, timeout=10)
+        headers = {"User-Agent": "curl/7.68.0"}  # wttr.in requires User-Agent
+        response = requests.get(url, timeout=15, headers=headers)
         response.raise_for_status()
         data = response.json()
 
@@ -89,7 +90,8 @@ def get_forecast(city: str, days: int = 3) -> dict:
     """
     try:
         url = f"https://wttr.in/{city}?format=j1"
-        response = requests.get(url, timeout=10)
+        headers = {"User-Agent": "curl/7.68.0"}
+        response = requests.get(url, timeout=15, headers=headers)
         response.raise_for_status()
         data = response.json()
 
