@@ -22,6 +22,7 @@ interface WSMessage {
   project?: string
   done?: boolean
   error?: string
+  message?: string  // Error message from backend
   rag?: RagInfo
   chat_id?: string
   messages?: Array<{ role: 'user' | 'assistant' | 'system', content: string }>
@@ -114,7 +115,15 @@ export function useWebSocket() {
         break
 
       case 'error':
-        setMessages((prev) => [...prev, { role: 'system', content: `Error: ${data.error}`, timestamp: new Date() }])
+        const errorMsg = data.error || data.message
+        // If chat not found, clear the URL parameter
+        if (errorMsg === 'Chat not found') {
+          const url = new URL(window.location.href)
+          url.searchParams.delete('chat')
+          window.history.replaceState({}, '', url.toString())
+        } else if (errorMsg) {
+          setMessages((prev) => [...prev, { role: 'system', content: `Error: ${errorMsg}`, timestamp: new Date() }])
+        }
         setIsLoading(false)
         setStreaming('')
         break
@@ -135,6 +144,10 @@ export function useWebSocket() {
         setRagStatus(null)
         if (data.chat_id) {
           setChatId(data.chat_id)
+          // Update URL with new chat ID
+          const url = new URL(window.location.href)
+          url.searchParams.set('chat', data.chat_id)
+          window.history.replaceState({}, '', url.toString())
         }
         break
 

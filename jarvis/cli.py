@@ -155,6 +155,19 @@ def personas():
         click.echo(f"  - {p}")
 
 
+@main.command()
+def facts():
+    """Show stored facts about you."""
+    from . import get_data_dir
+
+    facts_path = get_data_dir() / "memory" / "facts.md"
+    if facts_path.exists():
+        click.echo(facts_path.read_text())
+    else:
+        click.echo("No facts stored yet.")
+        click.echo(f"Facts will be saved to: {facts_path}")
+
+
 def _launch_cli():
     """Launch interactive CLI mode."""
     from .assistant import run_cli
@@ -173,6 +186,10 @@ def _launch_dev(port: int):
         click.echo("Error: web/ directory not found")
         sys.exit(1)
 
+    # Kill any existing processes on the ports first
+    subprocess.run(f"lsof -ti:{port} | xargs kill -9 2>/dev/null", shell=True)
+    subprocess.run("lsof -ti:3000 | xargs kill -9 2>/dev/null", shell=True)
+
     click.echo("🚀 Starting Jarvis Dev Environment")
     click.echo(f"   Backend:  http://localhost:{port}")
     click.echo(f"   Frontend: http://localhost:3000")
@@ -180,14 +197,22 @@ def _launch_dev(port: int):
 
     processes = []
 
+    def cleanup():
+        """Kill all processes by port - most reliable on macOS."""
+        # Kill by port
+        subprocess.run(f"lsof -ti:{port} | xargs kill -9 2>/dev/null", shell=True)
+        subprocess.run("lsof -ti:3000 | xargs kill -9 2>/dev/null", shell=True)
+        # Also terminate our tracked processes
+        for p in processes:
+            if p.poll() is None:
+                p.kill()
+
     try:
         # Start backend
-        backend_env = os.environ.copy()
         backend = subprocess.Popen(
             [sys.executable, "-m", "uvicorn", "jarvis.ui:create_app",
              "--host", "0.0.0.0", "--port", str(port),
              "--reload", "--reload-dir", "jarvis", "--factory"],
-            env=backend_env,
             cwd=Path(__file__).parent.parent
         )
         processes.append(backend)
@@ -195,8 +220,7 @@ def _launch_dev(port: int):
         # Start frontend
         frontend = subprocess.Popen(
             ["npm", "run", "dev"],
-            cwd=web_dir,
-            env=os.environ.copy()
+            cwd=web_dir
         )
         processes.append(frontend)
 
@@ -210,14 +234,7 @@ def _launch_dev(port: int):
     except KeyboardInterrupt:
         click.echo("\n\nShutting down...")
     finally:
-        # Clean up all processes
-        for p in processes:
-            if p.poll() is None:
-                p.terminate()
-                try:
-                    p.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    p.kill()
+        cleanup()
         click.echo("Done.")
 
 

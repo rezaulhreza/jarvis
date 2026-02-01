@@ -74,8 +74,12 @@ def create_app() -> FastAPI:
     instances: dict[str, any] = {}
 
     # Shared context manager for HTTP endpoints (chat history API)
+    # Use consistent path with Jarvis instances
     from jarvis.core.context_manager import ContextManager
-    shared_context = ContextManager()
+    from jarvis import get_data_dir
+    db_path = get_data_dir() / "memory" / "jarvis.db"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    shared_context = ContextManager(db_path=str(db_path))
 
     # Serve React build if available
     if REACT_BUILD_DIR.exists():
@@ -605,17 +609,22 @@ def create_app() -> FastAPI:
             jarvis = Jarvis(ui=ui, working_dir=working_dir)
             instances[session_id] = jarvis
 
-            # Resume most recent chat if it exists and has messages
-            recent_chats = jarvis.context.list_chats(limit=1)
+            # Resume most recent chat or clean up empty ones
+            recent_chats = jarvis.context.list_chats(limit=10)
             current_chat_id = None
+
+            # Clean up empty chats first
+            for chat in recent_chats:
+                if chat.get("message_count", 0) == 0:
+                    jarvis.context.delete_chat(chat["id"])
+
+            # Find a chat with messages to resume
+            recent_chats = jarvis.context.list_chats(limit=1)
             if recent_chats and recent_chats[0].get("message_count", 0) > 0:
-                # Resume the most recent chat
                 chat_id = recent_chats[0]["id"]
                 jarvis.context.switch_chat(chat_id)
                 current_chat_id = chat_id
-            else:
-                # Create a new chat for this session
-                current_chat_id = jarvis.context.create_chat()
+            # Don't auto-create - will be created on first message
 
             await websocket.send_json({
                 "type": "connected",
@@ -667,11 +676,31 @@ def create_app() -> FastAPI:
                         })
 
                 elif msg_type == "clear":
+                    new_chat_id = None
                     if jarvis:
+                        # Extract facts from conversation before clearing
+                        if len(jarvis.context.messages) >= 4:  # At least 2 exchanges
+                            try:
+                                from jarvis.core.fact_extractor import get_fact_extractor
+                                extractor = get_fact_extractor()
+                                facts_added = extractor.process_conversation(
+                                    jarvis.context.messages,
+                                    jarvis.provider
+                                )
+                                if facts_added > 0:
+                                    print(f"[Facts] Extracted {facts_added} facts from conversation")
+                            except Exception as e:
+                                print(f"[Facts] Extraction error: {e}")
+
                         jarvis.context.clear()
                         # Create a new chat for the next conversation
                         new_chat_id = jarvis.context.create_chat()
-                    await websocket.send_json({"type": "cleared", "chat_id": new_chat_id if jarvis else None})
+
+                        # Update URL with new chat ID
+                        await websocket.send_json({
+                            "type": "cleared",
+                            "chat_id": new_chat_id
+                        })
 
                 elif msg_type == "switch_chat":
                     chat_id = data.get("chat_id")
@@ -740,12 +769,23 @@ def create_app() -> FastAPI:
 
             if chat_mode:
                 # CHAT MODE: Ultra-fast, minimal overhead, NO THINKING
-                user_nickname = jarvis.config.get("user", {}).get("nickname", "")
+
+                # Load user facts for context
+                user_facts = ""
+                try:
+                    from jarvis import get_data_dir
+                    facts_path = get_data_dir() / "memory" / "facts.md"
+                    if facts_path.exists():
+                        user_facts = facts_path.read_text()[:1500]  # Limit size
+                except Exception:
+                    pass
 
                 # Short system prompt - less tokens = faster
-                chat_system = f"You are Jarvis, a witty AI assistant. Be concise and direct. No thinking out loud."
-                if user_nickname:
-                    chat_system += f" The user's name is {user_nickname}. Only use their name occasionally (once every few messages at most), not in every response."
+                chat_system = "You are Jarvis, a witty AI assistant. Be concise and direct. No thinking out loud. Never address the user by name."
+
+                # Add user facts if available
+                if user_facts:
+                    chat_system += f"\n\nUser context:\n{user_facts}"
 
                 # RAG: Retrieve relevant context from knowledge base
                 rag_context = ""
@@ -759,21 +799,33 @@ def create_app() -> FastAPI:
                         rag_info["enabled"] = True
                         rag_info["total_chunks"] = count
                         # Get search results with source info
-                        results = rag.search(user_input, n_results=3)
+                        results = rag.search(user_input, n_results=5)
                         if results:
-                            rag_info["chunks"] = len(results)
-                            rag_info["sources"] = list(set(r.get("source", "unknown") for r in results))
-                            # Build context from results
-                            context_parts = []
-                            for doc in results:
-                                source = doc.get("source", "unknown")
-                                content = doc.get("content", "").strip()
-                                context_parts.append(f"[From: {source}]\n{content}")
-                            rag_context = "Relevant knowledge:\n\n" + "\n\n---\n\n".join(context_parts)
-                            print(f"[RAG] Found {len(results)} chunks from: {rag_info['sources']}")
-                            chat_system += f"\n\n{rag_context}"
+                            # Filter by relevance - only keep chunks with distance < 1.2
+                            # Lower distance = more relevant
+                            RELEVANCE_THRESHOLD = 1.2
+                            relevant_results = [r for r in results if r.get("distance", 2.0) < RELEVANCE_THRESHOLD]
+
+                            if relevant_results:
+                                rag_info["chunks"] = len(relevant_results)
+                                rag_info["sources"] = list(set(r.get("source", "unknown") for r in relevant_results))
+                                # Build context from relevant results only
+                                context_parts = []
+                                for doc in relevant_results:
+                                    source = doc.get("source", "unknown")
+                                    content = doc.get("content", "").strip()
+                                    distance = doc.get("distance", 0)
+                                    context_parts.append(f"[From: {source}]\n{content}")
+                                    print(f"[RAG] Including {source} (distance: {distance:.3f})")
+                                rag_context = "Relevant knowledge:\n\n" + "\n\n---\n\n".join(context_parts)
+                                chat_system += f"\n\n{rag_context}"
+                            else:
+                                # Results found but none relevant enough
+                                print(f"[RAG] Found {len(results)} chunks but none relevant (all distance > {RELEVANCE_THRESHOLD})")
+                                for r in results[:3]:
+                                    print(f"[RAG]   - {r.get('source', '?')}: distance {r.get('distance', 0):.3f}")
                         else:
-                            print("[RAG] No relevant context found")
+                            print("[RAG] No context found")
                 except Exception as e:
                     import traceback
                     print(f"[RAG] Error retrieving context: {e}")

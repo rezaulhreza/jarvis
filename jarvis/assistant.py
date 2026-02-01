@@ -207,8 +207,8 @@ class Jarvis:
             self.ui.print_warning(f"Provider error: {e}")
             self.provider = get_provider("ollama", model="llama3.2:latest")
 
-        # Context manager - store in PROJECT directory
-        db_path = self.project.project_root / ".jarvis" / "context.db"
+        # Context manager - store in USER data directory (consistent across all sessions)
+        db_path = get_data_dir() / "memory" / "jarvis.db"
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self.context = ContextManager(db_path=str(db_path), max_tokens=8000)
 

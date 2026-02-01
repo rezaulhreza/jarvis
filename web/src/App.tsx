@@ -57,12 +57,31 @@ export default function App() {
     switchChat,
   } = useWebSocket()
 
-  // Sync chat ID from WebSocket with local state
+  // Sync chat ID from WebSocket with local state and URL
   useEffect(() => {
     if (wsChatId) {
       setCurrentChatId(wsChatId)
+      // Update URL without reload
+      const url = new URL(window.location.href)
+      url.searchParams.set('chat', wsChatId)
+      window.history.replaceState({}, '', url.toString())
     }
   }, [wsChatId])
+
+  // Load chat from URL on initial connect (only once)
+  const [urlChatLoaded, setUrlChatLoaded] = useState(false)
+  useEffect(() => {
+    if (!connected || urlChatLoaded) return
+
+    const url = new URL(window.location.href)
+    const chatIdFromUrl = url.searchParams.get('chat')
+    if (chatIdFromUrl) {
+      switchChat(chatIdFromUrl)
+      setUrlChatLoaded(true)
+    } else {
+      setUrlChatLoaded(true)
+    }
+  }, [connected, urlChatLoaded, switchChat])
 
   // Randomize loading text when loading starts
   useEffect(() => {
@@ -179,24 +198,14 @@ export default function App() {
   }
 
   const handleNewChat = async () => {
-    try {
-      // Only save current chat if it has messages
-      if (currentChatId && messages.length > 0) {
-        // Generate title if chat has messages but might not have a proper title
-        await fetch(`/api/chats/${currentChatId}/generate-title`, { method: 'POST' })
-          .catch(() => {}) // Ignore errors
-      }
-
-      // Create new chat
-      const res = await fetch('/api/chats', { method: 'POST' })
-      const data = await res.json()
-      if (data.id) {
-        setCurrentChatId(data.id)
-        clear() // Clear current messages in UI
-      }
-    } catch (e) {
-      console.error('Failed to create chat:', e)
+    // Generate title for current chat if it has messages
+    if (currentChatId && messages.length > 0) {
+      fetch(`/api/chats/${currentChatId}/generate-title`, { method: 'POST' })
+        .catch(() => {}) // Fire and forget
     }
+
+    // Clear will create a new chat and return its ID via WebSocket
+    clear()
   }
 
   // Callback for when voice input is detected and processed
@@ -732,30 +741,13 @@ export default function App() {
             </div>
           ))}
 
-          {/* RAG Status Indicator - shows when RAG info is available */}
-          {ragStatus && (
+          {/* RAG Status Indicator - only show when knowledge is found */}
+          {ragStatus && ragStatus.chunks > 0 && (
             <div className="flex items-center gap-2 text-xs mb-2">
-              {ragStatus.chunks > 0 ? (
-                <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                  <div className={cn("w-2 h-2 rounded-full bg-emerald-400", (streaming || isLoading) && "animate-pulse")} />
-                  <span>📚 {ragStatus.chunks} chunks from {ragStatus.sources.join(', ')}</span>
-                </div>
-              ) : ragStatus.enabled ? (
-                <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-yellow-500/10 text-yellow-400 border border-yellow-500/20">
-                  <div className="w-2 h-2 rounded-full bg-yellow-400" />
-                  <span>📚 No relevant chunks found</span>
-                </div>
-              ) : (
-                <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-zinc-500/10 text-zinc-400 border border-zinc-500/20">
-                  <div className="w-2 h-2 rounded-full bg-zinc-400" />
-                  <span>📚 No knowledge base</span>
-                </div>
-              )}
-              {ragStatus.error && (
-                <div className="px-3 py-1.5 rounded-full bg-red-500/10 text-red-400 border border-red-500/20">
-                  ⚠️ {ragStatus.error}
-                </div>
-              )}
+              <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                <div className={cn("w-2 h-2 rounded-full bg-emerald-400", (streaming || isLoading) && "animate-pulse")} />
+                <span>📚 {ragStatus.chunks} chunks from {ragStatus.sources.join(', ')}</span>
+              </div>
             </div>
           )}
 

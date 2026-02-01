@@ -58,15 +58,11 @@ export function ChatSidebar({
     }
   }, [search])
 
+  // Fetch chats when sidebar opens
   useEffect(() => {
-    fetchChats()
-  }, [fetchChats])
-
-  // Refresh chats periodically when sidebar is open
-  useEffect(() => {
-    if (!isOpen) return
-    const interval = setInterval(fetchChats, 5000)
-    return () => clearInterval(interval)
+    if (isOpen) {
+      fetchChats()
+    }
   }, [isOpen, fetchChats])
 
   const handleDelete = async (chatId: string, e: React.MouseEvent) => {
@@ -255,16 +251,9 @@ export function ChatSidebar({
                           </button>
                         </div>
                       </div>
-                      <div className="mt-1 flex items-center gap-2 text-xs text-[#51515a]">
-                        <span>{formatDate(chat.updated_at)}</span>
-                        <span>·</span>
-                        <span>{chat.message_count} messages</span>
-                      </div>
-                      {chat.preview && (
-                        <p className="mt-1 text-xs text-[#71717a] truncate">
-                          {chat.preview}
-                        </p>
-                      )}
+                      <p className="mt-1 text-xs text-[#51515a]">
+                        {formatDate(chat.updated_at)}
+                      </p>
                     </>
                   )}
                 </div>
