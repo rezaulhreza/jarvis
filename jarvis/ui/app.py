@@ -724,7 +724,7 @@ def create_app() -> FastAPI:
                     pass
 
                 # Short system prompt - less tokens = faster
-                chat_system = "You are Jarvis, a witty AI assistant. Be concise and direct. No thinking out loud. Never address the user by name."
+                chat_system = "You are Jarvis, a witty AI assistant. Be concise and direct. No thinking out loud. Never address the user by name. Never say queries are logged or being processed. Just answer directly."
 
                 # Add user facts if available
                 if user_facts:
