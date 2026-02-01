@@ -14,6 +14,10 @@ import json
 import asyncio
 import sys
 import os
+from dotenv import load_dotenv
+
+# Load .env file
+load_dotenv()
 
 # Add parent to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -137,12 +141,38 @@ def create_app() -> FastAPI:
         save_config(config)
         return {"success": True}
 
+    def get_elevenlabs_key():
+        """Get ElevenLabs API key from .env or config."""
+        import os
+        # Check .env first (more secure)
+        key = os.environ.get("ELEVEN_LABS_API_KEY") or os.environ.get("ELEVENLABS_API_KEY")
+        if key:
+            return key
+        # Fall back to config
+        from jarvis.assistant import load_config
+        config = load_config()
+        return config.get("voice", {}).get("elevenlabs_key")
+
+    @app.get("/api/elevenlabs/status")
+    async def elevenlabs_status():
+        """Check if ElevenLabs API key is configured."""
+        import os
+        key = get_elevenlabs_key()
+        source = None
+        if os.environ.get("ELEVEN_LABS_API_KEY") or os.environ.get("ELEVENLABS_API_KEY"):
+            source = ".env"
+        elif key:
+            source = "settings"
+        return {
+            "configured": bool(key),
+            "source": source,
+            "key_preview": f"{key[:8]}...{key[-4:]}" if key and len(key) > 12 else None
+        }
+
     @app.get("/api/elevenlabs/voices")
     async def get_elevenlabs_voices():
         """Get available ElevenLabs voices."""
-        from jarvis.assistant import load_config
-        config = load_config()
-        api_key = config.get("voice", {}).get("elevenlabs_key")
+        api_key = get_elevenlabs_key()
 
         if not api_key:
             return {"voices": [], "error": "No API key configured"}
@@ -182,13 +212,13 @@ def create_app() -> FastAPI:
         if not text:
             return {"error": "No text"}
 
+        api_key = get_elevenlabs_key()
         from jarvis.assistant import load_config
         config = load_config()
-        api_key = config.get("voice", {}).get("elevenlabs_key")
         voice_id = config.get("voice", {}).get("elevenlabs_voice", "21m00Tcm4TlvDq8ikWAM")  # Default: Rachel
 
         if not api_key:
-            return {"error": "No ElevenLabs API key configured"}
+            return {"error": "No ElevenLabs API key configured. Add ELEVEN_LABS_API_KEY to .env"}
 
         try:
             import httpx
