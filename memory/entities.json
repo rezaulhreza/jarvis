@@ -1,0 +1,25 @@
+{
+  "people": {},
+  "projects": {
+    "jarvis": {
+      "name": "Jarvis",
+      "description": "Personal AI assistant",
+      "status": "building",
+      "tech": ["python", "ollama", "chromadb"],
+      "created": "2025-02-01"
+    }
+  },
+  "tools": {
+    "ollama": {
+      "type": "local_llm",
+      "models": ["llava", "llama3.2", "qwen3:4b", "functiongemma"]
+    }
+  },
+  "places": {},
+  "topics": {
+    "llm": {
+      "interest_level": "high",
+      "learning": true
+    }
+  }
+}
