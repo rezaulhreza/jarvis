@@ -27,6 +27,7 @@ context.db
 memory/jarvis.db
 memory/jarvis.db-*
 knowledge/chroma_db/
+.qdrant_sparse_*.json
 *.log
 logs/
 

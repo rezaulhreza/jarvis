@@ -731,7 +731,6 @@ def create_app() -> FastAPI:
                     chat_system += f"\n\nUser context:\n{user_facts}"
 
                 # RAG: Retrieve relevant context from knowledge base
-                rag_context = ""
                 rag_info = {"enabled": False, "chunks": 0, "sources": []}
                 try:
                     from jarvis.knowledge import get_rag_engine
@@ -744,18 +743,11 @@ def create_app() -> FastAPI:
                         # Get search results with source info
                         results = rag.search(user_input, n_results=5)
                         if results:
-                            # Top-k retrieval - let LLM decide relevance
-                            relevant_results = results[:5]
-
-                            if relevant_results:
-                                rag_info["chunks"] = len(relevant_results)
-                                rag_info["sources"] = list(set(r.get("source", "unknown") for r in relevant_results))
-                                context_parts = []
-                                for doc in relevant_results:
-                                    source = doc.get("source", "unknown")
-                                    content = doc.get("content", "").strip()
-                                    context_parts.append(f"[From: {source}]\n{content}")
-                                rag_context = "Relevant knowledge:\n\n" + "\n\n---\n\n".join(context_parts)
+                            rag_info["chunks"] = len(results)
+                            rag_info["sources"] = list(set(r.get("source", "unknown") for r in results))
+                            # Use get_context for prompt injection hardening
+                            rag_context = rag.get_context(user_input, n_results=5)
+                            if rag_context:
                                 chat_system += f"\n\n{rag_context}"
                         else:
                             print("[RAG] No context found")

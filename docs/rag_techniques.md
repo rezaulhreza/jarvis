@@ -173,11 +173,11 @@ class QdrantVectorStore:
 
 ---
 
-### 3. Query Classification - IMPLEMENTED
+### 3. Relevance Filtering via Rerank Scores - IMPLEMENTED
 
-**Problem:** RAG retrieves chunks for every query, even when irrelevant. Vector similarity always finds *something* - "Berlin" in a timezone matches "Berlin population" queries.
+**Problem:** RAG retrieves chunks for every query, even when irrelevant. Heuristic-based query classification (pattern matching) is brittle and misclassifies many queries.
 
-**Solution:** Use LLM to classify queries before retrieval:
+**Solution:** Always retrieve, then filter based on cross-encoder rerank scores:
 
 ```
 ┌─────────────────────────────────────────────┐
@@ -186,39 +186,50 @@ class QdrantVectorStore:
                   │
                   ▼
         ┌─────────────────┐
-        │ Query Classifier │  "personal" or "general"?
-        │   (qwen3:4b)    │
+        │  Vector Search  │  Retrieve candidates
+        │  + Hybrid BM25  │
+        └────────┬────────┘
+                 │
+                 ▼
+        ┌─────────────────┐
+        │ Cross-Encoder   │  Score relevance
+        │   Reranking     │
+        └────────┬────────┘
+                 │
+                 ▼
+        ┌─────────────────┐
+        │ Score Threshold │  Filter by rerank_score >= 0.0
         └────────┬────────┘
                  │
         ┌────────┴────────┐
         ▼                 ▼
-   "personal"         "general"
+   Results ≥ 0.0      Results < 0.0
         │                 │
         ▼                 ▼
-   Use RAG            Skip RAG
-   (hybrid search)    (LLM knowledge)
+   Include in         Discard
+   context            (use LLM knowledge)
 ```
 
-**Examples:**
-```
-"What is my website?" → personal → RAG ✓
-"How many people live in Berlin?" → general → skip RAG ✓
-"Who is Donald Trump?" → general → skip RAG ✓
-"What projects am I working on?" → personal → RAG ✓
+**Why rerank scores are better than query classification:**
+- Cross-encoder scores (-10 to +10) directly measure query-document relevance
+- No brittle pattern matching ("explain X" no longer skips personal queries)
+- Works for any query type - the relevance score decides, not heuristics
+- Configurable threshold (`rerank_threshold: 0.0` in settings.yaml)
+
+**Configuration:**
+```yaml
+# config/settings.yaml
+memory:
+  rerank: true
+  rerank_threshold: 0.0  # Min score to include results (-10 to +10)
 ```
 
-**Classification prompt:**
-```
-personal = User's own info, projects, preferences, files, work, skills, website, resume, notes
-general = Facts, history, science, geography, people, events, how-to, definitions
+**Debug logging:**
+```bash
+export RAG_DEBUG=true  # See rerank scores in logs
 ```
 
-**Why this is definitive:**
-- Distance thresholds fail when keywords match (e.g., "Berlin" in timezone)
-- LLM understands query *intent*, not just word similarity
-- Fast: uses small model (qwen3:4b) for classification
-
-**Impact:** General knowledge questions use LLM's training data. Personal questions use RAG. No more irrelevant context pollution.
+**Impact:** All queries go through retrieval. Only genuinely relevant results are included. No more missed personal queries due to pattern matching.
 
 ---
 
@@ -361,7 +372,8 @@ Relevant sentences:"""
 |-----------|--------|--------------|----------------------|--------|
 | **Reranking** | High (10-20%) | Medium (+100-300ms) | Low | ✅ Implemented |
 | **Hybrid Search** | High (15-25%) | Low (+50ms) | Medium | ✅ Implemented |
-| **Query Classification** | High (noise elimination) | Low (+LLM call) | Low | ✅ Implemented |
+| **Rerank Score Filtering** | High (noise elimination) | None (uses rerank) | Low | ✅ Implemented |
+| **Prompt Injection Hardening** | Security | None | Low | ✅ Implemented |
 | **Query Expansion** | Medium (5-15%) | High (+LLM call) | Low | Not implemented |
 | **Semantic Chunking** | Medium (5-10%) | None (indexing only) | Medium | Not implemented |
 | **Contextual Compression** | Medium (10-15%) | High (+LLM calls) | Low | Not implemented |
@@ -371,8 +383,8 @@ Relevant sentences:"""
 ## Recommended Implementation Order
 
 1. **Reranking** (implemented) - Quick win, big impact
-2. **Hybrid Search** (implemented) - Qdrant supports this natively
-3. **Query Classification** (implemented) - Eliminates noise from general knowledge queries
+2. **Hybrid Search** (implemented) - Qdrant supports this natively with sparse encoder persistence
+3. **Rerank Score Filtering** (implemented) - Threshold on cross-encoder scores, not brittle heuristics
 4. **Semantic Chunking** - Improves index quality
 5. **Query Expansion** - Good for ambiguous queries
 6. **Contextual Compression** - Polish for production
