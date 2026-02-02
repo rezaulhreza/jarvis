@@ -191,21 +191,44 @@ class Jarvis:
         # Setup provider
         provider_name = self.config.get("provider", "ollama")
         default_models = {
-            "ollama": "llama3.2:latest",
             "anthropic": "claude-opus-4-5",
             "openai": "gpt-5.2-codex",
             "gemini": "gemini-2.5-flash",
         }
-        model = self.config.get("models", {}).get(provider_name) or default_models.get(provider_name)
+        # For Ollama, use configured model or auto-detect; for others, use defaults
+        model = self.config.get("models", {}).get(provider_name)
+        if not model and provider_name != "ollama":
+            model = default_models.get(provider_name)
 
         try:
             self.provider = get_provider(provider_name, model=model)
             if not self.provider.is_configured() and provider_name != "ollama":
                 self.ui.print_warning(f"{provider_name} not configured, using ollama")
-                self.provider = get_provider("ollama", model="llama3.2:latest")
+                self.provider = get_provider("ollama", model=None)
         except Exception as e:
             self.ui.print_warning(f"Provider error: {e}")
-            self.provider = get_provider("ollama", model="llama3.2:latest")
+            self.provider = get_provider("ollama", model=None)
+
+        # For Ollama, validate and auto-detect model if needed
+        if self.provider.name == "ollama":
+            available = self.provider.list_models()
+            if not available:
+                self.ui.print_error("No Ollama models installed!")
+                self.ui.print_info("Install a model with: ollama pull qwen3:4b")
+                raise SystemExit(1)
+
+            current_model = self.provider.model
+            if current_model == "pending" or not model:
+                # Auto-detect best available model
+                default = self.provider.get_default_model()
+                self.provider.model = default
+                self.ui.print_system(f"Using model: {default}")
+            elif model and model not in available and f"{model}:latest" not in available:
+                # Configured model not found
+                self.ui.print_warning(f"Model '{model}' not found")
+                default = self.provider.get_default_model()
+                self.ui.print_info(f"Using '{default}' instead")
+                self.provider.model = default
 
         # Context manager - store in USER data directory (consistent across all sessions)
         db_path = get_data_dir() / "memory" / "jarvis.db"
@@ -325,12 +348,13 @@ class Jarvis:
 
     def switch_provider(self, name: str, model: str = None) -> bool:
         default_models = {
-            "ollama": "llama3.2:latest",
             "anthropic": "claude-opus-4-5",
             "openai": "gpt-5.2-codex",
             "gemini": "gemini-2.5-flash",
         }
-        model = model or default_models.get(name)
+        # For non-Ollama providers, use defaults if no model specified
+        if not model and name != "ollama":
+            model = default_models.get(name)
 
         try:
             new_provider = get_provider(name, model=model)
@@ -338,6 +362,15 @@ class Jarvis:
                 self.ui.print_error(f"{name} not configured")
                 self.ui.print_info(new_provider.get_config_help())
                 return False
+
+            # For Ollama, auto-detect model if not specified
+            if name == "ollama" and not model:
+                model = new_provider.get_default_model()
+                if not model:
+                    self.ui.print_error("No Ollama models installed")
+                    self.ui.print_info("Install a model with: ollama pull qwen3:4b")
+                    return False
+                new_provider.model = model
 
             self.provider = new_provider
             self.agent.provider = new_provider
