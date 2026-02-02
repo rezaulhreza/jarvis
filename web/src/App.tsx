@@ -658,14 +658,14 @@ export default function App() {
           ))}
 
           {/* RAG Status Indicator - only show when knowledge is found */}
-          {ragStatus && ragStatus.chunks > 0 && (
+          {/* {ragStatus && ragStatus.chunks > 0 && (
             <div className="flex items-center gap-2 text-xs mb-2">
               <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
                 <div className={cn("w-2 h-2 rounded-full bg-emerald-400", (streaming || isLoading) && "animate-pulse")} />
                 <span>📚 {ragStatus.chunks} chunks from {ragStatus.sources.join(', ')}</span>
               </div>
             </div>
-          )}
+          )} */}
 
           {streaming && (
             <div className="p-4 rounded-xl bg-[#12121a] mr-12">
