@@ -18,12 +18,62 @@
 - **Web UI**: Browser-based interface with `jarvis --dev`
 - **Voice Input**: Speech-to-text with Whisper and TTS with Edge/ElevenLabs
 
+## Requirements
+
+- **Python 3.10, 3.11, or 3.12** (3.13+ not yet supported due to dependency compatibility)
+- [Ollama](https://ollama.ai) installed and running
+- **Node.js 18+** (required for Web UI)
+- 16GB RAM recommended
+
+### Check Your Python Version
+
+```bash
+python3 --version
+```
+
+If you have Python 3.13 or 3.14, install a compatible version:
+
+```bash
+# macOS with Homebrew
+brew install python@3.12
+
+# Then use this Python for installation
+/opt/homebrew/bin/python3.12 --version
+```
+
 ## Installation
 
 ### Quick Install (Recommended)
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/rezaulhreza/jarvis/main/install.sh | bash
+```
+
+> **Note:** If the script detects Python 3.13+, it will fail during dependency installation. See [Troubleshooting](#troubleshooting) below.
+
+### Manual Installation (If Quick Install Fails)
+
+If you have Python 3.13+ or encounter dependency conflicts:
+
+```bash
+# 1. Install Python 3.12 (macOS)
+brew install python@3.12
+
+# 2. Clone the repository
+git clone https://github.com/rezaulhreza/jarvis.git ~/.jarvis
+
+# 3. Create virtual environment with Python 3.12
+cd ~/.jarvis/src
+/opt/homebrew/bin/python3.12 -m venv ../venv
+
+# 4. Activate and install
+source ../venv/bin/activate
+pip install -e ".[ui]"
+pip install python-multipart
+
+# 5. Add alias for easy access (optional)
+echo 'alias jarvis="~/.jarvis/venv/bin/jarvis"' >> ~/.zshrc
+source ~/.zshrc
 ```
 
 ### Using pip
@@ -47,16 +97,11 @@ pip install jarvis-ai-assistant[all]
 ```bash
 git clone https://github.com/rezaulhreza/jarvis.git
 cd jarvis
-python -m venv venv
+python3.12 -m venv venv
 source venv/bin/activate
-pip install -e .
+pip install -e ".[ui]"
+pip install python-multipart
 ```
-
-### Requirements
-
-- Python 3.10+
-- [Ollama](https://ollama.ai) installed and running
-- 16GB RAM recommended
 
 ### Install Ollama Models
 
@@ -72,6 +117,22 @@ ollama pull nomic-embed-text  # Text embeddings
 ollama pull deepseek-r1:8b    # Deep reasoning
 ollama pull qwen2.5-coder:7b  # Code generation
 ollama pull llava             # Image understanding
+```
+
+### Web UI Setup (Additional Steps)
+
+The Web UI requires Node.js. If `jarvis --dev` shows `vite: command not found`:
+
+```bash
+# 1. Install Node.js (macOS)
+brew install node
+
+# 2. Install frontend dependencies
+cd ~/.jarvis/web
+npm install
+
+# 3. Now run the dev server
+jarvis --dev
 ```
 
 ## Usage
@@ -127,6 +188,65 @@ Inside the interactive CLI:
 | `/clear` | Clear conversation |
 | `/history` | Show recent history |
 | `/quit` | Exit |
+
+## Troubleshooting
+
+### `ResolutionImpossible` or dependency conflicts
+
+This usually means your Python version is too new (3.13+). Install Python 3.12:
+
+```bash
+# macOS
+brew install python@3.12
+
+# Recreate venv with correct Python
+cd ~/.jarvis/src
+/opt/homebrew/bin/python3.12 -m venv ../venv --clear
+source ../venv/bin/activate
+pip install -e ".[ui]"
+pip install python-multipart
+```
+
+### `vite: command not found`
+
+Node.js and frontend dependencies are missing:
+
+```bash
+brew install node
+cd ~/.jarvis/web
+npm install
+```
+
+### `python-multipart` error
+
+Install the missing dependency:
+
+```bash
+source ~/.jarvis/venv/bin/activate
+pip install python-multipart
+```
+
+### `jarvis: command not found`
+
+Either activate the virtual environment or add an alias:
+
+```bash
+# Option 1: Activate venv first
+source ~/.jarvis/venv/bin/activate
+jarvis
+
+# Option 2: Add alias to ~/.zshrc or ~/.bashrc
+echo 'alias jarvis="~/.jarvis/venv/bin/jarvis"' >> ~/.zshrc
+source ~/.zshrc
+```
+
+### Backend starts but frontend doesn't load
+
+Make sure both ports are accessible:
+- Backend: http://localhost:7777
+- Frontend: http://localhost:3000
+
+Check that `npm install` completed successfully in `~/.jarvis/web`.
 
 ## Configuration
 
@@ -356,15 +476,15 @@ You are Jarvis in custom mode.
 git clone https://github.com/rezaulhreza/jarvis.git
 cd jarvis
 
-# Python backend
-python -m venv venv
+# Python backend (use Python 3.10-3.12)
+python3.12 -m venv venv
 source venv/bin/activate
 pip install -e ".[all]"
+pip install python-multipart
 
 # React frontend
 cd web
 npm install
-npm run build
 cd ..
 ```
 
