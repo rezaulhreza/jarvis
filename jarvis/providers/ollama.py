@@ -14,16 +14,31 @@ class OllamaProvider(BaseProvider):
     supports_tools = True
 
     # Models that support tool calling well
-    TOOL_MODELS = ["qwen3", "qwen2.5", "llama3", "mistral", "functiongemma"]
+    TOOL_MODELS = [
+        "qwen3", "qwen2.5", "llama3", "mistral", "functiongemma",
+        "gpt-oss", "granite4", "glm-4", "glm4",
+    ]
+
+    # Reasoning models that need longer timeouts
+    REASONING_MODELS = ["gpt-oss", "deepseek-r1", "qwq", "o1", "o3"]
 
     def __init__(self, model: str = "llama3.2:latest", **kwargs):
         super().__init__(model=model, **kwargs)
         self.base_url = kwargs.get("base_url", "http://localhost:11434")
 
+        # Determine timeout based on model type
+        is_reasoning = any(r in model.lower() for r in self.REASONING_MODELS)
+        timeout = 600.0 if is_reasoning else 120.0  # 10 min for reasoning, 2 min default
+
         try:
             import ollama
+            import httpx
             self.ollama = ollama
-            self.client = ollama.Client(host=self.base_url)
+            # Create client with extended timeout for reasoning models
+            self.client = ollama.Client(
+                host=self.base_url,
+                timeout=httpx.Timeout(timeout, connect=30.0)
+            )
         except ImportError:
             raise ImportError("ollama package required: pip install ollama")
 

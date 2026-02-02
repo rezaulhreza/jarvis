@@ -2,12 +2,13 @@
 Tools for Jarvis - Used with native tool calling.
 
 These functions are passed to the LLM's tools parameter.
+Includes all skills that are useful for agentic behavior.
 """
 
 import os
 import subprocess
 from pathlib import Path
-from typing import Optional, Callable
+from typing import Optional
 
 # Global project root and UI reference
 _PROJECT_ROOT: Path = Path.cwd()
@@ -45,6 +46,10 @@ def clear_read_files():
     _READ_FILES = set()
 
 
+# =============================================================================
+# FILE OPERATIONS
+# =============================================================================
+
 def read_file(path: str) -> str:
     """Read a file's contents. Use this to examine code, configs, or any text file.
 
@@ -71,7 +76,7 @@ def read_file(path: str) -> str:
 
         content = file_path.read_text(errors='replace')
         if len(content) > 15000:
-            content = content[:15000] + "\n\n... (truncated, file too large)"
+            content = content[:15000] + f"\n\n... [TRUNCATED - file is {len(content)} chars, showing first 15000]"
 
         # Track that this file was read
         _READ_FILES.add(str(file_path.resolve()))
@@ -227,10 +232,7 @@ def run_command(command: str) -> str:
 
 
 def write_file(path: str, content: str) -> str:
-    """Write content to a file. YOU MUST USE THIS when asked to write, save, create, or refactor a file.
-
-    IMPORTANT: When the user asks you to write/save/create/modify a file, call this tool.
-    Do NOT just output code in your response - use this tool to actually write it.
+    """Write content to a file. Use this to create or overwrite files.
 
     Args:
         path: File path relative to project root
@@ -314,9 +316,6 @@ def get_project_structure() -> str:
 def edit_file(path: str, old_string: str, new_string: str) -> str:
     """Edit a file by replacing a specific string. Use for small, targeted changes.
 
-    Use this tool when asked to modify, update, or fix a specific part of a file.
-    For full file rewrites, use write_file instead.
-
     Args:
         path: File path relative to project root
         old_string: The exact text to find and replace (must be unique in file)
@@ -378,13 +377,309 @@ def edit_file(path: str, old_string: str, new_string: str) -> str:
         return f"Error editing {path}: {e}"
 
 
-# All tools for LLM
+# =============================================================================
+# WEB SEARCH
+# =============================================================================
+
+def web_search(query: str, max_results: int = 5) -> str:
+    """Search the web for information. Use for current events, facts, documentation, etc.
+
+    Args:
+        query: The search query
+        max_results: Maximum number of results (default 5)
+
+    Returns:
+        Search results with titles, URLs, and snippets
+    """
+    try:
+        from ddgs import DDGS
+
+        with DDGS() as ddgs:
+            results = list(ddgs.text(query, max_results=max_results))
+
+        if not results:
+            return f"No results found for: {query}"
+
+        formatted = []
+        for i, r in enumerate(results, 1):
+            formatted.append(f"{i}. {r['title']}\n   URL: {r['href']}\n   {r['body'][:200]}...")
+
+        return "\n\n".join(formatted)
+
+    except Exception as e:
+        return f"Search failed: {e}"
+
+
+def get_current_news(topic: str) -> str:
+    """Get current news about a topic. Use for recent events, breaking news, etc.
+
+    Args:
+        topic: The topic to get news about
+
+    Returns:
+        Recent news articles about the topic
+    """
+    try:
+        from ddgs import DDGS
+
+        with DDGS() as ddgs:
+            results = list(ddgs.news(topic, max_results=5))
+
+        if not results:
+            # Fallback to regular search
+            return web_search(f"{topic} latest news", max_results=5)
+
+        formatted = [f"Latest news about: {topic}\n"]
+        for i, r in enumerate(results, 1):
+            date = r.get('date', 'Recent')
+            formatted.append(
+                f"{i}. {r['title']}\n"
+                f"   Date: {date}\n"
+                f"   Source: {r.get('source', 'Unknown')}\n"
+                f"   {r['body'][:200]}...\n"
+                f"   URL: {r['url']}"
+            )
+
+        return "\n\n".join(formatted)
+
+    except Exception as e:
+        return f"News search failed: {e}. Try web_search instead."
+
+
+# =============================================================================
+# WEATHER
+# =============================================================================
+
+def get_weather(city: str) -> str:
+    """Get current weather for a city.
+
+    Args:
+        city: City name (e.g., "London", "New York")
+
+    Returns:
+        Current weather conditions
+    """
+    try:
+        import requests
+
+        url = f"https://wttr.in/{city}?format=j1"
+        headers = {"User-Agent": "curl/7.68.0"}
+        response = requests.get(url, timeout=15, headers=headers)
+        response.raise_for_status()
+        data = response.json()
+
+        current = data["current_condition"][0]
+
+        return (
+            f"Weather in {city}:\n"
+            f"  Temperature: {current['temp_C']}°C ({current['temp_F']}°F)\n"
+            f"  Feels like: {current['FeelsLikeC']}°C\n"
+            f"  Condition: {current['weatherDesc'][0]['value']}\n"
+            f"  Humidity: {current['humidity']}%\n"
+            f"  Wind: {current['windspeedKmph']} km/h {current['winddir16Point']}"
+        )
+
+    except Exception as e:
+        return f"Weather lookup failed: {e}"
+
+
+# =============================================================================
+# DATE/TIME
+# =============================================================================
+
+def get_current_time(timezone: str = "UTC") -> str:
+    """Get current date and time.
+
+    Args:
+        timezone: Timezone name (e.g., "UTC", "America/New_York", "Europe/London")
+
+    Returns:
+        Current date and time
+    """
+    try:
+        from datetime import datetime
+        import zoneinfo
+
+        tz = zoneinfo.ZoneInfo(timezone)
+        now = datetime.now(tz)
+
+        return (
+            f"Current time ({timezone}):\n"
+            f"  Date: {now.strftime('%Y-%m-%d')}\n"
+            f"  Time: {now.strftime('%H:%M:%S')}\n"
+            f"  Day: {now.strftime('%A')}\n"
+            f"  ISO: {now.isoformat()}"
+        )
+
+    except Exception as e:
+        return f"Time lookup failed: {e}"
+
+
+# =============================================================================
+# CALCULATOR
+# =============================================================================
+
+def calculate(expression: str) -> str:
+    """Evaluate a mathematical expression safely.
+
+    Args:
+        expression: Math expression (e.g., "2 + 2", "sqrt(16)", "sin(pi/2)")
+
+    Returns:
+        Calculation result
+    """
+    import math
+    import re
+
+    safe_dict = {
+        "abs": abs, "round": round, "min": min, "max": max, "sum": sum, "pow": pow,
+        "sqrt": math.sqrt, "sin": math.sin, "cos": math.cos, "tan": math.tan,
+        "log": math.log, "log10": math.log10, "log2": math.log2, "exp": math.exp,
+        "floor": math.floor, "ceil": math.ceil, "factorial": math.factorial,
+        "pi": math.pi, "e": math.e, "tau": math.tau,
+    }
+
+    try:
+        if not re.match(r'^[\d\s\+\-\*\/\(\)\.\,\^a-zA-Z_]+$', expression):
+            return "Error: Invalid characters in expression"
+
+        expression = expression.replace("^", "**")
+        result = eval(expression, {"__builtins__": {}}, safe_dict)
+
+        return f"{expression} = {result}"
+
+    except ZeroDivisionError:
+        return "Error: Division by zero"
+    except Exception as e:
+        return f"Calculation error: {e}"
+
+
+# =============================================================================
+# MEMORY / NOTES
+# =============================================================================
+
+def save_memory(content: str, category: str = "general") -> str:
+    """Save information to memory for later recall.
+
+    Args:
+        content: Information to remember
+        category: Category (e.g., "user_preferences", "project_notes", "general")
+
+    Returns:
+        Confirmation message
+    """
+    try:
+        from datetime import datetime
+
+        memory_dir = Path(__file__).parent.parent / "memory"
+        memory_dir.mkdir(parents=True, exist_ok=True)
+        memory_file = memory_dir / "memories.md"
+
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+        entry = f"\n## [{category}] {timestamp}\n{content}\n"
+
+        with open(memory_file, 'a', encoding='utf-8') as f:
+            f.write(entry)
+
+        return f"Saved to memory under '{category}'"
+
+    except Exception as e:
+        return f"Failed to save memory: {e}"
+
+
+def recall_memory(query: str = "") -> str:
+    """Recall saved memories, optionally filtered by search query.
+
+    Args:
+        query: Optional search term to filter memories
+
+    Returns:
+        Matching memories or all memories if no query
+    """
+    try:
+        memory_file = Path(__file__).parent.parent / "memory" / "memories.md"
+
+        if not memory_file.exists():
+            return "No memories saved yet."
+
+        content = memory_file.read_text()
+
+        if query:
+            # Filter to matching sections
+            sections = content.split("\n## ")
+            matches = [s for s in sections if query.lower() in s.lower()]
+            if matches:
+                return "## " + "\n\n## ".join(matches[-10:])  # Last 10 matches
+            return f"No memories matching '{query}'"
+
+        # Return last 2000 chars
+        if len(content) > 2000:
+            return "...(earlier memories truncated)...\n" + content[-2000:]
+        return content
+
+    except Exception as e:
+        return f"Failed to recall memory: {e}"
+
+
+# =============================================================================
+# GITHUB
+# =============================================================================
+
+def github_search(query: str, search_type: str = "repos") -> str:
+    """Search GitHub for repositories, code, issues, or users.
+
+    Args:
+        query: Search query
+        search_type: Type of search - "repos", "code", "issues", "users"
+
+    Returns:
+        Search results
+    """
+    try:
+        result = subprocess.run(
+            ["gh", "search", search_type, query, "--limit", "5"],
+            capture_output=True, text=True, timeout=30
+        )
+
+        if result.returncode == 0 and result.stdout:
+            return result.stdout
+        elif result.stderr:
+            return f"GitHub search error: {result.stderr}"
+        else:
+            return f"No {search_type} found for: {query}"
+
+    except FileNotFoundError:
+        return "GitHub CLI (gh) not installed. Install with: brew install gh"
+    except Exception as e:
+        return f"GitHub search failed: {e}"
+
+
+# =============================================================================
+# ALL TOOLS LIST
+# =============================================================================
+
 ALL_TOOLS = [
+    # File operations
     read_file,
     list_files,
     search_files,
-    run_command,
     write_file,
     edit_file,
     get_project_structure,
+    # Shell
+    run_command,
+    # Web
+    web_search,
+    get_current_news,
+    # Weather
+    get_weather,
+    # Time
+    get_current_time,
+    # Math
+    calculate,
+    # Memory
+    save_memory,
+    recall_memory,
+    # GitHub
+    github_search,
 ]

@@ -1,6 +1,6 @@
 """Web search skill using DuckDuckGo (no API key needed)"""
 
-from duckduckgo_search import DDGS
+from ddgs import DDGS
 
 
 def web_search(query: str, max_results: int = 5) -> str:
