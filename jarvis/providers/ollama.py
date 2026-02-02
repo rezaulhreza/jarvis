@@ -22,12 +22,15 @@ class OllamaProvider(BaseProvider):
     # Reasoning models that need longer timeouts
     REASONING_MODELS = ["gpt-oss", "deepseek-r1", "qwq", "o1", "o3"]
 
-    def __init__(self, model: str = "llama3.2:latest", **kwargs):
-        super().__init__(model=model, **kwargs)
+    def __init__(self, model: str = None, **kwargs):
+        # Default model will be auto-detected if None
+        super().__init__(model=model or "pending", **kwargs)
         self.base_url = kwargs.get("base_url", "http://localhost:11434")
+        self._model_auto = model is None  # Track if we need to auto-detect
 
         # Determine timeout based on model type
-        is_reasoning = any(r in model.lower() for r in self.REASONING_MODELS)
+        model_for_timeout = model or "default"
+        is_reasoning = any(r in model_for_timeout.lower() for r in self.REASONING_MODELS)
         timeout = 600.0 if is_reasoning else 120.0  # 10 min for reasoning, 2 min default
 
         try:
@@ -202,11 +205,27 @@ class OllamaProvider(BaseProvider):
         except Exception:
             return False
 
+    def get_default_model(self) -> Optional[str]:
+        """Get first available model, preferring known good ones for tool calling."""
+        models = self.list_models()
+        if not models:
+            return None
+
+        # Prefer these models in order (good for tool calling)
+        preferred = ["qwen3", "llama3.2", "llama3.1", "mistral", "qwen2.5", "llama3"]
+        for pref in preferred:
+            for model in models:
+                if pref in model.lower():
+                    return model
+
+        # Return first available model
+        return models[0]
+
     def get_config_help(self) -> str:
         return """Ollama (Local)
 
 1. Install Ollama: https://ollama.ai
 2. Start server: ollama serve
-3. Pull a model: ollama pull llama3.2
+3. Pull a model: ollama pull qwen3:4b
 
-For tool calling, use: qwen3:4b, llama3.2, or mistral"""
+For tool calling, use: qwen3:4b, llama3.2, llama3.1, or mistral"""
