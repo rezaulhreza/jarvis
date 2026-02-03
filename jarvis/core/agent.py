@@ -158,13 +158,22 @@ class Agent:
 
         # Current info / news / real-time data
         if agent_cfg.get("auto_current_info", True):
-            # Explicit web search intent
-            explicit_search = [
-                "web search", "search web", "search the web", "google", "look up",
-                "find online", "search for", "browse"
+            # Explicit web search intent - but skip command-only phrases
+            # These are handled separately in the UI to use conversation context
+            command_only = [
+                "use web search", "do a web search", "search the web", "search web",
+                "use search", "web search it", "google it", "look it up", "search online"
             ]
-            if any(s in msg_lower for s in explicit_search):
-                return "web_search", {"query": msg}
+            if msg_lower.strip() in command_only:
+                return None  # Let UI handle with conversation context
+
+            # Search WITH a topic
+            explicit_search = ["search for ", "look up ", "find online ", "google "]
+            for prefix in explicit_search:
+                if msg_lower.startswith(prefix):
+                    topic = msg[len(prefix):].strip()
+                    if topic:
+                        return "web_search", {"query": topic}
             # Weather queries: prefer get_weather when location is provided
             if "weather" in msg_lower:
                 city_match = re.search(r"\b(?:in|for)\s+([a-zA-Z\s\-]+)$", msg_lower)

@@ -109,25 +109,32 @@ export function useWebSocket() {
 
       case 'response':
         if (data.done) {
-          // Use streamed content if response content is empty (was already streamed)
-          // Capture pendingTools before any state updates
-          setPendingTools((currentPendingTools) => {
-            setStreaming((currentStreaming) => {
-              const finalContent = data.content || currentStreaming
-              if (finalContent) {
-                setMessages((prev) => [
-                  ...prev,
-                  {
-                    role: 'assistant',
-                    content: finalContent,
-                    timestamp: new Date(),
-                    tools: currentPendingTools.length ? currentPendingTools : undefined
+          // Add message with content from response or accumulated streaming
+          setStreaming((currentStreaming) => {
+            const finalContent = data.content || currentStreaming
+            if (finalContent) {
+              // Get pending tools and add message
+              setPendingTools((currentTools) => {
+                setMessages((prev) => {
+                  // Prevent duplicate messages
+                  const lastMsg = prev[prev.length - 1]
+                  if (lastMsg?.role === 'assistant' && lastMsg?.content === finalContent) {
+                    return prev  // Skip duplicate
                   }
-                ])
-              }
-              return ''  // Clear streaming
-            })
-            return []  // Clear pending tools
+                  return [
+                    ...prev,
+                    {
+                      role: 'assistant',
+                      content: finalContent,
+                      timestamp: new Date(),
+                      tools: currentTools.length ? currentTools : undefined
+                    }
+                  ]
+                })
+                return []  // Clear pending tools
+              })
+            }
+            return ''  // Clear streaming
           })
         }
         setIsLoading(false)

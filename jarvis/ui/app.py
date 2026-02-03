@@ -862,12 +862,39 @@ def create_app() -> FastAPI:
         return any(k in lowered for k in keywords)
 
     def _explicit_web_search(text: str) -> bool:
-        lowered = (text or "").lower()
-        triggers = [
-            "web search", "search web", "search the web", "google", "look up",
-            "find online", "search for", "browse"
+        """Check if user is explicitly asking to search the web."""
+        lowered = (text or "").lower().strip()
+        # Direct commands to use web search (without a topic = use previous context)
+        command_triggers = [
+            "use web search", "do a web search", "search the web", "search web",
+            "use search", "web search it", "google it", "look it up", "search online", "check internet",
+            "search on internet", "check internet"
         ]
-        return any(t in lowered for t in triggers)
+        if any(lowered == t or lowered.startswith(t + " ") for t in command_triggers):
+            return True
+        # Search WITH a topic
+        search_patterns = ["search for ", "look up ", "find online ", "google "]
+        if any(lowered.startswith(p) for p in search_patterns):
+            return True
+        return False
+
+    def _extract_search_query(text: str, last_user_msg: str) -> str:
+        """Extract the actual search query from explicit search requests."""
+        lowered = (text or "").lower().strip()
+        # If it's just a command without topic, use previous message
+        command_only = [
+            "use web search", "do a web search", "search the web", "search web",
+            "use search", "web search it", "google it", "look it up", "search online"
+        ]
+        if any(lowered == t for t in command_only):
+            return last_user_msg if last_user_msg else text
+        # Extract topic from "search for X", "look up X", etc.
+        for prefix in ["search for ", "look up ", "find online ", "google ", "web search "]:
+            if lowered.startswith(prefix):
+                topic = text[len(prefix):].strip()
+                if topic:
+                    return topic
+        return text
 
     def _topic_bucket(text: str) -> str:
         lowered = (text or "").lower()
@@ -929,7 +956,8 @@ def create_app() -> FastAPI:
 
             # Explicit user request to search the web
             if not tool_name and explicit_search:
-                tool_name, args = "web_search", {"query": user_input}
+                search_query = _extract_search_query(user_input, last_user)
+                tool_name, args = "web_search", {"query": search_query}
 
             # Fallback for current-info queries
             if not tool_name and _should_auto_web_search(user_input):
