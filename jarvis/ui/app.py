@@ -892,9 +892,16 @@ def create_app() -> FastAPI:
             return True
         return False
 
-    def _extract_search_query(text: str, last_user_msg: str) -> str:
-        """Extract the actual search query from explicit search requests."""
+    def _extract_search_query(text: str, last_user_msg: str, last_topic: str = None) -> str:
+        """Extract the actual search query from explicit search requests.
+
+        Args:
+            text: Current user input
+            last_user_msg: Previous user message
+            last_topic: Detected topic from conversation (e.g., "Mars mission")
+        """
         lowered = (text or "").lower().strip()
+        context = last_topic or last_user_msg or ""
 
         # Commands that mean "search for the previous topic"
         context_commands = [
@@ -906,13 +913,40 @@ def create_app() -> FastAPI:
             "web search for that", "web search for it"
         ]
         if any(lowered == t for t in context_commands):
-            return last_user_msg if last_user_msg else text
+            return context if context else text
 
         # Phrases ending with pronouns that reference previous context
         pronoun_endings = [" that", " it", " this", " the above", " previous"]
         for ending in pronoun_endings:
             if lowered.endswith(ending):
-                return last_user_msg if last_user_msg else text
+                return context if context else text
+
+        # Refinement queries - combine with previous context
+        # e.g., "find something from 2026" + context "Mars mission" = "Mars mission 2026"
+        refinement_patterns = [
+            "find ", "show ", "what about ", "how about ", "any ", "more about ",
+            "tell me about ", "get ", "latest ", "recent ", "new "
+        ]
+        if context and any(lowered.startswith(p) for p in refinement_patterns):
+            # Check if it looks like a refinement (short query, contains year/modifier)
+            refinement_indicators = ["2024", "2025", "2026", "2027", "latest", "recent", "new", "more", "from"]
+            if any(ind in lowered for ind in refinement_indicators):
+                # Extract meaningful refinement parts (years, adjectives, not prepositions)
+                import re
+                refinement_parts = []
+                # Extract year if mentioned
+                year_match = re.search(r'\b(20\d{2})\b', text)
+                if year_match:
+                    refinement_parts.append(year_match.group(1))
+                # Add meaningful modifiers (not "from", "more")
+                for ind in ["latest", "recent", "new", "update", "news"]:
+                    if ind in lowered and ind not in refinement_parts:
+                        refinement_parts.append(ind)
+                # Combine context with extracted refinement
+                if refinement_parts:
+                    return f"{context} {' '.join(refinement_parts)}"
+                # If no specific parts extracted but has year-ish content, still combine
+                return f"{context} {text}"
 
         # Extract topic from "search for X", "look up X", etc.
         for prefix in ["search for ", "look up ", "find online ", "google ", "web search ", "search the web for "]:
@@ -920,7 +954,7 @@ def create_app() -> FastAPI:
                 topic = text[len(prefix):].strip()
                 # If topic is just a pronoun, use previous message
                 if topic.lower() in ["that", "it", "this", "the above"]:
-                    return last_user_msg if last_user_msg else text
+                    return context if context else text
                 if topic:
                     return topic
 
@@ -938,25 +972,73 @@ def create_app() -> FastAPI:
             return "finance"
         return "general"
 
+    def _is_refinement_query(text: str) -> bool:
+        """Check if this is a refinement/follow-up query that needs context."""
+        lowered = (text or "").lower().strip()
+        refinement_patterns = [
+            "find ", "show ", "what about ", "how about ", "any ", "more about ",
+            "tell me about ", "get ", "latest ", "recent ", "new ", "from ",
+            "something ", "anything ", "updates ", "news "
+        ]
+        refinement_indicators = ["2024", "2025", "2026", "2027", "latest", "recent", "new", "more", "from", "update"]
+        # Check for pattern + indicator combo
+        if any(lowered.startswith(p) for p in refinement_patterns):
+            if any(ind in lowered for ind in refinement_indicators):
+                return True
+        # Also catch short queries that are just refinements
+        # e.g., "2026 news", "latest updates", "from last year"
+        if len(lowered.split()) <= 4:
+            indicator_count = sum(1 for ind in refinement_indicators if ind in lowered)
+            if indicator_count >= 1 and any(w in lowered for w in ["news", "update", "info", "about"]):
+                return True
+        return False
+
+    def _extract_topic_from_history(history_messages) -> str:
+        """Try to extract the main topic from recent conversation."""
+        try:
+            # Look for the last substantive user query (not a command)
+            for m in reversed(history_messages or []):
+                content = getattr(m, "content", "") or ""
+                lowered = content.lower()
+                # Skip command-like messages
+                if _explicit_web_search(content) or len(content) < 10:
+                    continue
+                # Extract key topic words
+                # Remove common question words
+                for prefix in ["tell me about ", "what is ", "what are ", "who is ", "explain "]:
+                    if lowered.startswith(prefix):
+                        return content[len(prefix):].strip()
+                return content
+        except Exception:
+            pass
+        return ""
+
     async def _run_tool_for_chat_mode(jarvis, user_input: str, history_messages):
         """Lightweight tool router for chat mode."""
         tool_turn = []
         tool_name_used = None
         tool_result = None
         explicit_search = _explicit_web_search(user_input)
+        is_refinement = _is_refinement_query(user_input)
+
         try:
             agent = getattr(jarvis, "agent", None)
             tool_name = None
             args = None
             last_user = ""
+            last_topic = ""
+
             try:
                 if history_messages:
                     for m in reversed(history_messages):
                         if getattr(m, "role", None) == "user":
                             last_user = getattr(m, "content", "") or ""
                             break
+                    # Also extract conversation topic
+                    last_topic = _extract_topic_from_history(history_messages)
             except Exception:
                 last_user = ""
+                last_topic = ""
             if agent and hasattr(agent, "_detect_auto_tool"):
                 import os
                 lowered = user_input.lower()
@@ -986,7 +1068,13 @@ def create_app() -> FastAPI:
 
             # Explicit user request to search the web
             if not tool_name and explicit_search:
-                search_query = _extract_search_query(user_input, last_user)
+                search_query = _extract_search_query(user_input, last_user, last_topic)
+                tool_name, args = "web_search", {"query": search_query}
+
+            # Refinement queries with context should trigger web search
+            if not tool_name and is_refinement and last_topic:
+                # Combine refinement with previous topic for context-aware search
+                search_query = _extract_search_query(user_input, last_user, last_topic)
                 tool_name, args = "web_search", {"query": search_query}
 
             # Fallback for current-info queries
