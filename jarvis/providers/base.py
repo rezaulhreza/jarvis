@@ -47,7 +47,8 @@ class BaseProvider(ABC):
         self,
         messages: List[Message],
         system: str = None,
-        stream: bool = True
+        stream: bool = True,
+        **kwargs
     ) -> Generator[str, None, None] | str:
         """
         Send a chat request.
@@ -56,6 +57,7 @@ class BaseProvider(ABC):
             messages: List of Message objects
             system: System prompt
             stream: Whether to stream response
+            **kwargs: Provider-specific options (ignored by default)
 
         Yields/Returns:
             Response text (streamed or complete)

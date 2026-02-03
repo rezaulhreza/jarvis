@@ -114,13 +114,30 @@ def claude_device_login(timeout: int = 300) -> dict:
             text=True,
             timeout=timeout
         )
-        output = (result.stdout or "") + (("\n" + result.stderr) if result.stderr else "")
         imported = import_claude_access_token()
         if not imported.get("imported"):
             imported = import_anthropic_key_from_env()
+
+        if result.returncode == 0:
+            return {
+                "ok": True,
+                "output": "Claude login completed. If your browser didn't open, run `claude setup-token` in a terminal.",
+                "import": imported,
+            }
+
+        # Best-effort: avoid leaking ANSI/CLI noise into the web UI
+        output = (result.stderr or result.stdout or "").strip()
+        if output:
+            # Strip ANSI escape sequences
+            import re
+            output = re.sub(r"\x1B\[[0-?]*[ -/]*[@-~]", "", output)
+            output = output[-500:]
+        else:
+            output = "Claude login failed. Try running `claude setup-token` in a terminal."
+
         return {
-            "ok": result.returncode == 0,
-            "output": output.strip(),
+            "ok": False,
+            "output": output,
             "import": imported,
         }
     except FileNotFoundError:

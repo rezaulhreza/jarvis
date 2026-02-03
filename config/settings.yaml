@@ -64,12 +64,18 @@ integrations:
 
   web_search:
     enabled: true
-    provider: "duckduckgo"
+    # provider: "duckduckgo"
+    provider: "brave"
 
   weather:
     enabled: false
     # API key loaded from OPENWEATHER_API_KEY env var
     units: "metric"
+    provider: "wttr"  # "wttr" (free, default) or "openweather" (requires API key)
+
+  goldapi:
+    enabled: false
+    # API key loaded from GOLDAPI_KEY or GOLD_API_KEY env var
 
   calendar:
     enabled: false

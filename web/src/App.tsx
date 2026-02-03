@@ -18,6 +18,12 @@ import {
 
 type Mode = 'chat' | 'voice'
 
+const extractUrls = (text?: string) => {
+  if (!text) return []
+  const matches = text.match(/https?:\/\/[^\s)]+/g) || []
+  return Array.from(new Set(matches))
+}
+
 export default function App() {
   const [mode, setMode] = useState<Mode>('chat')
   const [chatMode, setChatMode] = useState(true)
@@ -51,12 +57,17 @@ export default function App() {
     project,
     model,
     provider,
-    ragStatus,
+    ragStatus: _ragStatus,  // For future RAG indicator feature
+    toolTimeline: _toolTimeline,  // For future tool timeline feature
     send,
     clear,
     switchModel,
     switchProvider,
   } = useWebSocket()
+
+  // Suppress unused warnings - these will be used for RAG/tool indicators
+  void _ragStatus
+  void _toolTimeline
 
   // Randomize loading text when loading starts
   useEffect(() => {
@@ -805,24 +816,93 @@ export default function App() {
       <main className="flex-1 overflow-y-auto p-4">
         <div className="max-w-3xl mx-auto space-y-4">
           {messages.map((msg, i) => (
-            <div
-              key={i}
-              className={cn(
-                'p-4 rounded-xl',
-                msg.role === 'user' ? 'bg-[#1a1a24] ml-12' :
-                msg.role === 'system' ? 'bg-transparent text-center text-[#71717a] text-sm' :
-                'bg-[#12121a] mr-12'
-              )}
-            >
-              {msg.role !== 'system' && (
-                <div className="flex justify-between items-center mb-2">
-                  <p className="text-xs text-[#71717a]">{msg.role === 'user' ? 'You' : 'Jarvis'}</p>
-                  <p className="text-xs text-[#51515a]">
-                    {msg.timestamp?.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                  </p>
+            <div key={i} className="space-y-3">
+              <div
+                className={cn(
+                  'p-4 rounded-xl',
+                  msg.role === 'user' ? 'bg-[#1a1a24] ml-12' :
+                  msg.role === 'system' ? 'bg-transparent text-center text-[#71717a] text-sm' :
+                  'bg-[#12121a] mr-12'
+                )}
+              >
+                {msg.role !== 'system' && (
+                  <div className="flex justify-between items-center mb-2">
+                    <p className="text-xs text-[#71717a]">{msg.role === 'user' ? 'You' : 'Jarvis'}</p>
+                    <p className="text-xs text-[#51515a]">
+                      {msg.timestamp?.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    </p>
+                  </div>
+                )}
+                <p className="whitespace-pre-wrap">{msg.content}</p>
+              </div>
+
+              {msg.tools && msg.tools.length > 0 && msg.role === 'assistant' && (
+                <div className="p-4 rounded-xl bg-[#0f1117] border border-[#2a2a3a] mr-12">
+                  <div className="flex items-center justify-between mb-3">
+                    <p className="text-xs text-[#a1a1aa] uppercase tracking-wider">Tools</p>
+                    <p className="text-xs text-[#51515a]">{msg.tools.length} step{msg.tools.length > 1 ? 's' : ''}</p>
+                  </div>
+                  <div className="space-y-2">
+                    {msg.tools.map((tool, idx) => (
+                      <details key={`${tool.name}-${idx}`} className="group rounded-lg bg-[#12121a] border border-[#1f1f2a] p-3">
+                        <summary className="flex items-start gap-2 text-sm cursor-pointer list-none">
+                          <span
+                            className={cn(
+                              'mt-1 h-2 w-2 rounded-full',
+                              tool.success === false ? 'bg-red-400' : 'bg-emerald-400'
+                            )}
+                          />
+                          <div className="flex-1">
+                            <div className="text-[#e4e4e7]">{tool.display}</div>
+                            {tool.result_preview && (
+                              <div className="text-xs text-[#71717a] mt-0.5 line-clamp-2">{tool.result_preview}</div>
+                            )}
+                          </div>
+                          <div className="text-xs text-[#51515a]">
+                            {tool.duration_s?.toFixed(1)}s
+                          </div>
+                        </summary>
+                        <div className="mt-3 text-xs text-[#a1a1aa] space-y-2">
+                          {tool.args && Object.keys(tool.args).length > 0 && (
+                            <div>
+                              <div className="text-[#71717a] mb-1">Args</div>
+                              <pre className="whitespace-pre-wrap text-[#cbd5f5] bg-[#0b0d12] p-2 rounded-md border border-[#1f1f2a]">
+                                {JSON.stringify(tool.args, null, 2)}
+                              </pre>
+                            </div>
+                          )}
+                          {tool.result_preview && (
+                            <div>
+                              <div className="text-[#71717a] mb-1">Result</div>
+                              <div className="whitespace-pre-wrap text-[#cbd5f5] bg-[#0b0d12] p-2 rounded-md border border-[#1f1f2a]">
+                                {tool.result_preview}
+                              </div>
+                            </div>
+                          )}
+                          {tool.result_preview && extractUrls(tool.result_preview).length > 0 && (
+                            <div>
+                              <div className="text-[#71717a] mb-1">Sources</div>
+                              <div className="flex flex-col gap-1">
+                                {extractUrls(tool.result_preview).map((url) => (
+                                  <a
+                                    key={url}
+                                    href={url}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="text-[#7dd3fc] hover:underline break-all"
+                                  >
+                                    {url}
+                                  </a>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      </details>
+                    ))}
+                  </div>
                 </div>
               )}
-              <p className="whitespace-pre-wrap">{msg.content}</p>
             </div>
           ))}
 
@@ -839,7 +919,10 @@ export default function App() {
           {streaming && (
             <div className="p-4 rounded-xl bg-[#12121a] mr-12">
               <p className="text-xs text-[#71717a] mb-2">Jarvis</p>
-              <p className="whitespace-pre-wrap">{streaming}</p>
+              <p className="whitespace-pre-wrap">
+                {streaming}
+                <span className="inline-block w-2 animate-pulse">▍</span>
+              </p>
             </div>
           )}
 

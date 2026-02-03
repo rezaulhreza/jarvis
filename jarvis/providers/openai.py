@@ -96,7 +96,8 @@ class OpenAIProvider(BaseProvider):
         self,
         messages: List[Message],
         system: str = None,
-        stream: bool = True
+        stream: bool = True,
+        **kwargs
     ) -> Generator[str, None, None] | str:
         """Send chat request to OpenAI."""
         if not self.client:

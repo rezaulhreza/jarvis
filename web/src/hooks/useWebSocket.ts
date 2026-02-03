@@ -4,6 +4,7 @@ interface Message {
   role: 'user' | 'assistant' | 'system'
   content: string
   timestamp: Date
+  tools?: ToolEvent[]
 }
 
 interface RagInfo {
@@ -24,6 +25,17 @@ interface WSMessage {
   error?: string
   message?: string  // Error message from backend
   rag?: RagInfo
+  tools?: ToolEvent[]
+}
+
+interface ToolEvent {
+  name: string
+  display: string
+  duration_s: number
+  id?: string | null
+  args?: Record<string, unknown>
+  result_preview?: string | null
+  success?: boolean
 }
 
 export function useWebSocket() {
@@ -36,6 +48,9 @@ export function useWebSocket() {
   const [provider, setProvider] = useState('')
   const [project, setProject] = useState('')
   const [ragStatus, setRagStatus] = useState<RagInfo | null>(null)
+  const [toolTimeline, setToolTimeline] = useState<ToolEvent[]>([])
+  // pendingTools is used via setPendingTools callback form, not directly referenced
+  const [, setPendingTools] = useState<ToolEvent[]>([])
 
   useEffect(() => {
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null
@@ -93,9 +108,27 @@ export function useWebSocket() {
         break
 
       case 'response':
-        if (data.done && data.content) {
-          setMessages((prev) => [...prev, { role: 'assistant', content: data.content!, timestamp: new Date() }])
-          setStreaming('')
+        if (data.done) {
+          // Use streamed content if response content is empty (was already streamed)
+          // Capture pendingTools before any state updates
+          setPendingTools((currentPendingTools) => {
+            setStreaming((currentStreaming) => {
+              const finalContent = data.content || currentStreaming
+              if (finalContent) {
+                setMessages((prev) => [
+                  ...prev,
+                  {
+                    role: 'assistant',
+                    content: finalContent,
+                    timestamp: new Date(),
+                    tools: currentPendingTools.length ? currentPendingTools : undefined
+                  }
+                ])
+              }
+              return ''  // Clear streaming
+            })
+            return []  // Clear pending tools
+          })
         }
         setIsLoading(false)
         break
@@ -124,10 +157,21 @@ export function useWebSocket() {
         }
         break
 
+      case 'tool_timeline':
+        if (data.tools?.length) {
+          setToolTimeline(data.tools)
+          setPendingTools(data.tools)
+        } else {
+          setToolTimeline([])
+          setPendingTools([])
+        }
+        break
+
       case 'cleared':
         setMessages([])
         setStreaming('')
         setRagStatus(null)
+        setToolTimeline([])
         break
     }
   }
@@ -139,6 +183,8 @@ export function useWebSocket() {
     setIsLoading(true)
     setStreaming('')
     setRagStatus(null)  // Reset RAG status for new query
+    setToolTimeline([])
+    setPendingTools([])
 
     ws.current.send(JSON.stringify({ type: 'message', content, chat_mode: chatMode }))
   }, [])
@@ -167,6 +213,7 @@ export function useWebSocket() {
     provider,
     project,
     ragStatus,
+    toolTimeline,
     send,
     switchModel,
     switchProvider,

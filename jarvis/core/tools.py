@@ -1063,7 +1063,7 @@ Description:
 # =============================================================================
 
 def web_search(query: str, max_results: int = 5) -> str:
-    """Search the web for current information. Use for news, prices, facts, documentation.
+    """Search the web for current information using Brave Search (primary) or DuckDuckGo (fallback).
 
     Args:
         query: The search query
@@ -1072,34 +1072,170 @@ def web_search(query: str, max_results: int = 5) -> str:
     Returns:
         Search results with titles, URLs, and snippets
     """
+    import os
+    import httpx
+
+    today = datetime.now()
+
+    # === BRAVE SEARCH (Primary) ===
+    brave_key = os.getenv("BRAVE_API_KEY")
+    if brave_key:
+        print(f"[web_search] Using Brave Search for: {query[:50]}...")
+        try:
+            resp = httpx.get(
+                "https://api.search.brave.com/res/v1/web/search",
+                params={"q": query, "count": max_results, "text_decorations": False},
+                headers={
+                    "Accept": "application/json",
+                    "Accept-Encoding": "gzip",
+                    "X-Subscription-Token": brave_key
+                },
+                timeout=15.0,
+            )
+            print(f"[web_search] Brave response status: {resp.status_code}")
+
+            if resp.status_code == 200:
+                data = resp.json()
+                web_results = (data.get("web") or {}).get("results") or []
+                if web_results:
+                    formatted = [f"Search results (Brave, {today.strftime('%Y-%m-%d')}):\n"]
+                    for i, r in enumerate(web_results[:max_results], 1):
+                        title = str(r.get("title") or "Untitled")
+                        url = str(r.get("url") or "")
+                        desc = str(r.get("description") or "")
+                        if len(desc) > 300:
+                            desc = desc[:300]
+                        formatted.append(f"{i}. {title}\n   URL: {url}\n   {desc}")
+                    return "\n\n".join(formatted)
+                else:
+                    print("[web_search] Brave returned no results")
+            elif resp.status_code == 401:
+                print("[web_search] Brave API: Invalid API key")
+            elif resp.status_code == 429:
+                print("[web_search] Brave API: Rate limited")
+            else:
+                print(f"[web_search] Brave API error: {resp.status_code} - {resp.text[:200]}")
+        except Exception as e:
+            print(f"[web_search] Brave Search failed: {e}")
+
+    # === DUCKDUCKGO (Fallback) ===
+    print(f"[web_search] Falling back to DuckDuckGo for: {query[:50]}...")
     try:
         from ddgs import DDGS
+        import time
 
-        # Add current date context to improve freshness
-        today = datetime.now()
-        date_str = today.strftime("%B %Y")  # e.g., "February 2026"
+        results = []
+        for attempt, (search_query, params) in enumerate([
+            (query, {}),
+            (query, {"timelimit": "m"}),
+        ]):
+            try:
+                with DDGS() as ddgs:
+                    results = list(ddgs.text(search_query, max_results=max_results, **params))
+                    if results:
+                        break
+                if attempt < 1:
+                    time.sleep(0.5)
+            except Exception as e:
+                print(f"[web_search] DuckDuckGo attempt {attempt+1} failed: {e}")
+                continue
 
-        # For queries that likely need current data, append date
-        time_sensitive = ['price', 'stock', 'weather', 'news', 'current', 'today', 'latest', 'now']
-        if any(word in query.lower() for word in time_sensitive):
-            search_query = f"{query} {date_str}"
-        else:
-            search_query = query
+        if results:
+            formatted = [f"Search results (DuckDuckGo, {today.strftime('%Y-%m-%d')}):\n"]
+            for i, r in enumerate(results, 1):
+                try:
+                    title = str(r.get('title', 'Untitled') if isinstance(r, dict) else 'Untitled')
+                    url = str(r.get('href', r.get('url', '')) if isinstance(r, dict) else '')
+                    body = str(r.get('body', r.get('description', '')) if isinstance(r, dict) else '')
+                    if len(body) > 300:
+                        body = body[:300]
+                    formatted.append(f"{i}. {title}\n   URL: {url}\n   {body}")
+                except Exception:
+                    continue
+            if len(formatted) > 1:
+                return "\n\n".join(formatted)
 
-        with DDGS() as ddgs:
-            results = list(ddgs.text(search_query, max_results=max_results))
+    except ImportError:
+        print("[web_search] ddgs not installed")
+    except Exception as e:
+        print(f"[web_search] DuckDuckGo error: {e}")
 
-        if not results:
-            return f"No results found for: {query}"
+    # === WIKIPEDIA (Last resort for factual queries) ===
+    print(f"[web_search] Trying Wikipedia for: {query[:50]}...")
+    try:
+        resp = httpx.get(
+            "https://en.wikipedia.org/w/api.php",
+            params={"action": "query", "list": "search", "srsearch": query, "format": "json", "srlimit": 3},
+            timeout=10.0
+        )
+        if resp.status_code == 200:
+            wiki_results = resp.json().get("query", {}).get("search", [])
+            if wiki_results:
+                formatted = [f"Wikipedia results for '{query}':\n"]
+                for i, r in enumerate(wiki_results, 1):
+                    title = r.get("title", "")
+                    snippet = r.get("snippet", "").replace("<span class=\"searchmatch\">", "").replace("</span>", "")[:250]
+                    url = f"https://en.wikipedia.org/wiki/{title.replace(' ', '_')}"
+                    formatted.append(f"{i}. {title}\n   URL: {url}\n   {snippet}")
+                return "\n\n".join(formatted)
+    except Exception as e:
+        print(f"[web_search] Wikipedia error: {e}")
 
-        formatted = [f"Search results (as of {today.strftime('%Y-%m-%d')}):\n"]
-        for i, r in enumerate(results, 1):
-            formatted.append(f"{i}. {r['title']}\n   URL: {r['href']}\n   {r['body'][:200]}...")
+    return f"Search failed: No results found for '{query}'. Please try a different query."
 
-        return "\n\n".join(formatted)
+
+# =============================================================================
+# GOLD PRICE (GoldAPI.io)
+# =============================================================================
+
+def get_gold_price(currency: str = "USD") -> str:
+    """Get current gold spot price using GoldAPI.io.
+
+    Args:
+        currency: Quote currency (e.g., "USD", "GBP", "EUR")
+
+    Returns:
+        Current gold price and timestamp or an error message
+    """
+    try:
+        import os
+        import requests
+
+        api_key = os.getenv("GOLDAPI_KEY") or os.getenv("GOLD_API_KEY")
+        if not api_key:
+            return "Error: GOLDAPI_KEY not configured"
+
+        cur = (currency or "USD").upper()
+        url = f"https://www.goldapi.io/api/XAU/{cur}"
+        headers = {"x-access-token": api_key}
+        response = requests.get(url, headers=headers, timeout=15)
+        if response.status_code == 401:
+            return "Error: GoldAPI.io unauthorized (check GOLDAPI_KEY)"
+        if response.status_code == 429:
+            return "Error: GoldAPI.io rate limit exceeded"
+        response.raise_for_status()
+        data = response.json()
+
+        price = data.get("price")
+        ts = data.get("timestamp")
+        if price is None:
+            return "Error: GoldAPI.io response missing price"
+
+        # Timestamp is Unix seconds
+        ts_str = None
+        try:
+            from datetime import datetime, timezone
+            ts_str = datetime.fromtimestamp(ts, tz=timezone.utc).isoformat() if ts else None
+        except Exception:
+            ts_str = None
+
+        return (
+            f"Gold spot price (XAU/{cur}): {price}\n"
+            + (f"Timestamp (UTC): {ts_str}" if ts_str else "")
+        ).strip()
 
     except Exception as e:
-        return f"Search failed: {e}"
+        return f"Gold price lookup failed: {e}"
 
 
 def web_fetch(url: str) -> str:
@@ -1168,31 +1304,45 @@ def get_current_news(topic: str) -> str:
     Returns:
         Recent news articles about the topic
     """
+    import time
+
+    if not topic or not topic.strip():
+        return "Error: No topic provided for news search."
+
+    topic = topic.strip()
+    results = []
+
+    # Try DuckDuckGo news
     try:
         from ddgs import DDGS
 
         with DDGS() as ddgs:
             results = list(ddgs.news(topic, max_results=5))
 
-        if not results:
-            # Fallback to regular search
-            return web_search(f"{topic} latest news", max_results=5)
+    except Exception as e:
+        print(f"[get_current_news] DuckDuckGo news error: {e}")
 
-        formatted = [f"Latest news about: {topic}\n"]
+    if results:
+        today = datetime.now()
+        formatted = [f"Latest news about '{topic}' (as of {today.strftime('%Y-%m-%d')}):\n"]
         for i, r in enumerate(results, 1):
             date = r.get('date', 'Recent')
+            title = r.get('title', 'Untitled')
+            source = r.get('source', 'Unknown')
+            body = r.get('body', '')[:200]
+            url = r.get('url', '')
             formatted.append(
-                f"{i}. {r['title']}\n"
+                f"{i}. {title}\n"
                 f"   Date: {date}\n"
-                f"   Source: {r.get('source', 'Unknown')}\n"
-                f"   {r['body'][:200]}...\n"
-                f"   URL: {r['url']}"
+                f"   Source: {source}\n"
+                f"   {body}...\n"
+                f"   URL: {url}"
             )
-
         return "\n\n".join(formatted)
 
-    except Exception as e:
-        return f"News search failed: {e}. Try web_search instead."
+    # Fallback to regular web search with news qualifier
+    time.sleep(0.3)  # Small delay
+    return web_search(f"{topic} latest news {datetime.now().year}", max_results=5)
 
 
 # =============================================================================
@@ -1209,8 +1359,41 @@ def get_weather(city: str) -> str:
         Current weather conditions
     """
     try:
+        import os
         import requests
+        from jarvis.assistant import load_config
 
+        config = load_config()
+        weather_cfg = (config.get("integrations", {}) or {}).get("weather", {})
+        provider = weather_cfg.get("provider", "wttr")
+        units = weather_cfg.get("units", "metric")
+        api_key = os.getenv("OPENWEATHER_API_KEY")
+
+        if provider == "openweather" and api_key:
+            # OpenWeatherMap API (optional)
+            params = {
+                "q": city,
+                "appid": api_key,
+                "units": "metric" if units == "metric" else "imperial",
+            }
+            response = requests.get("https://api.openweathermap.org/data/2.5/weather", params=params, timeout=15)
+            response.raise_for_status()
+            data = response.json()
+            temp_c = data["main"]["temp"]
+            feels_c = data["main"]["feels_like"]
+            humidity = data["main"]["humidity"]
+            wind_kph = round(data["wind"]["speed"] * 3.6, 1)  # m/s to km/h
+            desc = data["weather"][0]["description"]
+            return (
+                f"Weather in {city}:\n"
+                f"  Temperature: {temp_c}°C\n"
+                f"  Feels like: {feels_c}°C\n"
+                f"  Condition: {desc}\n"
+                f"  Humidity: {humidity}%\n"
+                f"  Wind: {wind_kph} km/h"
+            )
+
+        # Default: free wttr.in
         url = f"https://wttr.in/{city}?format=j1"
         headers = {"User-Agent": "curl/7.68.0"}
         response = requests.get(url, timeout=15, headers=headers)
@@ -1431,6 +1614,7 @@ ALL_TOOLS = [
     web_search,
     web_fetch,
     get_current_news,
+    get_gold_price,
     # Weather
     get_weather,
     # Time

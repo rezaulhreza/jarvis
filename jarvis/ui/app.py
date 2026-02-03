@@ -40,11 +40,13 @@ class WebUI:
     """Minimal UI adapter for web context."""
     def __init__(self):
         self._messages = []
+        self._tool_turn = []
+        self._stream_sender = None
         self.console = DummyConsole(self._messages)
         self.is_streaming = False
         self.stop_requested = False
 
-    def print_tool(self, msg): self._messages.append(("tool", msg))
+    def print_tool(self, msg, success: bool = True, **kwargs): self._messages.append(("tool", {"message": msg, "success": success}))
     def print_error(self, msg): self._messages.append(("error", msg))
     def print_warning(self, msg): self._messages.append(("warning", msg))
     def print_success(self, msg): self._messages.append(("success", msg))
@@ -54,11 +56,48 @@ class WebUI:
     def setup_signal_handlers(self): pass
     def print_header(self, *args, **kwargs): pass
     def confirm(self, msg): return True  # Auto-confirm in web UI
+    def begin_turn(self): self._tool_turn = []
+    def stream_text(self, text: str):
+        if self._stream_sender:
+            self._stream_sender(text)
+        else:
+            self._messages.append(("stream", text))
+    def stream_done(self): pass
+
+    def record_tool(
+        self,
+        name: str,
+        display: str,
+        duration_s: float,
+        tool_call_id: str | None = None,
+        args: dict | None = None,
+        result: str | None = None,
+        success: bool = True,
+    ):
+        preview = None
+        if result:
+            preview = result.strip().replace("\n", " ")
+            if len(preview) > 180:
+                preview = preview[:177] + "..."
+        self._tool_turn.append({
+            "name": name,
+            "display": display,
+            "duration_s": duration_s,
+            "id": tool_call_id,
+            "args": args or {},
+            "result_preview": preview,
+            "success": success,
+        })
 
     def get_messages(self):
         msgs = self._messages.copy()
         self._messages.clear()
         return msgs
+
+    def get_tool_turn(self):
+        tools = self._tool_turn.copy()
+        self._tool_turn.clear()
+        return tools
 
 
 class DummySpinner:
@@ -799,6 +838,137 @@ def create_app() -> FastAPI:
             connections.pop(session_id, None)
             instances.pop(session_id, None)
 
+    def _clean_for_web(text: str, streaming: bool = False) -> str:
+        if not text:
+            return ""
+        # Strip rich markup like [dim], [red], etc.
+        import re
+        cleaned = re.sub(r"\[/?[a-zA-Z_]+\]", "", text)
+        # Drop trailing timing/tool footer like "(12.3s · 2 tools)"
+        lines = cleaned.splitlines()
+        if lines:
+            last = lines[-1].strip()
+            if re.match(r"^\(\d+(\.\d+)?s(\s*·\s*\d+\s*tool(s)?)?\)$", last):
+                lines = lines[:-1]
+        cleaned = "\n".join(lines)
+        return cleaned if streaming else cleaned.strip()
+
+    def _should_auto_web_search(text: str) -> bool:
+        lowered = (text or "").lower()
+        keywords = [
+            "price", "rate", "today", "current", "latest", "now", "forecast", "market",
+            "stock", "gold", "silver", "btc", "bitcoin", "eth", "ethereum",
+        ]
+        return any(k in lowered for k in keywords)
+
+    def _explicit_web_search(text: str) -> bool:
+        lowered = (text or "").lower()
+        triggers = [
+            "web search", "search web", "search the web", "google", "look up",
+            "find online", "search for", "browse"
+        ]
+        return any(t in lowered for t in triggers)
+
+    def _topic_bucket(text: str) -> str:
+        lowered = (text or "").lower()
+        if any(w in lowered for w in ["weather", "temperature", "forecast", "rain", "snow"]):
+            return "weather"
+        if any(w in lowered for w in ["time", "date", "clock", "timezone"]):
+            return "time"
+        if any(w in lowered for w in ["news", "headline", "breaking"]):
+            return "news"
+        if any(w in lowered for w in ["price", "stock", "market", "gold", "silver", "btc", "bitcoin", "eth", "crypto", "forex"]):
+            return "finance"
+        return "general"
+
+    async def _run_tool_for_chat_mode(jarvis, user_input: str, history_messages):
+        """Lightweight tool router for chat mode."""
+        tool_turn = []
+        tool_name_used = None
+        tool_result = None
+        explicit_search = _explicit_web_search(user_input)
+        try:
+            agent = getattr(jarvis, "agent", None)
+            tool_name = None
+            args = None
+            last_user = ""
+            try:
+                if history_messages:
+                    for m in reversed(history_messages):
+                        if getattr(m, "role", None) == "user":
+                            last_user = getattr(m, "content", "") or ""
+                            break
+            except Exception:
+                last_user = ""
+            if agent and hasattr(agent, "_detect_auto_tool"):
+                import os
+                lowered = user_input.lower()
+                if "gold" in lowered and "price" in lowered:
+                    if not (os.getenv("GOLDAPI_KEY") or os.getenv("GOLD_API_KEY")):
+                        return "Error: GOLDAPI_KEY not configured. Please set it in .env to fetch live gold prices.", tool_turn
+                    currency = "USD"
+                    for cur in ["GBP", "EUR", "USD", "AED", "AUD", "CAD", "CHF", "JPY"]:
+                        if cur.lower() in lowered:
+                            currency = cur
+                            break
+                    tool_name, args = "get_gold_price", {"currency": currency}
+                else:
+                    detected = agent._detect_auto_tool(user_input)
+                    if detected:
+                        tool_name, args = detected
+
+                if not tool_name and last_user and ("gold api" in user_input.lower() or "goldapi" in user_input.lower()):
+                    # If user explicitly asks for GoldAPI, only do that (no web search fallback)
+                    import os
+                    if os.getenv("GOLDAPI_KEY") or os.getenv("GOLD_API_KEY"):
+                        detected = agent._detect_auto_tool(last_user)
+                        if detected:
+                            tool_name, args = detected
+                    else:
+                        return "Error: GOLDAPI_KEY not configured. Please set it in .env.", tool_turn
+
+            # Explicit user request to search the web
+            if not tool_name and explicit_search:
+                tool_name, args = "web_search", {"query": user_input}
+
+            # Fallback for current-info queries
+            if not tool_name and _should_auto_web_search(user_input):
+                tool_name, args = "web_search", {"query": user_input}
+
+            if tool_name and hasattr(agent, "_execute_tool"):
+                tool_start = asyncio.get_event_loop().time()
+                result = agent._execute_tool(tool_name, args or {})
+                tool_duration = asyncio.get_event_loop().time() - tool_start
+                tool_name_used = tool_name
+                tool_result = result
+                tool_success = not (result and (result.startswith("Error") or result.startswith("error")))
+                if jarvis.ui:
+                    jarvis.ui.print_tool(agent._format_tool_display(tool_name, args or {}, result), success=tool_success)
+                    if hasattr(jarvis.ui, "record_tool"):
+                        jarvis.ui.record_tool(
+                            tool_name,
+                            agent._format_tool_display(tool_name, args or {}, result),
+                            tool_duration,
+                            args=args,
+                            result=result,
+                            success=tool_success,
+                        )
+                if hasattr(jarvis.ui, "get_tool_turn"):
+                    tool_turn = jarvis.ui.get_tool_turn()
+                tool_prompt = (
+                    f"Tool result:\n{result}\n\n"
+                    "Instructions:\n"
+                    "1. If the result contains search results with titles/URLs/descriptions, synthesize a helpful answer from them.\n"
+                    "2. If the result starts with 'Error:' or 'Search failed:', acknowledge the error briefly.\n"
+                    "3. If you see 'No results found', say so briefly and suggest the user try a different query.\n"
+                    "4. Include 1-2 source URLs when available.\n"
+                    "5. Answer the original question directly and concisely."
+                )
+                return tool_prompt, tool_turn, tool_name_used, tool_result, explicit_search
+        except Exception:
+            pass
+        return None, tool_turn, tool_name_used, tool_result, explicit_search
+
     async def process_message(websocket: WebSocket, jarvis, user_input: str, chat_mode: bool = False):
         """Process a message and stream the response."""
         await websocket.send_json({
@@ -813,7 +983,7 @@ def create_app() -> FastAPI:
                 ui_msgs = jarvis.ui.get_messages()
                 await websocket.send_json({
                     "type": "response",
-                    "content": result or "\n".join(m[1] for m in ui_msgs) or "Done.",
+                    "content": _clean_for_web(result or "\n".join(str(m[1]) for m in ui_msgs) or "Done."),
                     "done": True
                 })
                 return
@@ -829,6 +999,8 @@ def create_app() -> FastAPI:
 
             if chat_mode:
                 # CHAT MODE: Ultra-fast, minimal overhead, NO THINKING
+                if hasattr(jarvis.ui, "begin_turn"):
+                    jarvis.ui.begin_turn()
 
                 # Load user facts for context
                 user_facts = ""
@@ -882,49 +1054,142 @@ def create_app() -> FastAPI:
 
                 # Minimal context - just last 2 exchanges for speed
                 recent = history[-2:] if len(history) > 2 else history
-                all_messages = recent + [Message(role="user", content=user_input)]
+                if recent:
+                    # Drop history on topic shift (e.g., gold price -> weather)
+                    last_user_msg = ""
+                    for m in reversed(recent):
+                        if m.role == "user":
+                            last_user_msg = m.content or ""
+                            break
+                    if last_user_msg:
+                        if _topic_bucket(last_user_msg) != _topic_bucket(user_input):
+                            recent = []
+                tool_messages = []
+                tool_prompt, tool_turn, tool_name_used, tool_result, explicit_search = await _run_tool_for_chat_mode(jarvis, user_input, recent)
+                if tool_prompt:
+                    tool_messages.append(Message(role="user", content=tool_prompt))
+                if tool_turn:
+                    await websocket.send_json({
+                        "type": "tool_timeline",
+                        "tools": tool_turn,
+                    })
 
-                # Use fast chat model
-                chat_model = jarvis.config.get("models", {}).get("chat", "llama3.2")
+                if explicit_search and tool_name_used == "web_search" and tool_result:
+                    response_text = _clean_for_web(tool_result)
+                    await websocket.send_json({
+                        "type": "response",
+                        "content": response_text,
+                        "done": True
+                    })
+                    if response_text.strip():
+                        jarvis.context.add_message_to_chat("assistant", response_text.strip())
+                    return
+
+                all_messages = recent + tool_messages + [Message(role="user", content=user_input)]
+
+                # Use fast chat model (Ollama only)
+                provider_name = getattr(jarvis.provider, "name", "")
                 original_model = jarvis.provider.model
-                jarvis.provider.model = chat_model
+                chat_model = None
+                if provider_name in ["ollama", "ollama_cloud"]:
+                    chat_model = jarvis.config.get("models", {}).get("chat")
+                    if not chat_model:
+                        chat_model = jarvis.config.get("models", {}).get(provider_name)
+                    if not chat_model:
+                        chat_model = original_model
+                    jarvis.provider.model = chat_model
 
                 # Stream with options for speed
                 response_text = ""
                 try:
-                    stream = jarvis.provider.chat(
-                        messages=all_messages,
-                        system=chat_system,
-                        stream=True,
-                        options={"num_predict": 500}  # Reasonable response length
-                    )
+                    chat_kwargs = {
+                        "messages": all_messages,
+                        "system": chat_system,
+                        "stream": True,
+                    }
+                    if provider_name in ["ollama", "ollama_cloud"]:
+                        chat_kwargs["options"] = {"num_predict": 500}  # Reasonable response length
+                    stream = jarvis.provider.chat(**chat_kwargs)
                 except Exception as e:
                     jarvis.provider.model = original_model
                     raise e
 
-                for chunk in stream:
-                    response_text += chunk
+                try:
+                    queue: asyncio.Queue = asyncio.Queue()
+                    loop = asyncio.get_running_loop()
+
+                    def _producer():
+                        try:
+                            for chunk in stream:
+                                asyncio.run_coroutine_threadsafe(queue.put(chunk), loop)
+                        except TypeError:
+                            asyncio.run_coroutine_threadsafe(queue.put(str(stream)), loop)
+                        finally:
+                            asyncio.run_coroutine_threadsafe(queue.put(None), loop)
+
+                    # Run producer in a thread to avoid blocking the event loop
+                    producer_task = asyncio.create_task(asyncio.to_thread(_producer))
+
+                    while True:
+                        chunk = await queue.get()
+                        if chunk is None:
+                            break
+                        response_text += chunk
+                        await websocket.send_json({
+                            "type": "stream",
+                        "content": _clean_for_web(chunk, streaming=True),
+                        "done": False
+                    })
+                    await producer_task
+                except Exception:
+                    # Fallback: send full response if streaming fails
+                    response_text = str(stream)
                     await websocket.send_json({
                         "type": "stream",
-                        "content": chunk,
+                        "content": _clean_for_web(response_text, streaming=True),
                         "done": False
                     })
 
                 # Restore original model
                 jarvis.provider.model = original_model
 
+                # Send empty content - the content was already streamed
+                # Frontend will use accumulated streaming content
                 await websocket.send_json({
                     "type": "response",
-                    "content": response_text,
+                    "content": "",  # Empty - already streamed
                     "done": True
                 })
 
-                if response_text.strip():
-                    jarvis.context.add_message_to_chat("assistant", response_text.strip())
+                clean_response_text = _clean_for_web(response_text)
+                if clean_response_text.strip():
+                    jarvis.context.add_message_to_chat("assistant", clean_response_text.strip())
 
             else:
                 # AGENT MODE: Use tools for coding tasks
+                loop = asyncio.get_running_loop()
+                streamed_chunks = []
+
+                def stream_sender(chunk):
+                    streamed_chunks.append(chunk)
+                    loop.create_task(websocket.send_json({
+                        "type": "stream",
+                        "content": _clean_for_web(chunk, streaming=True),
+                        "done": False
+                    }))
+
+                jarvis.ui._stream_sender = stream_sender
                 response = jarvis.agent.run(user_input, jarvis.system_prompt, history)
+                jarvis.ui._stream_sender = None
+
+                tool_turn = []
+                if hasattr(jarvis.ui, "get_tool_turn"):
+                    tool_turn = jarvis.ui.get_tool_turn()
+                if tool_turn:
+                    await websocket.send_json({
+                        "type": "tool_timeline",
+                        "tools": tool_turn,
+                    })
 
                 if response:
                     if "```diff" in response or "wrote:" in response.lower():
@@ -934,14 +1199,26 @@ def create_app() -> FastAPI:
                             "done": False
                         })
 
-                    await websocket.send_json({
-                        "type": "response",
-                        "content": response,
-                        "done": True
-                    })
+                    # Check if we already streamed the response
+                    # If so, only send the final "done" signal without duplicating content
+                    was_streamed = bool(streamed_chunks) and getattr(jarvis.agent, 'last_streamed', False)
 
-                    clean = response.replace("[dim]", "").replace("[/dim]", "")
-                    clean = clean.replace("[red]", "").replace("[/red]", "")
+                    if was_streamed:
+                        # Already streamed - just signal completion
+                        await websocket.send_json({
+                            "type": "response",
+                            "content": "",  # Empty - content was already streamed
+                            "done": True
+                        })
+                    else:
+                        # Not streamed - send full response
+                        await websocket.send_json({
+                            "type": "response",
+                            "content": _clean_for_web(response),
+                            "done": True
+                        })
+
+                    clean = _clean_for_web(response)
                     if clean.strip():
                         jarvis.context.add_message_to_chat("assistant", clean.strip())
 

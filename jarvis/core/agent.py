@@ -18,7 +18,7 @@ from .tools import (
     # Git operations
     git_status, git_diff, git_log, git_commit, git_add, git_branch, git_stash,
     # Web
-    web_search, web_fetch, get_current_news, get_weather, get_current_time,
+    web_search, web_fetch, get_current_news, get_gold_price, get_weather, get_current_time,
     # Utilities
     calculate, save_memory, recall_memory, github_search,
     # Task management
@@ -70,6 +70,12 @@ class Agent:
             return False
 
         msg = user_message.lower()
+        explicit_search = [
+            "web search", "search web", "search the web", "google", "look up",
+            "find online", "search for", "browse"
+        ]
+        if any(s in msg for s in explicit_search):
+            return True
 
         # Current info / web lookups - things that change and need real-time data
         current_signals = [
@@ -152,6 +158,34 @@ class Agent:
 
         # Current info / news / real-time data
         if agent_cfg.get("auto_current_info", True):
+            # Explicit web search intent
+            explicit_search = [
+                "web search", "search web", "search the web", "google", "look up",
+                "find online", "search for", "browse"
+            ]
+            if any(s in msg_lower for s in explicit_search):
+                return "web_search", {"query": msg}
+            # Weather queries: prefer get_weather when location is provided
+            if "weather" in msg_lower:
+                city_match = re.search(r"\b(?:in|for)\s+([a-zA-Z\s\-]+)$", msg_lower)
+                if city_match:
+                    city = city_match.group(1).strip().title()
+                    if city:
+                        return "get_weather", {"city": city}
+                # No location provided; avoid web_search so the model asks a clarifying question
+                return None
+
+            # Explicit GoldAPI requests
+            if "goldapi" in msg_lower or "gold api" in msg_lower:
+                import os
+                if os.getenv("GOLDAPI_KEY") or os.getenv("GOLD_API_KEY"):
+                    currency = "USD"
+                    for cur in ["GBP", "EUR", "USD", "AED", "AUD", "CAD", "CHF", "JPY"]:
+                        if cur.lower() in msg_lower:
+                            currency = cur
+                            break
+                    return "get_gold_price", {"currency": currency}
+
             # Explicit current/latest signals
             current_signals = [
                 "current", "latest", "today", "right now", "recent", "breaking",
@@ -179,6 +213,16 @@ class Agent:
                 "pound", "yen", "trading", "nasdaq", "dow", "s&p", "ftse", "index"
             ]
             if any(s in msg_lower for s in financial_signals):
+                # Prefer GoldAPI for gold price if configured
+                if "gold" in msg_lower:
+                    import os
+                    if os.getenv("GOLDAPI_KEY") or os.getenv("GOLD_API_KEY"):
+                        currency = "USD"
+                        for cur in ["GBP", "EUR", "USD", "AED", "AUD", "CAD", "CHF", "JPY"]:
+                            if cur.lower() in msg_lower:
+                                currency = cur
+                                break
+                        return "get_gold_price", {"currency": currency}
                 return "web_search", {"query": msg}
 
             # Sports and events
@@ -208,6 +252,17 @@ class Agent:
             ]
             for pattern in question_patterns:
                 if re.search(pattern, msg_lower):
+                    if "gold" in msg_lower:
+                        import os
+                        if os.getenv("GOLDAPI_KEY") or os.getenv("GOLD_API_KEY"):
+                            currency = "USD"
+                            for cur in ["GBP", "EUR", "USD", "AED", "AUD", "CAD", "CHF", "JPY"]:
+                                if cur.lower() in msg_lower:
+                                    currency = cur
+                                    break
+                            return "get_gold_price", {"currency": currency}
+                    if "weather" in msg_lower:
+                        return None
                     return "web_search", {"query": msg}
 
         return None
@@ -243,6 +298,7 @@ WEB & INFO:
 - {"tool": "web_search", "query": "search query"}
 - {"tool": "web_fetch", "url": "https://example.com"}
 - {"tool": "get_current_news", "topic": "topic"}
+- {"tool": "get_gold_price", "currency": "USD"}
 - {"tool": "get_weather", "city": "London"}
 - {"tool": "get_current_time", "timezone": "UTC"}
 
@@ -448,6 +504,10 @@ RULES:
                 url = url[:37] + "..."
             return f"Fetch: {url}"
 
+        elif tool_name == "get_gold_price":
+            cur = args.get("currency") or "USD"
+            return f"Gold price: {cur}"
+
         # Task management
         elif tool_name == "task_create":
             subject = args.get("subject", "")[:30]
@@ -493,6 +553,7 @@ RULES:
             "web_search": web_search,
             "web_fetch": web_fetch,
             "get_current_news": get_current_news,
+            "get_gold_price": get_gold_price,
             # Weather
             "get_weather": get_weather,
             # Time
@@ -572,6 +633,37 @@ RULES:
             # Add tools description to system prompt for prompt-based approach
             system_prompt = system_prompt + "\n\n" + self._get_tools_prompt()
 
+        msg_lower = user_message.lower()
+        explicit_search = [
+            "web search", "search web", "search the web", "google", "look up",
+            "find online", "search for", "browse"
+        ]
+        if any(s in msg_lower for s in explicit_search):
+            try:
+                tool_start = time.time()
+                result = web_search(user_message, max_results=5)
+                tool_duration = time.time() - tool_start
+                tool_success = not (result and (result.startswith("Error") or result.startswith("error")))
+                if self.ui:
+                    self.ui.print_tool(self._format_tool_display("web_search", {"query": user_message}, result), success=tool_success)
+                    if hasattr(self.ui, "record_tool"):
+                        self.ui.record_tool(
+                            "web_search",
+                            self._format_tool_display("web_search", {"query": user_message}, result),
+                            tool_duration,
+                            args={"query": user_message},
+                            result=result,
+                            success=tool_success,
+                        )
+                return result
+            except Exception:
+                return "Search failed: unexpected error."
+
+        if "gold" in msg_lower and "price" in msg_lower:
+            import os
+            if not (os.getenv("GOLDAPI_KEY") or os.getenv("GOLD_API_KEY")):
+                return "Error: GOLDAPI_KEY not configured. Please set it in .env to fetch live gold prices."
+
         messages = []
         if history:
             for msg in history:
@@ -617,8 +709,54 @@ RULES:
                                 )
                         messages.append({
                             "role": "user",
-                            "content": f"Tool result:\n{result}\n\nNow answer the original question based on this information."
+                            "content": (
+                                f"Tool result:\n{result}\n\n"
+                                "Instructions:\n"
+                                "1. If the result contains search results with titles/URLs/descriptions, synthesize a helpful answer from them.\n"
+                                "2. If the result starts with 'Error:' or 'Search failed:', acknowledge the error briefly.\n"
+                                "3. If you see 'No results found', say so briefly and suggest the user try a different query.\n"
+                                "4. Include 1-2 source URLs when available.\n"
+                                "5. Answer the original question directly and concisely."
+                            )
                         })
+                        # If web search completely failed, return the error directly
+                        if tool_name == "web_search" and result and (
+                            result.startswith("Search failed")
+                            or result.startswith("Error")
+                        ):
+                            return result
+
+                # If auto-tool already ran, just get LLM to synthesize - no more tools needed
+                if auto_tool_done:
+                    try:
+                        from jarvis.providers import Message
+                        synth_messages = [Message(role=m["role"], content=m["content"]) for m in messages]
+                        synth_system = system_prompt + "\n\nAnswer the user's question based on the tool result above. Do NOT call any tools."
+                        reply = self.provider.chat(
+                            messages=synth_messages,
+                            system=synth_system,
+                            stream=True
+                        )
+
+                        content_parts = []
+                        if hasattr(reply, "__iter__") and not isinstance(reply, (str, dict)):
+                            for chunk in reply:
+                                if self.ui and self.ui.stop_requested:
+                                    break
+                                content_parts.append(chunk)
+                                if self.ui and hasattr(self.ui, "stream_text"):
+                                    self.ui.stream_text(chunk)
+                            if self.ui and hasattr(self.ui, "stream_done"):
+                                self.ui.stream_done()
+                            self.last_streamed = True
+                        else:
+                            content_parts = [str(reply) if isinstance(reply, str) else ""]
+
+                        final_response = self._clean_content("".join(content_parts))
+                        break
+                    except Exception as e:
+                        print(f"[agent] Synthesis error: {e}")
+                        pass
 
                 # Optional fast path when tools are unlikely
                 if agent_cfg.get("fast_no_tools", True) and not self._likely_needs_tools(user_message):
@@ -793,7 +931,18 @@ RULES:
                             self.ui.print_tool(self._format_tool_display(tool_name, args, result))
 
                         messages.append({"role": "assistant", "content": content})
-                        messages.append({"role": "user", "content": f"Tool result:\n{result}\n\nNow answer the original question based on this information."})
+                        messages.append({
+                            "role": "user",
+                            "content": (
+                                f"Tool result:\n{result}\n\n"
+                                "Instructions:\n"
+                                "1. If the result contains search results with titles/URLs/descriptions, synthesize a helpful answer from them.\n"
+                                "2. If the result starts with 'Error:' or 'Search failed:', acknowledge the error briefly.\n"
+                                "3. If you see 'No results found', say so briefly and suggest the user try a different query.\n"
+                                "4. Include 1-2 source URLs when available.\n"
+                                "5. Answer the original question directly and concisely."
+                            )
+                        })
                     else:
                         # Couldn't parse JSON - remove JSON blob and return rest, or show error
                         # Find and remove the JSON object (handles nested braces)
