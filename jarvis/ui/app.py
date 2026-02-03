@@ -841,9 +841,12 @@ def create_app() -> FastAPI:
     def _clean_for_web(text: str, streaming: bool = False) -> str:
         if not text:
             return ""
-        # Strip rich markup like [dim], [red], etc.
         import re
-        cleaned = re.sub(r"\[/?[a-zA-Z_]+\]", "", text)
+        cleaned = text
+        # Strip rich markup like [dim], [red], etc.
+        cleaned = re.sub(r"\[/?[a-zA-Z_]+\]", "", cleaned)
+        # Remove cursor characters that models sometimes output
+        cleaned = cleaned.replace("▍", "").replace("▌", "").replace("█", "")
         # Drop trailing timing/tool footer like "(12.3s · 2 tools)"
         lines = cleaned.splitlines()
         if lines:
@@ -856,24 +859,35 @@ def create_app() -> FastAPI:
     def _should_auto_web_search(text: str) -> bool:
         lowered = (text or "").lower()
         keywords = [
-            "price", "rate", "today", "current", "latest", "now", "forecast", "market",
-            "stock", "gold", "silver", "btc", "bitcoin", "eth", "ethereum",
+            # Financial
+            "price", "rate", "market", "stock", "gold", "silver", "btc", "bitcoin", "eth", "ethereum",
+            # Time-sensitive
+            "today", "current", "latest", "now", "recent", "yesterday", "this week", "this month",
+            # News/events
+            "news", "happened", "happening", "breaking", "announced", "released", "launched",
+            "outage", "down", "crash", "attack", "strike", "war", "election",
+            # People/positions
+            "president", "prime minister", "ceo", "died", "born", "married", "resigned",
+            # Forecasts
+            "forecast", "prediction", "will happen", "going to",
         ]
         return any(k in lowered for k in keywords)
 
     def _explicit_web_search(text: str) -> bool:
         """Check if user is explicitly asking to search the web."""
         lowered = (text or "").lower().strip()
-        # Direct commands to use web search (without a topic = use previous context)
+        # Direct commands to use web search
         command_triggers = [
             "use web search", "do a web search", "search the web", "search web",
-            "use search", "web search it", "google it", "look it up", "search online", "check internet",
-            "search on internet", "check internet"
+            "use search", "web search it", "google it", "look it up", "search online",
+            "check internet", "search on internet", "search that", "google that",
+            "look that up", "search for that", "search for it", "search the web for that",
+            "search the web for it", "web search for that", "web search for it"
         ]
         if any(lowered == t or lowered.startswith(t + " ") for t in command_triggers):
             return True
         # Search WITH a topic
-        search_patterns = ["search for ", "look up ", "find online ", "google "]
+        search_patterns = ["search for ", "look up ", "find online ", "google ", "search the web for "]
         if any(lowered.startswith(p) for p in search_patterns):
             return True
         return False
@@ -881,19 +895,35 @@ def create_app() -> FastAPI:
     def _extract_search_query(text: str, last_user_msg: str) -> str:
         """Extract the actual search query from explicit search requests."""
         lowered = (text or "").lower().strip()
-        # If it's just a command without topic, use previous message
-        command_only = [
+
+        # Commands that mean "search for the previous topic"
+        context_commands = [
             "use web search", "do a web search", "search the web", "search web",
-            "use search", "web search it", "google it", "look it up", "search online"
+            "use search", "web search it", "google it", "look it up", "search online",
+            "check internet", "search on internet", "search the web for that",
+            "search for that", "search that", "look that up", "google that",
+            "search the web for it", "search for it", "look it up online",
+            "web search for that", "web search for it"
         ]
-        if any(lowered == t for t in command_only):
+        if any(lowered == t for t in context_commands):
             return last_user_msg if last_user_msg else text
+
+        # Phrases ending with pronouns that reference previous context
+        pronoun_endings = [" that", " it", " this", " the above", " previous"]
+        for ending in pronoun_endings:
+            if lowered.endswith(ending):
+                return last_user_msg if last_user_msg else text
+
         # Extract topic from "search for X", "look up X", etc.
-        for prefix in ["search for ", "look up ", "find online ", "google ", "web search "]:
+        for prefix in ["search for ", "look up ", "find online ", "google ", "web search ", "search the web for "]:
             if lowered.startswith(prefix):
                 topic = text[len(prefix):].strip()
+                # If topic is just a pronoun, use previous message
+                if topic.lower() in ["that", "it", "this", "the above"]:
+                    return last_user_msg if last_user_msg else text
                 if topic:
                     return topic
+
         return text
 
     def _topic_bucket(text: str) -> str:
@@ -1041,7 +1071,14 @@ def create_app() -> FastAPI:
                     pass
 
                 # Short system prompt - less tokens = faster
-                chat_system = "You are Jarvis, a witty AI assistant. Be concise and direct. No thinking out loud. Never address the user by name. Never say queries are logged or being processed. Just answer directly."
+                chat_system = """You are Jarvis, a witty AI assistant. Be concise and direct.
+
+CRITICAL RULES:
+- NEVER make up facts, dates, events, or statistics. If you don't know, say so.
+- NEVER claim to have sources unless a web search was performed and results were provided.
+- If asked about current events, news, or real-time info WITHOUT tool results, say "I don't have current information on that. Would you like me to search the web?"
+- Only cite sources from actual web search results provided to you.
+- Be honest about the limits of your knowledge."""
 
                 # Add user facts if available
                 if user_facts:

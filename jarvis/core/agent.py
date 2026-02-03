@@ -538,6 +538,10 @@ RULES:
 
     def _execute_tool(self, tool_name: str, args: dict) -> str:
         """Execute a tool by name."""
+        # Log tool call
+        args_str = ", ".join(f"{k}={repr(v)[:50]}" for k, v in (args or {}).items())
+        print(f"[TOOL] Calling: {tool_name}({args_str})")
+
         tool_map = {
             # File operations
             "read_file": read_file,
@@ -582,11 +586,20 @@ RULES:
         }
 
         if tool_name not in tool_map:
+            print(f"[TOOL] ERROR: Unknown tool '{tool_name}'")
             return f"Unknown tool: {tool_name}. Available: {list(tool_map.keys())}"
 
         try:
-            return tool_map[tool_name](**args)
+            import time
+            start = time.time()
+            result = tool_map[tool_name](**args)
+            duration = time.time() - start
+            result_preview = (result[:100] + "...") if len(result) > 100 else result
+            result_preview = result_preview.replace("\n", " ")
+            print(f"[TOOL] Completed: {tool_name} in {duration:.2f}s → {result_preview}")
+            return result
         except Exception as e:
+            print(f"[TOOL] ERROR: {tool_name} failed: {e}")
             return f"Error: {e}"
 
     def _call_model_with_timeout(self, messages, system_prompt, tools, timeout=120):
