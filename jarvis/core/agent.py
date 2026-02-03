@@ -13,9 +13,16 @@ from .tools import (
     read_file, list_files, search_files, run_command,
     write_file, edit_file, get_project_structure, set_project_root, set_ui,
     clear_read_files, ALL_TOOLS,
-    # Additional tools
-    web_search, get_current_news, get_weather, get_current_time,
+    # File operations
+    glob_files, grep,
+    # Git operations
+    git_status, git_diff, git_log, git_commit, git_add, git_branch, git_stash,
+    # Web
+    web_search, web_fetch, get_current_news, get_weather, get_current_time,
+    # Utilities
     calculate, save_memory, recall_memory, github_search,
+    # Task management
+    task_create, task_update, task_list, task_get,
 )
 
 class Agent:
@@ -64,20 +71,41 @@ class Agent:
 
         msg = user_message.lower()
 
-        # Current info / web lookups
+        # Current info / web lookups - things that change and need real-time data
         current_signals = [
             "current", "latest", "today", "right now", "recent", "breaking",
             "news", "headline", "president", "prime minister", "ceo", "stock",
-            "price", "score", "election", "as of"
+            "price", "score", "election", "as of", "this year", "this month",
+            "2024", "2025", "2026", "2027",
+            # Financial
+            "bitcoin", "crypto", "market", "trading", "forex", "gold", "silver",
+            "dollar", "euro", "pound", "exchange rate",
+            # Events
+            "match", "game", "tournament", "championship", "world cup",
+            # Tech
+            "release", "version", "announced", "launched"
         ]
         if any(s in msg for s in current_signals):
             return True
+
+        # Question patterns likely needing lookup
+        lookup_patterns = [
+            r"who is (the|a|an)?\s*\w+",  # Who is X
+            r"what is the\s+\w+\s+(price|rate|score|status)",  # What is the X price
+            r"how much (is|does|are|cost)",  # How much is/does
+            r"where (is|are|can)",  # Where is/are/can
+            r"when (is|does|did|will)",  # When is/does/did/will
+        ]
+        for pattern in lookup_patterns:
+            if re.search(pattern, msg):
+                return True
 
         # Local code / file operations
         file_signals = [
             "file", "repo", "project", "codebase", "function", "class",
             "line", "stack trace", "traceback", "error", "bug", "fix",
-            "refactor", "edit", "update", "read", "open", "search"
+            "refactor", "edit", "update", "read", "open", "search",
+            "commit", "branch", "git", "push", "pull", "merge"
         ]
         if any(s in msg for s in file_signals):
             return True
@@ -122,11 +150,13 @@ class Agent:
                 if expr:
                     return "calculate", {"expression": expr}
 
-        # Current info / news
+        # Current info / news / real-time data
         if agent_cfg.get("auto_current_info", True):
+            # Explicit current/latest signals
             current_signals = [
                 "current", "latest", "today", "right now", "recent", "breaking",
-                "news", "headline", "as of"
+                "news", "headline", "as of", "this week", "this month", "this year",
+                "2024", "2025", "2026", "2027"  # Recent/future years
             ]
             if any(s in msg_lower for s in current_signals):
                 if "news" in msg_lower or "headline" in msg_lower:
@@ -134,11 +164,51 @@ class Agent:
                     return "get_current_news", {"topic": topic or msg}
                 return "web_search", {"query": msg}
 
+            # Leadership and political figures (changes frequently)
             leadership_signals = [
-                "president", "prime minister", "ceo", "chairman", "chancellor", "governor"
+                "president", "prime minister", "ceo", "chairman", "chancellor",
+                "governor", "minister", "secretary", "mayor", "leader"
             ]
             if any(s in msg_lower for s in leadership_signals):
                 return "web_search", {"query": msg}
+
+            # Financial/market data (always needs real-time)
+            financial_signals = [
+                "price", "stock", "share", "market", "bitcoin", "crypto", "btc", "eth",
+                "gold", "silver", "oil", "forex", "exchange rate", "dollar", "euro",
+                "pound", "yen", "trading", "nasdaq", "dow", "s&p", "ftse", "index"
+            ]
+            if any(s in msg_lower for s in financial_signals):
+                return "web_search", {"query": msg}
+
+            # Sports and events
+            sports_signals = [
+                "score", "match", "game", "won", "lost", "playing", "tournament",
+                "championship", "league", "world cup", "olympics", "super bowl"
+            ]
+            if any(s in msg_lower for s in sports_signals):
+                return "web_search", {"query": msg}
+
+            # Tech/product releases
+            tech_signals = [
+                "release", "launched", "announced", "version", "update", "patch",
+                "iphone", "android", "windows", "macos", "ios"
+            ]
+            if any(s in msg_lower for s in tech_signals) and any(w in msg_lower for w in ["new", "latest", "when", "what"]):
+                return "web_search", {"query": msg}
+
+            # Question patterns that likely need current info
+            question_patterns = [
+                r"who is the .*(president|ceo|leader|minister|head)",
+                r"what is the .*(price|rate|score|status|situation)",
+                r"how much (is|does|are).*cost",
+                r"where (is|are).*happening",
+                r"when (is|does|will).*\?",
+                r"is .*(open|closed|available|happening)",
+            ]
+            for pattern in question_patterns:
+                if re.search(pattern, msg_lower):
+                    return "web_search", {"query": msg}
 
         return None
 
@@ -154,30 +224,49 @@ FILES:
 - {"tool": "read_file", "path": "path/to/file"}
 - {"tool": "search_files", "query": "pattern", "file_type": "py"}
 - {"tool": "list_files", "path": "dir", "pattern": "*.py"}
+- {"tool": "glob_files", "pattern": "**/*.py", "path": "src"}
+- {"tool": "grep", "pattern": "regex", "file_type": "py", "context": 2}
 - {"tool": "get_project_structure"}
 - {"tool": "write_file", "path": "file", "content": "content"}
-- {"tool": "edit_file", "path": "file", "old_string": "find", "new_string": "replace"}
+- {"tool": "edit_file", "path": "file", "old_string": "find", "new_string": "replace", "replace_all": false}
+
+GIT:
+- {"tool": "git_status"}
+- {"tool": "git_diff", "staged": false, "file": "optional/path"}
+- {"tool": "git_log", "count": 10}
+- {"tool": "git_add", "files": "file1.py file2.py"}
+- {"tool": "git_commit", "message": "commit message", "files": "optional files"}
+- {"tool": "git_branch", "name": "branch-name", "create": false, "switch": false}
+- {"tool": "git_stash", "action": "push", "message": "optional message"}
 
 WEB & INFO:
 - {"tool": "web_search", "query": "search query"}
+- {"tool": "web_fetch", "url": "https://example.com"}
 - {"tool": "get_current_news", "topic": "topic"}
 - {"tool": "get_weather", "city": "London"}
 - {"tool": "get_current_time", "timezone": "UTC"}
 
 UTILITIES:
 - {"tool": "calculate", "expression": "2 + 2"}
-- {"tool": "run_command", "command": "git status"}
+- {"tool": "run_command", "command": "npm test"}
 - {"tool": "github_search", "query": "term", "search_type": "repos"}
 
 MEMORY:
 - {"tool": "save_memory", "content": "info to remember", "category": "general"}
 - {"tool": "recall_memory", "query": "search term"}
 
+TASKS:
+- {"tool": "task_create", "subject": "Task title", "description": "details"}
+- {"tool": "task_update", "task_id": "1", "status": "completed"}
+- {"tool": "task_list"}
+- {"tool": "task_get", "task_id": "1"}
+
 RULES:
-1. For current events/news/weather: USE web_search, get_current_news, or get_weather
+1. For current events/news/prices: USE web_search with specific query
 2. For code questions: read_file FIRST, never guess
 3. For writing files: USE write_file or edit_file
-4. Output ONLY the JSON when calling a tool
+4. For git operations: USE git_status, git_diff, git_commit, etc.
+5. Output ONLY the JSON when calling a tool
 """
 
     def _parse_tool_call_from_text(self, text: str) -> tuple:
@@ -309,6 +398,73 @@ RULES:
             stype = args.get("search_type", "repos")
             return f"GitHub: {stype} '{query}'"
 
+        # Git operations
+        elif tool_name == "git_status":
+            return "Git status"
+
+        elif tool_name == "git_diff":
+            staged = "staged " if args.get("staged") else ""
+            file = args.get("file", "")
+            desc = f"Git diff {staged}{file}".strip()
+            return desc if desc != "Git diff" else "Git diff"
+
+        elif tool_name == "git_log":
+            count = args.get("count", 10)
+            return f"Git log ({count} commits)"
+
+        elif tool_name == "git_commit":
+            msg = args.get("message", "")[:40]
+            return f"Git commit: {msg}{'...' if len(args.get('message', '')) > 40 else ''}"
+
+        elif tool_name == "git_add":
+            files = args.get("files", ".")
+            return f"Git add: {files[:30]}"
+
+        elif tool_name == "git_branch":
+            name = args.get("name", "")
+            if args.get("create"):
+                return f"Git create branch: {name}"
+            elif args.get("switch"):
+                return f"Git switch: {name}"
+            return "Git branches"
+
+        elif tool_name == "git_stash":
+            action = args.get("action", "push")
+            return f"Git stash {action}"
+
+        # Enhanced file operations
+        elif tool_name == "glob_files":
+            pattern = args.get("pattern", "*")
+            return f"Glob: {pattern}"
+
+        elif tool_name == "grep":
+            pattern = args.get("pattern", "")[:25]
+            return f"Grep: '{pattern}'"
+
+        # Web
+        elif tool_name == "web_fetch":
+            url = args.get("url", "")
+            if len(url) > 40:
+                url = url[:37] + "..."
+            return f"Fetch: {url}"
+
+        # Task management
+        elif tool_name == "task_create":
+            subject = args.get("subject", "")[:30]
+            return f"Create task: {subject}"
+
+        elif tool_name == "task_update":
+            task_id = args.get("task_id", "")
+            status = args.get("status", "")
+            return f"Update task #{task_id}" + (f" → {status}" if status else "")
+
+        elif tool_name == "task_list":
+            return "List tasks"
+
+        elif tool_name == "task_get":
+            task_id = args.get("task_id", "")
+            return f"Get task #{task_id}"
+
         return f"{tool_name}()"
 
     def _execute_tool(self, tool_name: str, args: dict) -> str:
@@ -321,10 +477,21 @@ RULES:
             "write_file": write_file,
             "edit_file": edit_file,
             "get_project_structure": get_project_structure,
+            "glob_files": glob_files,
+            "grep": grep,
+            # Git operations
+            "git_status": git_status,
+            "git_diff": git_diff,
+            "git_log": git_log,
+            "git_commit": git_commit,
+            "git_add": git_add,
+            "git_branch": git_branch,
+            "git_stash": git_stash,
             # Shell
             "run_command": run_command,
             # Web
             "web_search": web_search,
+            "web_fetch": web_fetch,
             "get_current_news": get_current_news,
             # Weather
             "get_weather": get_weather,
@@ -335,6 +502,11 @@ RULES:
             # Memory
             "save_memory": save_memory,
             "recall_memory": recall_memory,
+            # Task management
+            "task_create": task_create,
+            "task_update": task_update,
+            "task_list": task_list,
+            "task_get": task_get,
             # GitHub
             "github_search": github_search,
         }

@@ -6,7 +6,9 @@ Includes all skills that are useful for agentic behavior.
 """
 
 import os
+import re
 import subprocess
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -15,6 +17,10 @@ _PROJECT_ROOT: Path = Path.cwd()
 _UI = None
 _PENDING_WRITES = {}  # filepath -> content, for confirmation
 _READ_FILES = set()  # Track files that have been read this session
+
+# Task management storage
+_TASKS: dict = {}
+_TASK_COUNTER: int = 0
 
 
 def set_project_root(path: Path):
@@ -313,13 +319,14 @@ def get_project_structure() -> str:
     return "\n".join(result[:80])
 
 
-def edit_file(path: str, old_string: str, new_string: str) -> str:
+def edit_file(path: str, old_string: str, new_string: str, replace_all: bool = False) -> str:
     """Edit a file by replacing a specific string. Use for small, targeted changes.
 
     Args:
         path: File path relative to project root
-        old_string: The exact text to find and replace (must be unique in file)
+        old_string: The exact text to find and replace
         new_string: The text to replace it with
+        replace_all: If True, replace all occurrences (default False requires unique match)
 
     Returns:
         Success or error message
@@ -344,11 +351,15 @@ def edit_file(path: str, old_string: str, new_string: str) -> str:
 
         # Count occurrences
         count = content.count(old_string)
-        if count > 1:
-            return f"Error: Found {count} occurrences of the text. Please provide more context to make it unique."
+
+        if count > 1 and not replace_all:
+            return f"Error: Found {count} occurrences. Use replace_all=True or provide more context to make it unique."
 
         # Create new content
-        new_content = content.replace(old_string, new_string, 1)
+        if replace_all:
+            new_content = content.replace(old_string, new_string)
+        else:
+            new_content = content.replace(old_string, new_string, 1)
 
         # Show diff and confirm if UI available
         if _UI:
@@ -365,16 +376,686 @@ def edit_file(path: str, old_string: str, new_string: str) -> str:
             success = apply_file_change(path, new_content, _PROJECT_ROOT, action)
 
             if success:
-                return f"✓ Edited {path}"
+                msg = f"✓ Edited {path}"
+                if replace_all and count > 1:
+                    msg += f" ({count} replacements)"
+                return msg
             else:
                 return f"Error editing {path}"
 
         # No UI - just write directly
         file_path.write_text(new_content)
-        return f"Successfully edited {path}"
+        msg = f"Successfully edited {path}"
+        if replace_all and count > 1:
+            msg += f" ({count} replacements)"
+        return msg
 
     except Exception as e:
         return f"Error editing {path}: {e}"
+
+
+# =============================================================================
+# GIT OPERATIONS
+# =============================================================================
+
+def git_status() -> str:
+    """Get git repository status including branch, modified, staged, and untracked files.
+
+    Returns:
+        Formatted git status with branch info and file changes
+    """
+    global _PROJECT_ROOT
+
+    try:
+        # Get branch info
+        branch_result = subprocess.run(
+            ["git", "branch", "--show-current"],
+            cwd=_PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+        branch = branch_result.stdout.strip() or "HEAD detached"
+
+        # Get status
+        result = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=_PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+
+        if result.returncode != 0:
+            return f"Error: {result.stderr or 'Not a git repository'}"
+
+        lines = result.stdout.strip().split('\n') if result.stdout.strip() else []
+
+        staged = []
+        modified = []
+        untracked = []
+
+        for line in lines:
+            if not line:
+                continue
+            status = line[:2]
+            filename = line[3:]
+
+            if status[0] in 'MADRC':
+                staged.append(f"  {filename}")
+            if status[1] == 'M':
+                modified.append(f"  {filename}")
+            elif status == '??':
+                untracked.append(f"  {filename}")
+
+        output = [f"On branch: {branch}", ""]
+
+        if staged:
+            output.append("Staged changes:")
+            output.extend(staged[:20])
+            if len(staged) > 20:
+                output.append(f"  ... and {len(staged) - 20} more")
+
+        if modified:
+            output.append("\nModified (not staged):")
+            output.extend(modified[:20])
+            if len(modified) > 20:
+                output.append(f"  ... and {len(modified) - 20} more")
+
+        if untracked:
+            output.append("\nUntracked files:")
+            output.extend(untracked[:10])
+            if len(untracked) > 10:
+                output.append(f"  ... and {len(untracked) - 10} more")
+
+        if not staged and not modified and not untracked:
+            output.append("Working tree clean")
+
+        return "\n".join(output)
+
+    except Exception as e:
+        return f"Error: {e}"
+
+
+def git_diff(staged: bool = False, file: str = "") -> str:
+    """Show git diff of uncommitted changes.
+
+    Args:
+        staged: If True, show staged changes only (default: False shows unstaged)
+        file: Optional specific file to diff
+
+    Returns:
+        Unified diff output showing changes
+    """
+    global _PROJECT_ROOT
+
+    try:
+        cmd = ["git", "diff"]
+        if staged:
+            cmd.append("--staged")
+        if file:
+            cmd.extend(["--", file])
+
+        result = subprocess.run(
+            cmd,
+            cwd=_PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+
+        if result.returncode != 0:
+            return f"Error: {result.stderr}"
+
+        diff = result.stdout.strip()
+        if not diff:
+            return "No changes" + (" staged" if staged else "")
+
+        # Truncate if too long
+        if len(diff) > 10000:
+            diff = diff[:10000] + "\n\n... [TRUNCATED - diff is large]"
+
+        return diff
+
+    except Exception as e:
+        return f"Error: {e}"
+
+
+def git_log(count: int = 10, oneline: bool = True) -> str:
+    """Show recent git commit history.
+
+    Args:
+        count: Number of commits to show (default 10)
+        oneline: Use compact format (default True)
+
+    Returns:
+        Commit history with hashes, authors, dates, and messages
+    """
+    global _PROJECT_ROOT
+
+    try:
+        if oneline:
+            cmd = ["git", "log", f"-{count}", "--oneline", "--decorate"]
+        else:
+            cmd = ["git", "log", f"-{count}", "--format=%h %s (%an, %ar)"]
+
+        result = subprocess.run(
+            cmd,
+            cwd=_PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+
+        if result.returncode != 0:
+            return f"Error: {result.stderr}"
+
+        return result.stdout.strip() or "No commits found"
+
+    except Exception as e:
+        return f"Error: {e}"
+
+
+def git_commit(message: str, files: str = "") -> str:
+    """Create a git commit with staged changes.
+
+    Args:
+        message: Commit message (required)
+        files: Optional space-separated list of files to add before commit
+
+    Returns:
+        Success message with commit hash, or error
+    """
+    global _PROJECT_ROOT, _UI
+
+    try:
+        # Add files if specified
+        if files:
+            file_list = files.split()
+            add_result = subprocess.run(
+                ["git", "add"] + file_list,
+                cwd=_PROJECT_ROOT,
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            if add_result.returncode != 0:
+                return f"Error adding files: {add_result.stderr}"
+
+        # Check if there are staged changes
+        status = subprocess.run(
+            ["git", "diff", "--staged", "--quiet"],
+            cwd=_PROJECT_ROOT,
+            capture_output=True,
+            timeout=10
+        )
+
+        if status.returncode == 0:
+            return "Error: No changes staged for commit. Use git_add first."
+
+        # Confirm with user if UI available
+        if _UI:
+            _UI.console.print(f"[yellow]Commit: {message[:60]}{'...' if len(message) > 60 else ''}[/yellow]")
+            _UI.console.print("[dim]  y = yes, n = no[/dim]")
+            try:
+                response = input("> ").strip().lower()
+                if response not in ('y', 'yes'):
+                    return "Commit cancelled by user"
+            except (EOFError, KeyboardInterrupt):
+                return "Commit cancelled"
+
+        result = subprocess.run(
+            ["git", "commit", "-m", message],
+            cwd=_PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+
+        if result.returncode != 0:
+            return f"Error: {result.stderr}"
+
+        # Get the commit hash
+        hash_result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=_PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+        commit_hash = hash_result.stdout.strip()
+
+        return f"✓ Committed {commit_hash}: {message}"
+
+    except Exception as e:
+        return f"Error: {e}"
+
+
+def git_add(files: str = ".") -> str:
+    """Stage files for commit.
+
+    Args:
+        files: Files to stage - space-separated paths, or "." for all (default ".")
+
+    Returns:
+        Success message with staged files
+    """
+    global _PROJECT_ROOT
+
+    try:
+        file_list = files.split() if files != "." else ["."]
+
+        result = subprocess.run(
+            ["git", "add"] + file_list,
+            cwd=_PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+
+        if result.returncode != 0:
+            return f"Error: {result.stderr}"
+
+        # Show what was staged
+        status = subprocess.run(
+            ["git", "diff", "--staged", "--name-only"],
+            cwd=_PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+
+        staged = status.stdout.strip().split('\n') if status.stdout.strip() else []
+
+        if staged:
+            return f"✓ Staged {len(staged)} file(s):\n" + "\n".join(f"  {f}" for f in staged[:20])
+        return "No changes to stage"
+
+    except Exception as e:
+        return f"Error: {e}"
+
+
+def git_branch(name: str = "", create: bool = False, switch: bool = False) -> str:
+    """List, create, or switch git branches.
+
+    Args:
+        name: Branch name (required for create/switch, optional for list)
+        create: Create new branch if True
+        switch: Switch to branch if True
+
+    Returns:
+        Branch list or operation result
+    """
+    global _PROJECT_ROOT
+
+    try:
+        if create and name:
+            result = subprocess.run(
+                ["git", "checkout", "-b", name],
+                cwd=_PROJECT_ROOT,
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            if result.returncode != 0:
+                return f"Error: {result.stderr}"
+            return f"✓ Created and switched to branch: {name}"
+
+        elif switch and name:
+            result = subprocess.run(
+                ["git", "checkout", name],
+                cwd=_PROJECT_ROOT,
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            if result.returncode != 0:
+                return f"Error: {result.stderr}"
+            return f"✓ Switched to branch: {name}"
+
+        else:
+            # List branches
+            result = subprocess.run(
+                ["git", "branch", "-a"],
+                cwd=_PROJECT_ROOT,
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            if result.returncode != 0:
+                return f"Error: {result.stderr}"
+            return result.stdout.strip() or "No branches found"
+
+    except Exception as e:
+        return f"Error: {e}"
+
+
+def git_stash(action: str = "push", message: str = "") -> str:
+    """Stash or restore uncommitted changes.
+
+    Args:
+        action: "push" (save), "pop" (restore & remove), "list", or "apply" (restore & keep)
+        message: Optional stash message (for push only)
+
+    Returns:
+        Stash operation result
+    """
+    global _PROJECT_ROOT
+
+    try:
+        if action == "push":
+            cmd = ["git", "stash", "push"]
+            if message:
+                cmd.extend(["-m", message])
+        elif action == "pop":
+            cmd = ["git", "stash", "pop"]
+        elif action == "apply":
+            cmd = ["git", "stash", "apply"]
+        elif action == "list":
+            cmd = ["git", "stash", "list"]
+        else:
+            return f"Error: Unknown action '{action}'. Use: push, pop, apply, list"
+
+        result = subprocess.run(
+            cmd,
+            cwd=_PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+
+        if result.returncode != 0:
+            if "No stash entries" in result.stderr or "No local changes" in result.stderr:
+                return "No stash entries found" if action in ("pop", "apply", "list") else "No changes to stash"
+            return f"Error: {result.stderr}"
+
+        output = result.stdout.strip() or result.stderr.strip()
+
+        if action == "push":
+            return f"✓ Stashed changes" + (f": {message}" if message else "")
+        elif action == "pop":
+            return "✓ Applied and removed stash"
+        elif action == "apply":
+            return "✓ Applied stash (kept in stash list)"
+        else:
+            return output or "No stash entries"
+
+    except Exception as e:
+        return f"Error: {e}"
+
+
+# =============================================================================
+# GLOB AND ENHANCED SEARCH
+# =============================================================================
+
+def glob_files(pattern: str, path: str = "") -> str:
+    """Find files matching a glob pattern, sorted by modification time.
+
+    Args:
+        pattern: Glob pattern like "**/*.py", "src/**/*.ts", "*.md"
+        path: Base directory (default: project root)
+
+    Returns:
+        Newline-separated list of matching file paths, most recently modified first
+    """
+    global _PROJECT_ROOT
+
+    try:
+        base = Path(path) if path and path.startswith('/') else _PROJECT_ROOT / (path or "")
+
+        if not base.exists():
+            return f"Error: Path not found: {path or str(_PROJECT_ROOT)}"
+
+        # Exclude common ignored directories
+        excludes = {'.git', 'node_modules', '__pycache__', 'venv', '.venv', '.next', 'dist', 'build', '.idea', '.vscode', 'site-packages'}
+
+        matches = []
+        for p in base.glob(pattern):
+            if any(ex in p.parts for ex in excludes):
+                continue
+            if p.is_file():
+                try:
+                    matches.append((p, p.stat().st_mtime))
+                except OSError:
+                    continue
+
+        # Sort by modification time (newest first)
+        matches.sort(key=lambda x: x[1], reverse=True)
+
+        # Return relative paths
+        result = []
+        for p, _ in matches[:100]:  # Limit to 100 results
+            try:
+                result.append(str(p.relative_to(_PROJECT_ROOT)))
+            except ValueError:
+                result.append(str(p))
+
+        if not result:
+            return f"No files matching '{pattern}'"
+
+        return "\n".join(result)
+
+    except Exception as e:
+        return f"Error: {e}"
+
+
+def grep(
+    pattern: str,
+    path: str = ".",
+    file_type: str = "",
+    glob_pattern: str = "",
+    context: int = 0,
+    ignore_case: bool = False,
+    max_results: int = 50
+) -> str:
+    """Search for patterns in files using regex.
+
+    Args:
+        pattern: Regex pattern to search for
+        path: Directory to search in (default: ".")
+        file_type: File extension filter like "py", "js", "ts"
+        glob_pattern: Glob pattern filter like "*.py", "**/*.tsx"
+        context: Lines of context before and after each match
+        ignore_case: Case-insensitive search (default False)
+        max_results: Maximum results to return (default 50)
+
+    Returns:
+        Search results with file paths and line numbers
+    """
+    global _PROJECT_ROOT
+
+    try:
+        # Compile regex
+        flags = re.IGNORECASE if ignore_case else 0
+
+        try:
+            regex = re.compile(pattern, flags)
+        except re.error as e:
+            return f"Error: Invalid regex: {e}"
+
+        search_path = _PROJECT_ROOT / path if not path.startswith('/') else Path(path)
+        excludes = {'.git', 'node_modules', '__pycache__', 'venv', '.venv', 'dist', 'build', '.next', 'site-packages'}
+
+        # Determine file pattern
+        if glob_pattern:
+            files = search_path.glob(glob_pattern) if '**' in glob_pattern else search_path.rglob(glob_pattern)
+        elif file_type:
+            files = search_path.rglob(f"*.{file_type}")
+        else:
+            files = search_path.rglob("*")
+
+        results = []
+        match_count = 0
+
+        for filepath in files:
+            if not filepath.is_file():
+                continue
+            if any(ex in filepath.parts for ex in excludes):
+                continue
+            # Skip binary files
+            if filepath.suffix in {'.pyc', '.exe', '.dll', '.so', '.dylib', '.png', '.jpg', '.gif', '.ico', '.pdf', '.zip'}:
+                continue
+
+            try:
+                content = filepath.read_text(errors='ignore')
+                lines = content.splitlines()
+
+                for line_num, line in enumerate(lines, 1):
+                    if regex.search(line):
+                        try:
+                            rel_path = str(filepath.relative_to(_PROJECT_ROOT))
+                        except ValueError:
+                            rel_path = str(filepath)
+
+                        if context > 0:
+                            ctx_lines = []
+                            start = max(0, line_num - 1 - context)
+                            end = min(len(lines), line_num + context)
+                            for i in range(start, end):
+                                prefix = ">" if i == line_num - 1 else " "
+                                ctx_lines.append(f"  {prefix} {i+1}: {lines[i][:200]}")
+                            results.append(f"{rel_path}:\n" + "\n".join(ctx_lines))
+                        else:
+                            results.append(f"{rel_path}:{line_num}: {line[:200]}")
+
+                        match_count += 1
+                        if match_count >= max_results:
+                            break
+
+            except Exception:
+                continue
+
+            if match_count >= max_results:
+                break
+
+        if not results:
+            return f"No matches for '{pattern}'"
+
+        output = "\n\n".join(results) if context > 0 else "\n".join(results)
+        if match_count >= max_results:
+            output += f"\n\n... (limited to {max_results} results)"
+
+        return output
+
+    except Exception as e:
+        return f"Error: {e}"
+
+
+# =============================================================================
+# TASK MANAGEMENT
+# =============================================================================
+
+def task_create(subject: str, description: str = "") -> str:
+    """Create a new task to track work.
+
+    Args:
+        subject: Brief task title (imperative form, e.g., "Fix auth bug")
+        description: Detailed description of what needs to be done
+
+    Returns:
+        Task ID and confirmation
+    """
+    global _TASKS, _TASK_COUNTER
+
+    _TASK_COUNTER += 1
+    task_id = str(_TASK_COUNTER)
+
+    _TASKS[task_id] = {
+        "id": task_id,
+        "subject": subject,
+        "description": description,
+        "status": "pending",
+        "created_at": datetime.now().isoformat(),
+        "updated_at": datetime.now().isoformat(),
+    }
+
+    return f"✓ Created task #{task_id}: {subject}"
+
+
+def task_update(task_id: str, status: str = "", description: str = "") -> str:
+    """Update an existing task.
+
+    Args:
+        task_id: The task ID to update
+        status: New status: "pending", "in_progress", "completed", or "deleted"
+        description: Updated description (optional)
+
+    Returns:
+        Updated task details
+    """
+    global _TASKS
+
+    if task_id not in _TASKS:
+        return f"Error: Task #{task_id} not found"
+
+    task = _TASKS[task_id]
+
+    if status:
+        valid = {"pending", "in_progress", "completed", "deleted"}
+        if status not in valid:
+            return f"Error: Invalid status. Use: {', '.join(valid)}"
+
+        if status == "deleted":
+            del _TASKS[task_id]
+            return f"✓ Deleted task #{task_id}"
+
+        task["status"] = status
+
+    if description:
+        task["description"] = description
+
+    task["updated_at"] = datetime.now().isoformat()
+
+    return f"✓ Updated task #{task_id}: [{task['status']}] {task['subject']}"
+
+
+def task_list() -> str:
+    """List all tasks with their status.
+
+    Returns:
+        Formatted list of tasks with IDs, subjects, and statuses
+    """
+    global _TASKS
+
+    if not _TASKS:
+        return "No tasks. Use task_create to add tasks."
+
+    lines = ["Tasks:"]
+    for task_id, task in sorted(_TASKS.items(), key=lambda x: int(x[0])):
+        status_icon = {
+            "pending": "○",
+            "in_progress": "◐",
+            "completed": "●"
+        }.get(task["status"], "?")
+        lines.append(f"  {status_icon} #{task_id}: {task['subject']} [{task['status']}]")
+
+    return "\n".join(lines)
+
+
+def task_get(task_id: str) -> str:
+    """Get full details of a specific task.
+
+    Args:
+        task_id: The task ID to retrieve
+
+    Returns:
+        Full task details including description
+    """
+    global _TASKS
+
+    if task_id not in _TASKS:
+        return f"Error: Task #{task_id} not found"
+
+    task = _TASKS[task_id]
+
+    return f"""Task #{task['id']}
+Subject: {task['subject']}
+Status: {task['status']}
+Created: {task['created_at']}
+Updated: {task['updated_at']}
+
+Description:
+{task['description'] or '(no description)'}"""
 
 
 # =============================================================================
@@ -382,7 +1063,7 @@ def edit_file(path: str, old_string: str, new_string: str) -> str:
 # =============================================================================
 
 def web_search(query: str, max_results: int = 5) -> str:
-    """Search the web for information. Use for current events, facts, documentation, etc.
+    """Search the web for current information. Use for news, prices, facts, documentation.
 
     Args:
         query: The search query
@@ -394,13 +1075,24 @@ def web_search(query: str, max_results: int = 5) -> str:
     try:
         from ddgs import DDGS
 
+        # Add current date context to improve freshness
+        today = datetime.now()
+        date_str = today.strftime("%B %Y")  # e.g., "February 2026"
+
+        # For queries that likely need current data, append date
+        time_sensitive = ['price', 'stock', 'weather', 'news', 'current', 'today', 'latest', 'now']
+        if any(word in query.lower() for word in time_sensitive):
+            search_query = f"{query} {date_str}"
+        else:
+            search_query = query
+
         with DDGS() as ddgs:
-            results = list(ddgs.text(query, max_results=max_results))
+            results = list(ddgs.text(search_query, max_results=max_results))
 
         if not results:
             return f"No results found for: {query}"
 
-        formatted = []
+        formatted = [f"Search results (as of {today.strftime('%Y-%m-%d')}):\n"]
         for i, r in enumerate(results, 1):
             formatted.append(f"{i}. {r['title']}\n   URL: {r['href']}\n   {r['body'][:200]}...")
 
@@ -408,6 +1100,63 @@ def web_search(query: str, max_results: int = 5) -> str:
 
     except Exception as e:
         return f"Search failed: {e}"
+
+
+def web_fetch(url: str) -> str:
+    """Fetch content from a URL and convert HTML to readable text.
+
+    Args:
+        url: The URL to fetch
+
+    Returns:
+        Page content converted to markdown/text format
+    """
+    try:
+        import requests
+
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+        }
+
+        response = requests.get(url, headers=headers, timeout=30)
+        response.raise_for_status()
+
+        content_type = response.headers.get('content-type', '')
+
+        if 'text/html' in content_type:
+            # Try to use html2text if available
+            try:
+                from html2text import HTML2Text
+                h = HTML2Text()
+                h.ignore_links = False
+                h.ignore_images = True
+                h.body_width = 0
+                content = h.handle(response.text)
+            except ImportError:
+                # Fallback: basic HTML tag removal
+                import re
+                text = response.text
+                # Remove script and style elements
+                text = re.sub(r'<script[^>]*>.*?</script>', '', text, flags=re.DOTALL | re.IGNORECASE)
+                text = re.sub(r'<style[^>]*>.*?</style>', '', text, flags=re.DOTALL | re.IGNORECASE)
+                # Remove HTML tags
+                text = re.sub(r'<[^>]+>', ' ', text)
+                # Clean up whitespace
+                text = re.sub(r'\s+', ' ', text)
+                content = text.strip()
+        else:
+            content = response.text
+
+        # Truncate if too long
+        if len(content) > 15000:
+            content = content[:15000] + "\n\n... [TRUNCATED]"
+
+        return f"Content from {url}:\n\n{content}"
+
+    except requests.RequestException as e:
+        return f"Error fetching URL: {e}"
+    except Exception as e:
+        return f"Error: {e}"
 
 
 def get_current_news(topic: str) -> str:
@@ -666,10 +1415,21 @@ ALL_TOOLS = [
     write_file,
     edit_file,
     get_project_structure,
+    glob_files,
+    grep,
+    # Git operations
+    git_status,
+    git_diff,
+    git_log,
+    git_commit,
+    git_add,
+    git_branch,
+    git_stash,
     # Shell
     run_command,
     # Web
     web_search,
+    web_fetch,
     get_current_news,
     # Weather
     get_weather,
@@ -680,6 +1440,11 @@ ALL_TOOLS = [
     # Memory
     save_memory,
     recall_memory,
+    # Task management
+    task_create,
+    task_update,
+    task_list,
+    task_get,
     # GitHub
     github_search,
 ]
