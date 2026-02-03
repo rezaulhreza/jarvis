@@ -27,6 +27,11 @@ export default function App() {
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
   const [models, setModels] = useState<string[]>([])
+  const [providers, setProviders] = useState<Record<string, {configured: boolean, model?: string | null}>>({})
+  const [codexAuth, setCodexAuth] = useState<{configured: boolean, source?: string | null, codex_cli_found?: boolean}>({configured: false})
+  const [claudeAuth, setClaudeAuth] = useState<{configured: boolean, source?: string | null}>({configured: false})
+  const [claudeToken, setClaudeToken] = useState('')
+  const [authMessage, setAuthMessage] = useState('')
   const [voices, setVoices] = useState<{id: string, name: string}[]>([])
   const [elevenVoices, setElevenVoices] = useState<{id: string, name: string}[]>([])
   const [currentVoice, setCurrentVoice] = useState('en-GB-SoniaNeural')
@@ -45,10 +50,12 @@ export default function App() {
     isLoading,
     project,
     model,
+    provider,
     ragStatus,
     send,
     clear,
     switchModel,
+    switchProvider,
   } = useWebSocket()
 
   // Randomize loading text when loading starts
@@ -64,11 +71,19 @@ export default function App() {
     }
   }, [isLoading])
 
-  // Fetch available models, voices, and settings
+  // Fetch available providers, models, voices, and settings
   useEffect(() => {
-    fetch('/api/models')
+    fetch('/api/providers')
       .then(res => res.json())
-      .then(data => setModels(data.models || []))
+      .then(data => setProviders(data.providers || {}))
+      .catch(() => {})
+    fetch('/api/auth/codex/status')
+      .then(res => res.json())
+      .then(data => setCodexAuth(data))
+      .catch(() => {})
+    fetch('/api/auth/claude/status')
+      .then(res => res.json())
+      .then(data => setClaudeAuth(data))
       .catch(() => {})
     fetch('/api/voices')
       .then(res => res.json())
@@ -93,6 +108,66 @@ export default function App() {
       })
       .catch(() => {})
   }, [])
+
+  // Fetch models for selected provider
+  useEffect(() => {
+    const activeProvider = provider || 'ollama'
+    fetch(`/api/models?provider=${encodeURIComponent(activeProvider)}`)
+      .then(res => res.json())
+      .then(data => setModels(data.models || []))
+      .catch(() => {})
+  }, [provider])
+
+  const runCodexDeviceAuth = async () => {
+    setAuthMessage('Starting Codex device auth...')
+    const res = await fetch('/api/auth/codex/device', { method: 'POST' })
+    const data = await res.json()
+    setAuthMessage(data.output || (data.ok ? 'Codex auth complete' : 'Codex auth failed'))
+    const status = await fetch('/api/auth/codex/status').then(r => r.json()).catch(() => null)
+    if (status) setCodexAuth(status)
+  }
+
+  const importCodexAuth = async () => {
+    setAuthMessage('Importing Codex credentials...')
+    const res = await fetch('/api/auth/codex/import', { method: 'POST' })
+    const data = await res.json()
+    setAuthMessage(data.imported ? 'Imported Codex credentials' : 'No Codex credentials found')
+    const status = await fetch('/api/auth/codex/status').then(r => r.json()).catch(() => null)
+    if (status) setCodexAuth(status)
+  }
+
+  const runClaudeAuth = async () => {
+    setAuthMessage('Starting Claude login...')
+    const res = await fetch('/api/auth/claude/device', { method: 'POST' })
+    const data = await res.json()
+    setAuthMessage(data.output || (data.ok ? 'Claude login complete' : 'Claude login failed'))
+    const status = await fetch('/api/auth/claude/status').then(r => r.json()).catch(() => null)
+    if (status) setClaudeAuth(status)
+  }
+
+  const importClaudeAuth = async () => {
+    setAuthMessage('Importing Claude key from env...')
+    const res = await fetch('/api/auth/claude/import', { method: 'POST' })
+    const data = await res.json()
+    setAuthMessage(data.imported ? 'Imported ANTHROPIC_API_KEY' : 'No ANTHROPIC_API_KEY found')
+    const status = await fetch('/api/auth/claude/status').then(r => r.json()).catch(() => null)
+    if (status) setClaudeAuth(status)
+  }
+
+  const storeClaudeToken = async () => {
+    if (!claudeToken) return
+    setAuthMessage('Storing Claude access token...')
+    const res = await fetch('/api/auth/claude/store', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ access_token: claudeToken }),
+    })
+    const data = await res.json()
+    setAuthMessage(data.stored ? 'Stored Claude access token' : 'Failed to store token')
+    const status = await fetch('/api/auth/claude/status').then(r => r.json()).catch(() => null)
+    if (status) setClaudeAuth(status)
+    setClaudeToken('')
+  }
 
   // Save TTS provider when changed
   const changeTtsProvider = (provider: 'browser' | 'edge' | 'elevenlabs') => {
@@ -400,7 +475,7 @@ export default function App() {
               className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-sm bg-[#1a1a24] text-[#71717a] hover:text-white"
             >
               <Settings size={14} />
-              <span className="max-w-[100px] truncate">{model || 'Model'}</span>
+              <span className="max-w-[140px] truncate">{provider ? `${provider} · ${model || 'Model'}` : (model || 'Model')}</span>
               <ChevronDown size={14} />
             </button>
             {showSettings && (
@@ -439,6 +514,34 @@ export default function App() {
                 <div className="max-h-72 overflow-y-auto">
                   {settingsTab === 'model' && (
                     <>
+                      <div className="px-3 py-2 border-b border-[#2a2a3a]">
+                        <span className="text-xs text-[#71717a] block mb-2">Provider</span>
+                        <div className="grid grid-cols-2 gap-1">
+                          {Object.keys(providers).length === 0 && (
+                            <div className="col-span-2 text-xs text-[#71717a]">No providers found</div>
+                          )}
+                          {Object.entries(providers).map(([name, info]) => (
+                            <button
+                              key={name}
+                              onClick={() => {
+                                switchProvider(name)
+                                setShowSettings(false)
+                              }}
+                              className={cn(
+                                'px-2 py-1 text-xs rounded transition-colors',
+                                provider === name
+                                  ? 'bg-blue-500/30 text-blue-300'
+                                  : info.configured
+                                    ? 'bg-[#2a2a3a] text-[#d4d4d8] hover:text-white'
+                                    : 'bg-[#1a1a24] text-[#52525b]'
+                              )}
+                              title={info.configured ? name : `${name} (not configured)`}
+                            >
+                              {name}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
                       {models.map((m) => (
                         <button
                           key={m}
@@ -454,6 +557,72 @@ export default function App() {
                       {models.length === 0 && (
                         <div className="px-3 py-2 text-sm text-[#71717a]">No models found</div>
                       )}
+                      <div className="px-3 py-2 border-t border-[#2a2a3a]">
+                        <div className="text-xs text-[#71717a] mb-2">Auth (CLI-friendly)</div>
+                        <div className="flex flex-col gap-2">
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs text-[#d4d4d8]">Codex</span>
+                            <span className={cn('text-[11px]', codexAuth.configured ? 'text-green-400' : 'text-[#71717a]')}>
+                              {codexAuth.configured ? `connected${codexAuth.source ? ` (${codexAuth.source})` : ''}` : 'not connected'}
+                            </span>
+                          </div>
+                          <div className="flex gap-1">
+                            <button
+                              onClick={runCodexDeviceAuth}
+                              className="flex-1 px-2 py-1 text-xs rounded bg-[#2a2a3a] text-[#d4d4d8] hover:text-white"
+                            >
+                              Device Login
+                            </button>
+                            <button
+                              onClick={importCodexAuth}
+                              className="flex-1 px-2 py-1 text-xs rounded bg-[#1a1a24] text-[#71717a] hover:text-white"
+                            >
+                              Import
+                            </button>
+                          </div>
+
+                          <div className="flex items-center justify-between mt-2">
+                            <span className="text-xs text-[#d4d4d8]">Claude</span>
+                            <span className={cn('text-[11px]', claudeAuth.configured ? 'text-green-400' : 'text-[#71717a]')}>
+                              {claudeAuth.configured ? `connected${claudeAuth.source ? ` (${claudeAuth.source})` : ''}` : 'not connected'}
+                            </span>
+                          </div>
+                          <div className="flex gap-1">
+                            <button
+                              onClick={runClaudeAuth}
+                              className="flex-1 px-2 py-1 text-xs rounded bg-[#2a2a3a] text-[#d4d4d8] hover:text-white"
+                            >
+                              Login
+                            </button>
+                            <button
+                              onClick={importClaudeAuth}
+                              className="flex-1 px-2 py-1 text-xs rounded bg-[#1a1a24] text-[#71717a] hover:text-white"
+                            >
+                              Import Env
+                            </button>
+                          </div>
+                          <div className="mt-2">
+                            <input
+                              type="password"
+                              value={claudeToken}
+                              onChange={(e) => setClaudeToken(e.target.value)}
+                              placeholder="Paste Claude access token"
+                              className="w-full px-2 py-1 text-xs rounded bg-[#0f0f15] border border-[#2a2a3a] text-white placeholder-[#51515a]"
+                            />
+                            <button
+                              onClick={storeClaudeToken}
+                              className="w-full mt-1 px-2 py-1 text-xs rounded bg-[#2a2a3a] text-[#d4d4d8] hover:text-white"
+                            >
+                              Save Token
+                            </button>
+                          </div>
+                          {authMessage && (
+                            <div className="text-[11px] text-[#71717a] mt-1">
+                              {authMessage}
+                            </div>
+                          )}
+                        </div>
+                      </div>
                     </>
                   )}
                   {settingsTab === 'voice' && (

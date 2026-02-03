@@ -6,7 +6,7 @@ Supports both native tool calling and prompt-based fallback.
 
 import re
 import json
-from typing import List
+from typing import List, Optional, Tuple
 from pathlib import Path
 
 from .tools import (
@@ -18,65 +18,129 @@ from .tools import (
     calculate, save_memory, recall_memory, github_search,
 )
 
-# Models known to support native tool calling well
-# Note: Some models output JSON as text instead - the agent handles this as fallback
-NATIVE_TOOL_MODELS = [
-    # OpenAI
-    "gpt-4", "gpt-3.5", "gpt-oss",
-    # Anthropic
-    "claude",
-    # Google
-    "gemini",
-    # Meta Llama
-    "llama3.1", "llama3.2", "llama3.3",
-    # Qwen (Alibaba)
-    "qwen3",
-    # Mistral
-    "mistral", "mixtral",
-    # Others with good tool support
-    "command-r", "firefunction", "glm-4", "glm4",
-]
-
-# Models that claim tool support but often output JSON as text
-# These will use native tools but fallback to text parsing works too
-PARTIAL_TOOL_MODELS = [
-    "qwen2.5", "qwen2.5-coder", "qwen3-coder",
-    "granite", "granite3", "granite4",
-]
-
-# Reasoning models that need longer timeouts (they think a lot)
-REASONING_MODELS = [
-    "deepseek-r1", "o1", "o3", "qwq", "gpt-oss",
-]
-
-
 class Agent:
     """Agent with tool calling - native or prompt-based."""
 
-    def __init__(self, provider, project_root: Path, ui=None):
+    def __init__(self, provider, project_root: Path, ui=None, config: dict | None = None):
         self.provider = provider
         self.project_root = project_root
         self.ui = ui
+        self.config = config or {}
         self.max_iterations = 15
+        self.last_streamed = False
         set_project_root(project_root)
         set_ui(ui)  # Pass UI to tools for confirmations
 
     def _supports_native_tools(self) -> bool:
         """Check if current model supports native tool calling."""
-        model = self.provider.model.lower()
-        all_tool_models = NATIVE_TOOL_MODELS + PARTIAL_TOOL_MODELS
-        return any(t in model for t in all_tool_models)
+        agent_cfg = self.config.get("agent", {})
+        tool_mode = (agent_cfg.get("tool_mode", "auto") or "auto").lower()
 
-    def _is_reasoning_model(self) -> bool:
-        """Check if current model is a reasoning model that needs longer timeout."""
-        model = self.provider.model.lower()
-        return any(r in model for r in REASONING_MODELS)
+        if tool_mode == "off":
+            return False
+        if tool_mode == "prompt":
+            return False
+        if tool_mode == "native":
+            return bool(getattr(self.provider, "supports_tools", False))
+        # auto
+        return bool(getattr(self.provider, "supports_tools", False))
 
     def _get_timeout(self) -> int:
         """Get appropriate timeout based on model type."""
-        if self._is_reasoning_model():
-            return 300  # 5 minutes for reasoning models
-        return 120  # 2 minutes default
+        agent_cfg = self.config.get("agent", {})
+        timeouts = agent_cfg.get("timeouts", {})
+        default_timeout = int(timeouts.get("default", 120))
+        reasoning_timeout = int(timeouts.get("reasoning", 300))
+        reasoning_model = (self.config.get("models", {}) or {}).get("reasoning")
+
+        if reasoning_model and reasoning_model in (self.provider.model or ""):
+            return reasoning_timeout
+        return default_timeout
+
+    def _likely_needs_tools(self, user_message: str) -> bool:
+        """Heuristic to decide if tools are likely needed for this request."""
+        if not user_message:
+            return False
+
+        msg = user_message.lower()
+
+        # Current info / web lookups
+        current_signals = [
+            "current", "latest", "today", "right now", "recent", "breaking",
+            "news", "headline", "president", "prime minister", "ceo", "stock",
+            "price", "score", "election", "as of"
+        ]
+        if any(s in msg for s in current_signals):
+            return True
+
+        # Local code / file operations
+        file_signals = [
+            "file", "repo", "project", "codebase", "function", "class",
+            "line", "stack trace", "traceback", "error", "bug", "fix",
+            "refactor", "edit", "update", "read", "open", "search"
+        ]
+        if any(s in msg for s in file_signals):
+            return True
+
+        # File extensions hinting code questions
+        if re.search(r"\.(py|js|ts|tsx|jsx|go|rs|java|cpp|c|rb|php|yaml|yml|json)\b", msg):
+            return True
+
+        return False
+
+    def _detect_auto_tool(self, user_message: str) -> Optional[Tuple[str, dict]]:
+        """Detect when we should auto-run a tool instead of relying on tool calling."""
+        agent_cfg = self.config.get("agent", {})
+        if not agent_cfg.get("auto_tools", True):
+            return None
+
+        msg = (user_message or "").strip()
+        msg_lower = msg.lower()
+
+        # Weather
+        if agent_cfg.get("auto_weather", True) and "weather" in msg_lower:
+            match = re.search(r"weather\s+(?:in|for)\s+(.+)", msg_lower)
+            if match:
+                city = match.group(1).strip().title()
+                return "get_weather", {"city": city}
+            # Fallback to web search if location not obvious
+            return "web_search", {"query": msg}
+
+        # Time
+        if agent_cfg.get("auto_time", True) and re.search(r"\btime\b", msg_lower):
+            match = re.search(r"time\s+(?:in|for)\s+(.+)", msg_lower)
+            if match:
+                tz = match.group(1).strip().upper()
+                return "get_current_time", {"timezone": tz}
+            return "get_current_time", {"timezone": "UTC"}
+
+        # Simple calculations
+        if agent_cfg.get("auto_calculate", True):
+            math_match = re.search(r"^(?:calc(?:ulate)?\s+)?([0-9\.\+\-\*\/\(\)\s]+)$", msg_lower)
+            if math_match:
+                expr = math_match.group(1).strip()
+                if expr:
+                    return "calculate", {"expression": expr}
+
+        # Current info / news
+        if agent_cfg.get("auto_current_info", True):
+            current_signals = [
+                "current", "latest", "today", "right now", "recent", "breaking",
+                "news", "headline", "as of"
+            ]
+            if any(s in msg_lower for s in current_signals):
+                if "news" in msg_lower or "headline" in msg_lower:
+                    topic = msg_lower.replace("news", "").replace("headlines", "").strip()
+                    return "get_current_news", {"topic": topic or msg}
+                return "web_search", {"query": msg}
+
+            leadership_signals = [
+                "president", "prime minister", "ceo", "chairman", "chancellor", "governor"
+            ]
+            if any(s in msg_lower for s in leadership_signals):
+                return "web_search", {"query": msg}
+
+        return None
 
     def _get_tools_prompt(self) -> str:
         """Get prompt describing available tools for non-native models."""
@@ -323,8 +387,14 @@ RULES:
         start_time = time.time()
         tool_count = 0
 
+        self.last_streamed = False
+        if self.ui and hasattr(self.ui, "begin_turn"):
+            self.ui.begin_turn()
+
         # Check if model supports native tools
         use_native = self._supports_native_tools()
+        auto_tool_done = False
+        agent_cfg = self.config.get("agent", {})
 
         if not use_native:
             # Add tools description to system prompt for prompt-based approach
@@ -350,6 +420,91 @@ RULES:
                 return "[dim]Stopped[/dim]"
 
             try:
+                # Auto-run tools for current info, time, weather, etc.
+                if not auto_tool_done:
+                    auto_tool = self._detect_auto_tool(user_message)
+                    if auto_tool:
+                        tool_name, args = auto_tool
+                        tool_start = time.time()
+                        result = self._execute_tool(tool_name, args)
+                        tool_duration = time.time() - tool_start
+                        tool_count += 1
+                        auto_tool_done = True
+                        # Check if tool failed
+                        tool_success = not (result and (result.startswith("Error") or result.startswith("error")))
+                        if self.ui:
+                            self.ui.print_tool(self._format_tool_display(tool_name, args, result), success=tool_success)
+                            if hasattr(self.ui, "record_tool"):
+                                self.ui.record_tool(
+                                    tool_name,
+                                    self._format_tool_display(tool_name, args, result),
+                                    tool_duration,
+                                    args=args,
+                                    result=result,
+                                    success=tool_success
+                                )
+                        messages.append({
+                            "role": "user",
+                            "content": f"Tool result:\n{result}\n\nNow answer the original question based on this information."
+                        })
+
+                # Optional fast path when tools are unlikely
+                if agent_cfg.get("fast_no_tools", True) and not self._likely_needs_tools(user_message):
+                    try:
+                        from jarvis.providers import Message
+                        fast_messages = [Message(role=m["role"], content=m["content"]) for m in messages]
+                        reply = self.provider.chat(
+                            messages=fast_messages,
+                            system=system_prompt,
+                            stream=True
+                        )
+
+                        # Stream output live
+                        content_parts = []
+                        if hasattr(reply, "__iter__") and not isinstance(reply, (str, dict)):
+                            for chunk in reply:
+                                # Check for stop (Ctrl+C or ESC)
+                                if self.ui:
+                                    if self.ui.stop_requested:
+                                        break
+                                    if hasattr(self.ui, "check_escape_pressed") and self.ui.check_escape_pressed():
+                                        self.ui.stop_requested = True
+                                        break
+                                content_parts.append(chunk)
+                                if self.ui and hasattr(self.ui, "stream_text"):
+                                    self.ui.stream_text(chunk)
+                            if self.ui and hasattr(self.ui, "stream_done"):
+                                self.ui.stream_done()
+                            content = "".join(content_parts)
+                            self.last_streamed = True
+                        else:
+                            # Non-stream reply fallback
+                            content = None
+                            if isinstance(reply, str):
+                                content = reply
+                            elif hasattr(reply, "message"):
+                                msg = getattr(reply, "message")
+                                if isinstance(msg, dict):
+                                    content = msg.get("content")
+                                else:
+                                    content = getattr(msg, "content", None)
+                            elif isinstance(reply, dict):
+                                msg = reply.get("message")
+                                if isinstance(msg, dict):
+                                    content = msg.get("content")
+                                else:
+                                    content = msg
+                            if self.ui and hasattr(self.ui, "stream_text") and content:
+                                self.ui.stream_text(content)
+                                self.ui.stream_done()
+                                self.last_streamed = True
+
+                        final_response = self._clean_content(content if content is not None else "")
+                        break
+                    except Exception:
+                        # Fall back to tool-capable path
+                        pass
+
                 tools = ALL_TOOLS if use_native else None
 
                 # Call model with timeout (interruptible)
@@ -382,19 +537,78 @@ RULES:
                         if self.ui and self.ui.stop_requested:
                             return "[dim]Stopped[/dim]"
 
+                        tool_call_id = None
                         if hasattr(call, 'function'):
                             tool_name = call.function.name
                             args = call.function.arguments or {}
+                            tool_call_id = getattr(call, "id", None)
                         else:
                             func = call.get('function', {})
                             tool_name = func.get('name', '')
                             args = func.get('arguments', {})
+                            tool_call_id = call.get("id")
 
+                        if isinstance(args, str):
+                            try:
+                                args = json.loads(args)
+                            except json.JSONDecodeError:
+                                args = {}
+
+                        tool_start = time.time()
                         result = self._execute_tool(tool_name, args)
+                        tool_duration = time.time() - tool_start
                         tool_count += 1
+                        # Check if tool failed
+                        tool_success = not (result and (result.startswith("Error") or result.startswith("error")))
                         if self.ui:
-                            self.ui.print_tool(self._format_tool_display(tool_name, args, result))
-                        messages.append({"role": "tool", "content": result})
+                            self.ui.print_tool(self._format_tool_display(tool_name, args, result), success=tool_success)
+                            if hasattr(self.ui, "record_tool"):
+                                self.ui.record_tool(
+                                    tool_name,
+                                    self._format_tool_display(tool_name, args, result),
+                                    tool_duration,
+                                    tool_call_id=tool_call_id,
+                                    args=args,
+                                    result=result,
+                                    success=tool_success
+                                )
+                        tool_msg = {"role": "tool", "content": result}
+                        if tool_call_id:
+                            tool_msg["tool_call_id"] = tool_call_id
+                        messages.append(tool_msg)
+
+                    # Stream the final response after tool execution
+                    try:
+                        from jarvis.providers import Message
+                        followup_system = system_prompt + "\n\nAnswer the user now. Do not call tools."
+                        stream_messages = [Message(role=m["role"], content=m["content"]) for m in messages]
+                        stream = self.provider.chat(
+                            messages=stream_messages,
+                            system=followup_system,
+                            stream=True
+                        )
+                        parts = []
+                        for chunk in stream:
+                            # Check for stop (Ctrl+C or ESC)
+                            if self.ui:
+                                if self.ui.stop_requested:
+                                    break
+                                if hasattr(self.ui, "check_escape_pressed") and self.ui.check_escape_pressed():
+                                    self.ui.stop_requested = True
+                                    break
+                            parts.append(chunk)
+                            if self.ui and hasattr(self.ui, "stream_text"):
+                                self.ui.stream_text(chunk)
+                        if self.ui and hasattr(self.ui, "stream_done"):
+                            self.ui.stream_done()
+                        self.last_streamed = True
+                        final_response = self._clean_content("".join(parts))
+                        if self.ui and hasattr(self.ui, "print_tool_section"):
+                            self.ui.print_tool_section()
+                        break
+                    except Exception:
+                        # Fall back to normal loop if streaming fails
+                        pass
 
                 # Check if content contains JSON tool call (fallback for models that output JSON as text)
                 elif content and ('"name"' in content or '"tool"' in content):
@@ -435,6 +649,8 @@ RULES:
                 # No tool calls - final response
                 elif content:
                     final_response = self._clean_content(content)
+                    if self.ui and hasattr(self.ui, "print_tool_section"):
+                        self.ui.print_tool_section()
                     break
 
                 else:

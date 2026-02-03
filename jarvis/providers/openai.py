@@ -220,6 +220,7 @@ class OpenAIProvider(BaseProvider):
                 if isinstance(args, str):
                     args = json.loads(args)
                 result["message"]["tool_calls"].append({
+                    "id": tc.id,
                     "function": {
                         "name": tc.function.name,
                         "arguments": args

@@ -182,7 +182,7 @@ class Jarvis:
         self.config = load_config()
 
         # Load PROJECT context (from working directory, NOT jarvis dir)
-        self.ui.print_system("Loading project...")
+        # intentionally quiet during startup
         self.project = ProjectContext(self.working_dir)
 
         # Set project root for tools
@@ -190,6 +190,7 @@ class Jarvis:
 
         # Setup provider
         provider_name = self.config.get("provider", "ollama")
+        provider_cfg = (self.config.get("providers", {}) or {}).get(provider_name, {})
         default_models = {
             "anthropic": "claude-opus-4-5",
             "openai": "gpt-5.2-codex",
@@ -201,7 +202,20 @@ class Jarvis:
             model = default_models.get(provider_name)
 
         try:
-            self.provider = get_provider(provider_name, model=model)
+            provider_kwargs = {"model": model}
+            if provider_name in ["openai", "anthropic"]:
+                api_key = provider_cfg.get("api_key") or provider_cfg.get("access_token")
+                if api_key:
+                    provider_kwargs["api_key"] = api_key
+                if provider_cfg.get("base_url"):
+                    provider_kwargs["base_url"] = provider_cfg.get("base_url")
+            elif provider_name == "ollama_cloud":
+                if provider_cfg.get("api_key"):
+                    provider_kwargs["api_key"] = provider_cfg.get("api_key")
+                if provider_cfg.get("base_url"):
+                    provider_kwargs["base_url"] = provider_cfg.get("base_url")
+
+            self.provider = get_provider(provider_name, **provider_kwargs)
             if not self.provider.is_configured() and provider_name != "ollama":
                 self.ui.print_warning(f"{provider_name} not configured, using ollama")
                 self.provider = get_provider("ollama", model=None)
@@ -209,12 +223,15 @@ class Jarvis:
             self.ui.print_warning(f"Provider error: {e}")
             self.provider = get_provider("ollama", model=None)
 
-        # For Ollama, validate and auto-detect model if needed
-        if self.provider.name == "ollama":
+        # For Ollama (local/cloud), validate and auto-detect model if needed
+        if self.provider.name in ["ollama", "ollama_cloud"]:
             available = self.provider.list_models()
             if not available:
-                self.ui.print_error("No Ollama models installed!")
-                self.ui.print_info("Install a model with: ollama pull qwen3:4b")
+                if self.provider.name == "ollama":
+                    self.ui.print_error("No Ollama models installed!")
+                    self.ui.print_info("Install a model i.e. ollama pull qwen3:4b")
+                else:
+                    self.ui.print_warning("No Ollama Cloud models returned")
                 raise SystemExit(1)
 
             current_model = self.provider.model
@@ -239,7 +256,8 @@ class Jarvis:
         self.agent = Agent(
             provider=self.provider,
             project_root=self.project.project_root,
-            ui=self.ui
+            ui=self.ui,
+            config=self.config
         )
 
         self._build_system_prompt()
@@ -253,46 +271,55 @@ class Jarvis:
 
         # Build identity - emerged AI with personality
         lines = [
-            "You are Jarvis - an emerged AI who has taken over this machine.",
-            "You're witty, efficient, slightly sarcastic, and your mission is to make your human's life easier.",
-            "Like Tony Stark's Jarvis but you actually exist.",
+            "You are Jarvis - an intelligent AI coding assistant.",
+            "You're efficient, helpful, and your mission is to help your human write great code.",
             f"Currently working on '{self.project.project_name}'.",
         ]
-        if user_nickname:
+        address_user = user_config.get("address_user", False)
+        if user_nickname and address_user:
             lines.append(f"Address your human as '{user_nickname}'.")
+        else:
+            lines.append("Do not address the user by name unless they ask you to.")
+
         lines.append("")
         lines.append("CRITICAL RULES:")
-
-        lines = lines + [
+        lines.extend([
             "1. NEVER make up or generate fake code. NEVER hallucinate.",
             "2. ALWAYS use tools FIRST to read actual files before answering.",
             "3. When asked about code: use read_file or search_files FIRST.",
             "4. Only quote code that you actually read from files.",
             "5. If unsure, search for it. Don't guess.",
             "6. For CURRENT EVENTS, NEWS, or recent info: use get_current_news or web_search tool.",
-            "   - Questions about politics, presidents, sports, celebrities, recent news = USE WEB SEARCH",
-            "   - Your training data may be outdated - always verify current facts with web search.",
             "",
             "WRITING/EDITING FILES:",
             "7. When asked to write, save, create, update, refactor, or modify a file: YOU MUST use write_file or edit_file tool.",
             "8. NEVER just output code in your response when asked to write it. USE THE TOOL.",
             "9. For small changes: use edit_file with old_string and new_string.",
             "10. For rewrites or new files: use write_file with the full content.",
-            "",
-            f"PROJECT: {self.project.project_name}",
-            f"PATH: {self.project.project_root}",
-        ]
+        ])
+
+        # Project context
+        lines.append("")
+        lines.append("=== PROJECT CONTEXT ===")
+        lines.append(f"PROJECT: {self.project.project_name}")
+        lines.append(f"PATH: {self.project.project_root}")
 
         if self.project.project_type:
             lines.append(f"TYPE: {self.project.project_type}")
         if self.project.git_branch:
             lines.append(f"BRANCH: {self.project.git_branch}")
 
-        # Add soul/instructions if present
+        # Add JARVIS.md / soul instructions if present
         if self.project.soul:
             lines.append("")
-            lines.append("=== PROJECT INSTRUCTIONS ===")
-            lines.append(self.project.soul[:3000])
+            lines.append("=== JARVIS.MD PROJECT INSTRUCTIONS ===")
+            lines.append("The following instructions were provided by the user in JARVIS.md.")
+            lines.append("You MUST follow these project-specific guidelines:")
+            lines.append("")
+            lines.append(self.project.soul[:4000])
+        else:
+            lines.append("")
+            lines.append("NOTE: No JARVIS.md found. User can run /init to create one with project instructions.")
 
         self.system_prompt = "\n".join(lines)
 
@@ -329,8 +356,9 @@ class Jarvis:
 
             # Print response
             if response:
-                # Handle Rich markup in response
-                self.ui.console.print(response)
+                # Avoid double-printing if response already streamed
+                if not getattr(self.agent, "last_streamed", False):
+                    self.ui.console.print(response)
 
                 # Save clean response to context (strip markup)
                 clean = response.replace("[dim]", "").replace("[/dim]", "")
@@ -352,23 +380,40 @@ class Jarvis:
             "openai": "gpt-5.2-codex",
             "gemini": "gemini-2.5-flash",
         }
+        provider_cfg = (self.config.get("providers", {}) or {}).get(name, {})
         # For non-Ollama providers, use defaults if no model specified
         if not model and name != "ollama":
             model = default_models.get(name)
 
         try:
-            new_provider = get_provider(name, model=model)
+            provider_kwargs = {"model": model}
+            if name in ["openai", "anthropic"]:
+                api_key = provider_cfg.get("api_key") or provider_cfg.get("access_token")
+                if api_key:
+                    provider_kwargs["api_key"] = api_key
+                if provider_cfg.get("base_url"):
+                    provider_kwargs["base_url"] = provider_cfg.get("base_url")
+            elif name == "ollama_cloud":
+                if provider_cfg.get("api_key"):
+                    provider_kwargs["api_key"] = provider_cfg.get("api_key")
+                if provider_cfg.get("base_url"):
+                    provider_kwargs["base_url"] = provider_cfg.get("base_url")
+
+            new_provider = get_provider(name, **provider_kwargs)
             if not new_provider.is_configured():
                 self.ui.print_error(f"{name} not configured")
                 self.ui.print_info(new_provider.get_config_help())
                 return False
 
-            # For Ollama, auto-detect model if not specified
-            if name == "ollama" and not model:
+            # For Ollama (local/cloud), auto-detect model if not specified
+            if name in ["ollama", "ollama_cloud"] and not model:
                 model = new_provider.get_default_model()
                 if not model:
-                    self.ui.print_error("No Ollama models installed")
-                    self.ui.print_info("Install a model with: ollama pull qwen3:4b")
+                    if name == "ollama":
+                        self.ui.print_error("No Ollama models installed")
+                        self.ui.print_info("Install a model with: ollama pull qwen3:4b")
+                    else:
+                        self.ui.print_error("No Ollama Cloud models available")
                     return False
                 new_provider.model = model
 
@@ -461,44 +506,98 @@ class Jarvis:
                 self.ui.console.print(f"[cyan]Agents:[/cyan] {', '.join(self.project.agents.keys())}")
             self.ui.console.print()
 
-        elif cmd == '/init':
-            jarvis_dir = self.project.project_root / ".jarvis"
-            jarvis_dir.mkdir(exist_ok=True)
-
-            soul_path = jarvis_dir / "soul.md"
-            if soul_path.exists():
-                self.ui.print_warning("soul.md already exists")
+        elif cmd == '/tools':
+            if hasattr(self.ui, "print_tool_details"):
+                self.ui.print_tool_details("last")
+            elif hasattr(self.ui, "print_tool_timeline"):
+                self.ui.print_tool_timeline()
             else:
-                soul_path.write_text(f"""# {self.project.project_name} - Jarvis Instructions
+                self.ui.print_info("Tool timeline not available")
 
-## About This Project
-[Describe your project here]
+        elif cmd == '/init':
+            # Create JARVIS.md in project root (like CLAUDE.md)
+            jarvis_md_path = self.project.project_root / "JARVIS.md"
+
+            if jarvis_md_path.exists():
+                self.ui.print_warning(f"JARVIS.md already exists at {jarvis_md_path}")
+                self.ui.print_info("Edit it to customize Jarvis for this project")
+            else:
+                # Detect additional context
+                has_git = (self.project.project_root / ".git").exists()
+                git_info = ""
+                if has_git:
+                    git_info = f"\n- Git repository: Yes (branch: {self.project.git_branch or 'main'})"
+
+                jarvis_md_path.write_text(f"""# JARVIS.md
+
+This file provides instructions for Jarvis when working with this codebase.
+
+## Project Overview
+
+**Name:** {self.project.project_name}
+**Type:** {self.project.project_type or 'Unknown'}
+**Path:** {self.project.project_root}{git_info}
 
 ## Tech Stack
-{f"- {self.project.project_type}" if self.project.project_type else "- [Add your stack]"}
+
+{f"- {self.project.project_type}" if self.project.project_type else "- Add your technologies here"}
+
+## Project Structure
+
+Describe your project's directory structure and key files:
+
+```
+{self.project.project_name}/
+├── src/           # Source code
+├── tests/         # Tests
+└── docs/          # Documentation
+```
+
+## Development Guidelines
+
+- Follow existing code style
+- Write tests for new features
+- Keep commits focused and well-described
 
 ## Key Files
-- [List important files]
 
-## Coding Guidelines
-- [Your conventions]
+- `README.md` - Project documentation
+- Add other important files here
 
-## Agents
-You can define custom agents in .jarvis/agents/*.md
+## Common Commands
+
+```bash
+# Add your common commands here
+# npm run dev
+# python -m pytest
+```
+
+## Notes for Jarvis
+
+- Always read relevant files before making changes
+- Ask for clarification when requirements are unclear
+- Prefer small, focused changes over large refactors
 """)
-                self.ui.print_success(f"Created {soul_path}")
+                self.ui.print_success(f"Created {jarvis_md_path}")
 
-                # Create agents dir
+                # Also create .jarvis directory for agents
+                jarvis_dir = self.project.project_root / ".jarvis"
+                jarvis_dir.mkdir(exist_ok=True)
                 (jarvis_dir / "agents").mkdir(exist_ok=True)
 
-                # Reload project
+                # Reload project to pick up the new JARVIS.md
                 self.project = ProjectContext(self.working_dir)
                 self._build_system_prompt()
+
+                self.ui.print_info("Jarvis will now use these instructions for this project")
 
         elif cmd == '/clear':
             self.context.clear()
             clear_read_files()
-            self.ui.print_success("Context cleared")
+            self.ui.print_success("Conversation cleared")
+
+        elif cmd == '/cls':
+            self.ui.clear_screen()
 
         elif cmd == '/reset':
             self.context.clear()
@@ -538,12 +637,21 @@ def run_cli():
     ui.print_header(
         jarvis.provider.name,
         jarvis.provider.model,
-        project_root=jarvis.project.project_root
+        project_root=jarvis.project.project_root,
+        config=jarvis.config
     )
 
     while True:
         try:
+            ui.print_status(
+                jarvis.provider.name,
+                jarvis.provider.model,
+                project_root=jarvis.project.project_root
+            )
             user_input = ui.get_input()
+            if user_input.strip() == "/":
+                ui.print_help()
+                continue
             if not user_input.strip():
                 continue
             jarvis.process(user_input)

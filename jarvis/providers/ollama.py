@@ -26,6 +26,7 @@ class OllamaProvider(BaseProvider):
         # Default model will be auto-detected if None
         super().__init__(model=model or "pending", **kwargs)
         self.base_url = kwargs.get("base_url", "http://localhost:11434")
+        self.headers = kwargs.get("headers")
         self._model_auto = model is None  # Track if we need to auto-detect
 
         # Determine timeout based on model type
@@ -40,7 +41,8 @@ class OllamaProvider(BaseProvider):
             # Create client with extended timeout for reasoning models
             self.client = ollama.Client(
                 host=self.base_url,
-                timeout=httpx.Timeout(timeout, connect=30.0)
+                timeout=httpx.Timeout(timeout, connect=30.0),
+                headers=self.headers
             )
         except ImportError:
             raise ImportError("ollama package required: pip install ollama")

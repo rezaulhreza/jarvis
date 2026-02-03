@@ -154,6 +154,65 @@ def create_app() -> FastAPI:
         save_config(config)
         return {"success": True}
 
+    @app.get("/api/auth/codex/status")
+    async def codex_auth_status():
+        """Check Codex auth status."""
+        from jarvis.auth.codex import read_codex_auth
+        from jarvis.assistant import load_config
+        config = load_config()
+        openai_cfg = (config.get("providers", {}) or {}).get("openai", {})
+        codex_creds = read_codex_auth() or {}
+        return {
+            "configured": bool(openai_cfg.get("api_key") or openai_cfg.get("access_token")),
+            "source": openai_cfg.get("auth_source"),
+            "codex_cli_found": bool(codex_creds),
+        }
+
+    @app.post("/api/auth/codex/import")
+    async def codex_auth_import():
+        """Import Codex CLI credentials into settings.yaml."""
+        from jarvis.auth.codex import import_codex_auth
+        return import_codex_auth()
+
+    @app.post("/api/auth/codex/device")
+    async def codex_auth_device():
+        """Run Codex CLI device login and import credentials."""
+        from jarvis.auth.codex import codex_device_login
+        return codex_device_login()
+
+    @app.get("/api/auth/claude/status")
+    async def claude_auth_status():
+        """Check Claude auth status (env-based)."""
+        from jarvis.assistant import load_config
+        config = load_config()
+        anth_cfg = (config.get("providers", {}) or {}).get("anthropic", {})
+        return {
+            "configured": bool(anth_cfg.get("api_key") or anth_cfg.get("access_token")),
+            "source": anth_cfg.get("auth_source"),
+        }
+
+    @app.post("/api/auth/claude/import")
+    async def claude_auth_import():
+        """Import ANTHROPIC_API_KEY from env into settings.yaml."""
+        from jarvis.auth.claude import import_anthropic_key_from_env, import_claude_access_token
+        imported = import_claude_access_token()
+        if not imported.get("imported"):
+            imported = import_anthropic_key_from_env()
+        return imported
+
+    @app.post("/api/auth/claude/device")
+    async def claude_auth_device():
+        """Run Claude CLI login (best-effort) and import env key."""
+        from jarvis.auth.claude import claude_device_login
+        return claude_device_login()
+
+    @app.post("/api/auth/claude/store")
+    async def claude_auth_store(data: dict):
+        """Store a Claude access token locally."""
+        from jarvis.auth.claude import store_access_token_locally
+        token = data.get("access_token")
+        return store_access_token_locally(token)
+
     @app.post("/api/settings/elevenlabs")
     async def set_elevenlabs(data: dict):
         """Configure ElevenLabs API key and voice."""
@@ -290,26 +349,84 @@ def create_app() -> FastAPI:
         except Exception as e:
             return {"error": str(e)}
 
+    @app.get("/api/providers")
+    async def get_providers():
+        """Get available LLM providers and config status."""
+        from jarvis.providers import list_providers, get_provider
+        from jarvis.assistant import load_config
+        config = load_config()
+        providers_info = {}
+        for name in list_providers():
+            try:
+                provider_cfg = (config.get("providers", {}) or {}).get(name, {})
+                kwargs = {}
+                if name in ["openai", "anthropic"]:
+                    api_key = provider_cfg.get("api_key") or provider_cfg.get("access_token")
+                    if api_key:
+                        kwargs["api_key"] = api_key
+                    if provider_cfg.get("base_url"):
+                        kwargs["base_url"] = provider_cfg.get("base_url")
+                elif name == "ollama_cloud":
+                    if provider_cfg.get("api_key"):
+                        kwargs["api_key"] = provider_cfg.get("api_key")
+                    if provider_cfg.get("base_url"):
+                        kwargs["base_url"] = provider_cfg.get("base_url")
+
+                p = get_provider(name, **kwargs)
+                providers_info[name] = {
+                    "configured": p.is_configured(),
+                    "model": p.model,
+                }
+            except Exception:
+                providers_info[name] = {"configured": False, "model": None}
+        return {"providers": providers_info}
+
     @app.get("/api/models")
-    async def get_models():
-        """Get available chat models from Ollama (excludes embedding models)."""
-        # Embedding models can't do chat - filter them out
-        EMBEDDING_MODELS = {"nomic-embed-text", "mxbai-embed-large", "all-minilm", "snowflake-arctic-embed"}
+    async def get_models(provider: str = "ollama"):
+        """Get available chat models for a provider."""
+        provider = provider or "ollama"
+
+        if provider == "ollama":
+            # Embedding models can't do chat - filter them out
+            EMBEDDING_MODELS = {"nomic-embed-text", "mxbai-embed-large", "all-minilm", "snowflake-arctic-embed"}
+            try:
+                import subprocess
+                result = subprocess.run(
+                    ["ollama", "list"],
+                    capture_output=True, text=True, timeout=10
+                )
+                models = []
+                for line in result.stdout.strip().split('\n')[1:]:
+                    if line.strip():
+                        name = line.split()[0]
+                        # Filter out embedding models
+                        base_name = name.split(":")[0]  # Remove :latest tag
+                        if base_name not in EMBEDDING_MODELS:
+                            models.append(name)
+                return {"models": models}
+            except Exception as e:
+                return {"models": [], "error": str(e)}
+
         try:
-            import subprocess
-            result = subprocess.run(
-                ["ollama", "list"],
-                capture_output=True, text=True, timeout=10
-            )
-            models = []
-            for line in result.stdout.strip().split('\n')[1:]:
-                if line.strip():
-                    name = line.split()[0]
-                    # Filter out embedding models
-                    base_name = name.split(":")[0]  # Remove :latest tag
-                    if base_name not in EMBEDDING_MODELS:
-                        models.append(name)
-            return {"models": models}
+            from jarvis.providers import get_provider
+            from jarvis.assistant import load_config
+            config = load_config()
+            provider_cfg = (config.get("providers", {}) or {}).get(provider, {})
+            kwargs = {}
+            if provider in ["openai", "anthropic"]:
+                api_key = provider_cfg.get("api_key") or provider_cfg.get("access_token")
+                if api_key:
+                    kwargs["api_key"] = api_key
+                if provider_cfg.get("base_url"):
+                    kwargs["base_url"] = provider_cfg.get("base_url")
+            elif provider == "ollama_cloud":
+                if provider_cfg.get("api_key"):
+                    kwargs["api_key"] = provider_cfg.get("api_key")
+                if provider_cfg.get("base_url"):
+                    kwargs["base_url"] = provider_cfg.get("base_url")
+
+            p = get_provider(provider, **kwargs)
+            return {"models": p.list_models()}
         except Exception as e:
             return {"models": [], "error": str(e)}
 

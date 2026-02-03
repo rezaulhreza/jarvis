@@ -13,9 +13,11 @@ from .ollama import OllamaProvider
 from .anthropic import AnthropicProvider
 from .openai import OpenAIProvider
 from .gemini import GeminiProvider
+from .ollama_cloud import OllamaCloudProvider
 
 PROVIDERS = {
     "ollama": OllamaProvider,
+    "ollama_cloud": OllamaCloudProvider,
     "anthropic": AnthropicProvider,
     "openai": OpenAIProvider,
     "gemini": GeminiProvider,
@@ -41,6 +43,7 @@ __all__ = [
     "AnthropicProvider",
     "OpenAIProvider",
     "GeminiProvider",
+    "OllamaCloudProvider",
     "get_provider",
     "list_providers",
 ]

@@ -93,6 +93,95 @@ def setup():
     click.echo("\n✓ Setup complete! Run 'jarvis' to start.")
 
 
+@main.group()
+def auth():
+    """Authentication helpers for providers."""
+    pass
+
+
+@auth.group()
+def codex():
+    """Codex CLI auth helpers (OAuth/device)."""
+    pass
+
+
+@codex.command("device")
+def codex_device():
+    """Run Codex device auth and import credentials."""
+    from .auth.codex import codex_device_login
+
+    result = codex_device_login()
+    click.echo(result.get("output") or "")
+    imported = result.get("import", {})
+    if imported.get("imported"):
+        click.echo("✓ Codex credentials imported into ~/.jarvis/config/settings.yaml")
+    else:
+        click.echo("✗ No Codex credentials imported")
+
+
+@codex.command("import")
+def codex_import():
+    """Import Codex CLI credentials into settings.yaml."""
+    from .auth.codex import import_codex_auth
+
+    imported = import_codex_auth()
+    if imported.get("imported"):
+        click.echo("✓ Codex credentials imported into ~/.jarvis/config/settings.yaml")
+    else:
+        click.echo("✗ No Codex credentials found to import")
+
+
+@auth.group()
+def claude():
+    """Claude auth helpers (OAuth/setup-token)."""
+    pass
+
+
+@claude.command("device")
+def claude_device():
+    """Run Claude setup-token and import credentials if found."""
+    from .auth.claude import claude_device_login
+
+    result = claude_device_login()
+    click.echo(result.get("output") or "")
+    imported = result.get("import", {})
+    if imported.get("imported"):
+        click.echo("✓ Claude credentials imported into ~/.jarvis/config/settings.yaml")
+    else:
+        click.echo("✗ No Claude credentials imported")
+
+
+@claude.command("import")
+def claude_import():
+    """Import Claude credentials from OpenClaw or env into settings.yaml."""
+    from .auth.claude import import_claude_access_token, import_anthropic_key_from_env
+
+    imported = import_claude_access_token()
+    if not imported.get("imported"):
+        imported = import_anthropic_key_from_env()
+
+    if imported.get("imported"):
+        click.echo("✓ Claude credentials imported into ~/.jarvis/config/settings.yaml")
+    else:
+        click.echo("✗ No Claude credentials found to import")
+
+
+@claude.command("store")
+@click.option("--token", help="Claude access token (if omitted, read from stdin)")
+def claude_store(token):
+    """Store a Claude access token in ~/.jarvis/credentials/claude.json."""
+    from .auth.claude import store_access_token_locally
+
+    if not token:
+        token = sys.stdin.read().strip()
+
+    result = store_access_token_locally(token)
+    if result.get("stored"):
+        click.echo("✓ Claude access token stored")
+        click.echo(f"  {result.get('path')}")
+    else:
+        click.echo("✗ Failed to store token")
+
 @main.command()
 def models():
     """List available Ollama models."""

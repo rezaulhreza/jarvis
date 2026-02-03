@@ -1,6 +1,12 @@
 # Jarvis Configuration
 # Secrets should be in .env file, not here!
 
+# User Profile (customize in ~/.jarvis/config/settings.yaml)
+user:
+  name: ""                  # Your full name
+  nickname: ""              # How Jarvis should address you (optional)
+  address_user: false       # Whether Jarvis should address you by name
+
 # Model Settings
 models:
   default: "qwen3:4b"
@@ -16,6 +22,23 @@ context:
   keep_recent_messages: 5
   auto_compact: true
   summary_model: "qwen3:4b"
+
+# Agent Behavior
+agent:
+  # Tool handling: "auto" (default), "native", "prompt", "off"
+  tool_mode: "auto"
+  # Auto-run tools for time/weather/current info when detected
+  auto_tools: true
+  auto_current_info: true
+  auto_weather: true
+  auto_time: true
+  auto_calculate: true
+  # Skip tool-capable loop when tools are unlikely
+  fast_no_tools: true
+  # Timeouts (seconds)
+  timeouts:
+    default: 120
+    reasoning: 300
 
 # Memory Settings
 memory:
@@ -59,6 +82,20 @@ integrations:
   notion:
     enabled: false
     # API key loaded from NOTION_API_KEY env var
+
+# Provider Credentials (optional; env vars still supported)
+providers:
+  openai:
+    api_key: null
+    access_token: null
+    base_url: null
+  anthropic:
+    api_key: null
+    access_token: null
+    base_url: null
+  ollama_cloud:
+    base_url: null
+    api_key: null
 
 # Safety Settings
 safety:

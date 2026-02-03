@@ -113,6 +113,11 @@ export function useWebSocket() {
         setModel(data.model || '')
         break
 
+      case 'provider_changed':
+        setProvider(data.provider || '')
+        setModel(data.model || '')
+        break
+
       case 'rag_status':
         if (data.rag) {
           setRagStatus(data.rag)
@@ -143,6 +148,11 @@ export function useWebSocket() {
     ws.current.send(JSON.stringify({ type: 'switch_model', model: newModel }))
   }, [])
 
+  const switchProvider = useCallback((newProvider: string) => {
+    if (!ws.current || ws.current.readyState !== WebSocket.OPEN) return
+    ws.current.send(JSON.stringify({ type: 'switch_provider', provider: newProvider }))
+  }, [])
+
   const clear = useCallback(() => {
     if (!ws.current || ws.current.readyState !== WebSocket.OPEN) return
     ws.current.send(JSON.stringify({ type: 'clear' }))
@@ -159,6 +169,7 @@ export function useWebSocket() {
     ragStatus,
     send,
     switchModel,
+    switchProvider,
     clear,
   }
 }
