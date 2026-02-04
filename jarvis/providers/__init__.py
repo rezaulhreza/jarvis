@@ -6,6 +6,7 @@ Supported:
 - Anthropic (Claude)
 - OpenAI (GPT)
 - Google (Gemini)
+- Chutes (OpenAI-compatible with various models)
 """
 
 from .base import BaseProvider, Message
@@ -14,6 +15,7 @@ from .anthropic import AnthropicProvider
 from .openai import OpenAIProvider
 from .gemini import GeminiProvider
 from .ollama_cloud import OllamaCloudProvider
+from .chutes import ChutesProvider
 
 PROVIDERS = {
     "ollama": OllamaProvider,
@@ -21,6 +23,7 @@ PROVIDERS = {
     "anthropic": AnthropicProvider,
     "openai": OpenAIProvider,
     "gemini": GeminiProvider,
+    "chutes": ChutesProvider,
 }
 
 
@@ -44,6 +47,7 @@ __all__ = [
     "OpenAIProvider",
     "GeminiProvider",
     "OllamaCloudProvider",
+    "ChutesProvider",
     "get_provider",
     "list_providers",
 ]

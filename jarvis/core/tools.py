@@ -1076,6 +1076,20 @@ def web_search(query: str, max_results: int = 5) -> str:
     import httpx
 
     today = datetime.now()
+    current_year = today.year
+
+    # Add date-awareness for current events queries
+    # This helps get fresh results for time-sensitive queries
+    current_keywords = [
+        'president', 'current', 'now', 'today', 'latest', 'recent',
+        'prime minister', 'ceo', 'leader', 'chairman', 'governor',
+        'price', 'rate', 'stock', 'market', 'breaking', 'news'
+    ]
+    query_lower = query.lower()
+    if any(kw in query_lower for kw in current_keywords):
+        # Add current year if not already present
+        if str(current_year) not in query and str(current_year - 1) not in query:
+            query = f"{query} {current_year}"
 
     # === BRAVE SEARCH (Primary) ===
     brave_key = os.getenv("BRAVE_API_KEY")
@@ -1114,7 +1128,8 @@ def web_search(query: str, max_results: int = 5) -> str:
             elif resp.status_code == 429:
                 print("[web_search] Brave API: Rate limited")
             else:
-                print(f"[web_search] Brave API error: {resp.status_code} - {resp.text[:200]}")
+                error_text = str(resp.text or "")[:200] if resp.text else ""
+                print(f"[web_search] Brave API error: {resp.status_code} - {error_text}")
         except Exception as e:
             print(f"[web_search] Brave Search failed: {e}")
 

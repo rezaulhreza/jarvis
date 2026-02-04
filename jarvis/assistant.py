@@ -18,6 +18,8 @@ from .core.context_manager import ContextManager
 from .core.agent import Agent
 from .core.tools import set_project_root, clear_read_files
 from .ui.terminal import TerminalUI
+from .knowledge.rag import get_rag_engine
+from .core.fact_extractor import get_fact_extractor
 from . import get_data_dir, ensure_data_dir, PACKAGE_DIR
 
 load_dotenv()
@@ -195,6 +197,7 @@ class Jarvis:
             "anthropic": "claude-opus-4-5",
             "openai": "gpt-5.2-codex",
             "gemini": "gemini-2.5-flash",
+            "chutes": "Qwen/Qwen3-32B",
         }
         # For Ollama, use configured model or auto-detect; for others, use defaults
         model = self.config.get("models", {}).get(provider_name)
@@ -203,7 +206,7 @@ class Jarvis:
 
         try:
             provider_kwargs = {"model": model}
-            if provider_name in ["openai", "anthropic"]:
+            if provider_name in ["openai", "anthropic", "chutes"]:
                 api_key = provider_cfg.get("api_key") or provider_cfg.get("access_token")
                 if api_key:
                     provider_kwargs["api_key"] = api_key
@@ -259,6 +262,13 @@ class Jarvis:
             ui=self.ui,
             config=self.config
         )
+
+        # Initialize RAG engine for knowledge retrieval
+        try:
+            self.rag = get_rag_engine(self.config)
+        except Exception as e:
+            self.ui.print_warning(f"RAG initialization failed: {e}")
+            self.rag = None
 
         self._build_system_prompt()
 
@@ -321,7 +331,85 @@ class Jarvis:
             lines.append("")
             lines.append("NOTE: No JARVIS.md found. User can run /init to create one with project instructions.")
 
-        self.system_prompt = "\n".join(lines)
+        # Inject user context (facts, preferences)
+        self.base_system_prompt = "\n".join(lines)
+        self.system_prompt = self._inject_user_context(self.base_system_prompt)
+
+    def _inject_user_context(self, system_prompt: str) -> str:
+        """Add user context (facts, entities) to system prompt."""
+        context_parts = []
+
+        # Load learned facts about the user
+        memory_cfg = self.config.get("memory", {})
+        facts_file = memory_cfg.get("facts_file", "memory/facts.md")
+
+        # Try multiple locations for facts file
+        facts_paths = [
+            get_data_dir() / "memory" / "facts.md",
+            Path(facts_file) if Path(facts_file).is_absolute() else get_data_dir() / facts_file,
+        ]
+
+        for facts_path in facts_paths:
+            if facts_path.exists():
+                try:
+                    facts_content = facts_path.read_text()
+                    # Extract learned section if it exists
+                    if "## Learned" in facts_content:
+                        learned_section = facts_content.split("## Learned", 1)[1]
+                        # Get first 1500 chars of learned facts
+                        learned = learned_section.strip()[:1500]
+                        if learned:
+                            context_parts.append(f"## Known Facts About User:\n{learned}")
+                    elif facts_content.strip():
+                        # Use whole file if no Learned section
+                        context_parts.append(f"## Known Facts About User:\n{facts_content[:1500]}")
+                    break
+                except Exception:
+                    pass
+
+        # Load user profile from config
+        user_cfg = self.config.get("user", {})
+        if user_cfg.get("name"):
+            context_parts.append(f"User's name: {user_cfg['name']}")
+
+        if context_parts:
+            return system_prompt + "\n\n=== USER CONTEXT ===\n" + "\n".join(context_parts)
+        return system_prompt
+
+    def _get_rag_context(self, query: str) -> str:
+        """Retrieve relevant context from knowledge base."""
+        if not self.rag:
+            return ""
+
+        try:
+            # Check if knowledge base has content
+            if self.rag.count() == 0:
+                return ""
+
+            # Use RAG engine's get_context method (includes prompt injection hardening)
+            context = self.rag.get_context(query, n_results=3, max_tokens=1500)
+            return context
+        except Exception as e:
+            print(f"[RAG] Error retrieving context: {e}")
+            return ""
+
+    def _extract_facts_from_conversation(self, user_message: str, assistant_response: str):
+        """Extract and save facts from conversation (async-friendly, lightweight)."""
+        try:
+            # Only extract facts periodically (every 5 messages) to reduce overhead
+            msg_count = len(self.context.get_messages())
+            if msg_count % 5 != 0:
+                return
+
+            extractor = get_fact_extractor()
+            messages = [
+                {"role": "user", "content": user_message},
+                {"role": "assistant", "content": assistant_response}
+            ]
+            # This requires an LLM call, so only do it periodically
+            extractor.process_conversation(messages, self.provider)
+        except Exception as e:
+            print(f"[FactExtractor] Error: {e}")
 
     def process(self, user_input: str) -> str:
         """Process user input."""
@@ -351,8 +439,16 @@ class Jarvis:
         self.ui.console.print()  # Blank line before response
 
         try:
+            # Get RAG context for this query
+            rag_context = self._get_rag_context(user_input)
+
+            # Build enhanced system prompt with RAG context
+            enhanced_prompt = self.system_prompt
+            if rag_context:
+                enhanced_prompt = self.system_prompt + "\n\n" + rag_context
+
             # Run agent (shows spinner and tool calls internally)
-            response = self.agent.run(user_input, self.system_prompt, history)
+            response = self.agent.run(user_input, enhanced_prompt, history)
 
             # Print response
             if response:
@@ -365,6 +461,9 @@ class Jarvis:
                 clean = clean.replace("[red]", "").replace("[/red]", "")
                 if clean.strip() and clean.strip() not in ["Stopped", "No response"]:
                     self.context.add_message("assistant", clean.strip())
+
+                    # Extract facts from conversation (periodically)
+                    self._extract_facts_from_conversation(user_input, clean.strip())
 
             self.ui.is_streaming = False
             return response
@@ -379,6 +478,7 @@ class Jarvis:
             "anthropic": "claude-opus-4-5",
             "openai": "gpt-5.2-codex",
             "gemini": "gemini-2.5-flash",
+            "chutes": "Qwen/Qwen3-32B",
         }
         provider_cfg = (self.config.get("providers", {}) or {}).get(name, {})
         # For non-Ollama providers, use defaults if no model specified
@@ -387,7 +487,7 @@ class Jarvis:
 
         try:
             provider_kwargs = {"model": model}
-            if name in ["openai", "anthropic"]:
+            if name in ["openai", "anthropic", "chutes"]:
                 api_key = provider_cfg.get("api_key") or provider_cfg.get("access_token")
                 if api_key:
                     provider_kwargs["api_key"] = api_key

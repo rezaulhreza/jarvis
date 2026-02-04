@@ -102,6 +102,15 @@ providers:
   ollama_cloud:
     base_url: null
     api_key: null
+  chutes:
+    api_key: null  # Set CHUTES_API_KEY env var or provide here
+    base_url: null  # Default: https://llm.chutes.ai/v1
+    models:
+      default: "Qwen/Qwen3-32B"
+      reasoning: "deepseek-ai/DeepSeek-V3"
+      vision: "Qwen/Qwen2.5-VL-72B-Instruct"
+      code: "Qwen/Qwen2.5-Coder-32B-Instruct"
+      fast: "unsloth/gemma-3-4b-it"
 
 # Safety Settings
 safety:

@@ -2,6 +2,7 @@
 Agentic loop with tool calling.
 
 Supports both native tool calling and prompt-based fallback.
+Integrates RAG for knowledge retrieval.
 """
 
 import re
@@ -63,6 +64,43 @@ class Agent:
         if reasoning_model and reasoning_model in (self.provider.model or ""):
             return reasoning_timeout
         return default_timeout
+
+    def _requires_full_agent(self, user_message: str) -> bool:
+        """Check if this query requires full agent capabilities (file ops, git, etc.)."""
+        if not user_message:
+            return False
+
+        msg = user_message.lower()
+
+        # File/code operations that need agent mode
+        file_ops = [
+            "read file", "open file", "show file", "cat ", "edit ", "modify ",
+            "write ", "create file", "save to", "update file", "change file",
+            "refactor", "fix bug", "debug", "traceback", "stack trace",
+            "in the file", "in file", "this file", "that file"
+        ]
+        if any(op in msg for op in file_ops):
+            return True
+
+        # Git operations
+        git_ops = [
+            "git ", "commit", "push", "pull", "branch", "merge", "rebase",
+            "stash", "checkout", "git diff", "git status", "git log"
+        ]
+        if any(op in msg for op in git_ops):
+            return True
+
+        # Shell commands
+        shell_ops = ["run command", "execute", "npm ", "pip ", "python ", "node "]
+        if any(op in msg for op in shell_ops):
+            return True
+
+        # Explicit file paths
+        import re
+        if re.search(r'\.(py|js|ts|tsx|jsx|go|rs|java|cpp|c|rb|php|yaml|yml|json|md|txt)\b', msg):
+            return True
+
+        return False
 
     def _likely_needs_tools(self, user_message: str) -> bool:
         """Heuristic to decide if tools are likely needed for this request."""
@@ -278,61 +316,74 @@ class Agent:
 
     def _get_tools_prompt(self) -> str:
         """Get prompt describing available tools for non-native models."""
-        return """
-You have access to tools. To use a tool, respond with JSON:
-{"tool": "tool_name", "param": "value"}
+        return '''
+You have access to tools. When you need to use a tool, output ONLY a valid JSON object.
+
+IMPORTANT FORMATTING RULES:
+1. Output ONLY the JSON object, nothing before or after
+2. Do NOT wrap in markdown code blocks (no ```json)
+3. Use exact parameter names shown in examples
+4. All string values must be in double quotes
+
+EXAMPLE - Read a file:
+{"tool": "read_file", "path": "src/main.py"}
+
+EXAMPLE - Search the web:
+{"tool": "web_search", "query": "current gold price USD"}
+
+EXAMPLE - Get weather:
+{"tool": "get_weather", "city": "London"}
 
 AVAILABLE TOOLS:
 
 FILES:
-- {"tool": "read_file", "path": "path/to/file"}
-- {"tool": "search_files", "query": "pattern", "file_type": "py"}
-- {"tool": "list_files", "path": "dir", "pattern": "*.py"}
-- {"tool": "glob_files", "pattern": "**/*.py", "path": "src"}
-- {"tool": "grep", "pattern": "regex", "file_type": "py", "context": 2}
-- {"tool": "get_project_structure"}
-- {"tool": "write_file", "path": "file", "content": "content"}
-- {"tool": "edit_file", "path": "file", "old_string": "find", "new_string": "replace", "replace_all": false}
+  read_file       - {"tool": "read_file", "path": "path/to/file"}
+  search_files    - {"tool": "search_files", "query": "pattern", "file_type": "py"}
+  list_files      - {"tool": "list_files", "path": "dir", "pattern": "*.py"}
+  glob_files      - {"tool": "glob_files", "pattern": "**/*.py", "path": "src"}
+  grep            - {"tool": "grep", "pattern": "regex", "file_type": "py"}
+  write_file      - {"tool": "write_file", "path": "file", "content": "content"}
+  edit_file       - {"tool": "edit_file", "path": "file", "old_string": "find", "new_string": "replace"}
+  get_project_structure - {"tool": "get_project_structure"}
 
 GIT:
-- {"tool": "git_status"}
-- {"tool": "git_diff", "staged": false, "file": "optional/path"}
-- {"tool": "git_log", "count": 10}
-- {"tool": "git_add", "files": "file1.py file2.py"}
-- {"tool": "git_commit", "message": "commit message", "files": "optional files"}
-- {"tool": "git_branch", "name": "branch-name", "create": false, "switch": false}
-- {"tool": "git_stash", "action": "push", "message": "optional message"}
+  git_status      - {"tool": "git_status"}
+  git_diff        - {"tool": "git_diff", "staged": false}
+  git_log         - {"tool": "git_log", "count": 10}
+  git_add         - {"tool": "git_add", "files": "file1.py file2.py"}
+  git_commit      - {"tool": "git_commit", "message": "commit message"}
+  git_branch      - {"tool": "git_branch", "name": "branch-name", "create": true}
+  git_stash       - {"tool": "git_stash", "action": "push"}
 
 WEB & INFO:
-- {"tool": "web_search", "query": "search query"}
-- {"tool": "web_fetch", "url": "https://example.com"}
-- {"tool": "get_current_news", "topic": "topic"}
-- {"tool": "get_gold_price", "currency": "USD"}
-- {"tool": "get_weather", "city": "London"}
-- {"tool": "get_current_time", "timezone": "UTC"}
+  web_search      - {"tool": "web_search", "query": "search query"}
+  web_fetch       - {"tool": "web_fetch", "url": "https://example.com"}
+  get_current_news - {"tool": "get_current_news", "topic": "topic"}
+  get_gold_price  - {"tool": "get_gold_price", "currency": "USD"}
+  get_weather     - {"tool": "get_weather", "city": "London"}
+  get_current_time - {"tool": "get_current_time", "timezone": "UTC"}
 
 UTILITIES:
-- {"tool": "calculate", "expression": "2 + 2"}
-- {"tool": "run_command", "command": "npm test"}
-- {"tool": "github_search", "query": "term", "search_type": "repos"}
+  calculate       - {"tool": "calculate", "expression": "2 + 2"}
+  run_command     - {"tool": "run_command", "command": "npm test"}
+  github_search   - {"tool": "github_search", "query": "term", "search_type": "repos"}
 
 MEMORY:
-- {"tool": "save_memory", "content": "info to remember", "category": "general"}
-- {"tool": "recall_memory", "query": "search term"}
+  save_memory     - {"tool": "save_memory", "content": "info", "category": "general"}
+  recall_memory   - {"tool": "recall_memory", "query": "search term"}
 
 TASKS:
-- {"tool": "task_create", "subject": "Task title", "description": "details"}
-- {"tool": "task_update", "task_id": "1", "status": "completed"}
-- {"tool": "task_list"}
-- {"tool": "task_get", "task_id": "1"}
+  task_create     - {"tool": "task_create", "subject": "Title", "description": "details"}
+  task_update     - {"tool": "task_update", "task_id": "1", "status": "completed"}
+  task_list       - {"tool": "task_list"}
+  task_get        - {"tool": "task_get", "task_id": "1"}
 
 RULES:
-1. For current events/news/prices: USE web_search with specific query
+1. For current events/news/prices: USE web_search
 2. For code questions: read_file FIRST, never guess
 3. For writing files: USE write_file or edit_file
-4. For git operations: USE git_status, git_diff, git_commit, etc.
-5. Output ONLY the JSON when calling a tool
-"""
+4. Output ONLY valid JSON when calling a tool - no explanation before/after
+'''
 
     def _parse_tool_call_from_text(self, text: str) -> tuple:
         """Try to extract a tool call from model's text output."""
@@ -536,8 +587,64 @@ RULES:
 
         return f"{tool_name}()"
 
+    def _validate_tool_call(self, tool_name: str, args: dict) -> tuple[bool, str]:
+        """Validate tool call before execution."""
+        # Schema for required parameters and types
+        tool_schemas = {
+            "read_file": {"required": ["path"], "types": {"path": str}},
+            "write_file": {"required": ["path", "content"], "types": {"path": str, "content": str}},
+            "edit_file": {"required": ["path", "old_string", "new_string"], "types": {"path": str}},
+            "search_files": {"required": ["query"], "types": {"query": str}},
+            "list_files": {"required": [], "types": {"path": str, "pattern": str}},
+            "glob_files": {"required": ["pattern"], "types": {"pattern": str}},
+            "grep": {"required": ["pattern"], "types": {"pattern": str}},
+            "web_search": {"required": ["query"], "types": {"query": str}},
+            "web_fetch": {"required": ["url"], "types": {"url": str}},
+            "get_weather": {"required": ["city"], "types": {"city": str}},
+            "get_current_time": {"required": [], "types": {"timezone": str}},
+            "get_current_news": {"required": ["topic"], "types": {"topic": str}},
+            "get_gold_price": {"required": [], "types": {"currency": str}},
+            "calculate": {"required": ["expression"], "types": {"expression": str}},
+            "run_command": {"required": ["command"], "types": {"command": str}},
+            "git_commit": {"required": ["message"], "types": {"message": str}},
+            "git_add": {"required": ["files"], "types": {"files": str}},
+            "save_memory": {"required": ["content"], "types": {"content": str}},
+            "recall_memory": {"required": [], "types": {"query": str}},
+            "task_create": {"required": ["subject"], "types": {"subject": str}},
+            "task_update": {"required": ["task_id"], "types": {"task_id": str}},
+            "task_get": {"required": ["task_id"], "types": {"task_id": str}},
+            "github_search": {"required": ["query"], "types": {"query": str}},
+        }
+
+        schema = tool_schemas.get(tool_name)
+        if not schema:
+            return True, ""  # Unknown tool, let it try
+
+        # Check required parameters
+        for param in schema.get("required", []):
+            if param not in args or args[param] is None:
+                return False, f"Missing required parameter: {param}"
+
+        # Check types (basic validation)
+        for param, expected_type in schema.get("types", {}).items():
+            if param in args and args[param] is not None:
+                if not isinstance(args[param], expected_type):
+                    # Try to coerce
+                    try:
+                        args[param] = expected_type(args[param])
+                    except (ValueError, TypeError):
+                        return False, f"Parameter {param} should be {expected_type.__name__}"
+
+        return True, ""
+
     def _execute_tool(self, tool_name: str, args: dict) -> str:
         """Execute a tool by name."""
+        # Validate tool call
+        valid, error = self._validate_tool_call(tool_name, args or {})
+        if not valid:
+            print(f"[TOOL] Validation failed for {tool_name}: {error}")
+            return f"Error: {error}"
+
         # Log tool call
         args_str = ", ".join(f"{k}={repr(v)[:50]}" for k, v in (args or {}).items())
         print(f"[TOOL] Calling: {tool_name}({args_str})")

@@ -13,11 +13,29 @@ class OllamaProvider(BaseProvider):
     supports_vision = True
     supports_tools = True
 
-    # Models that support tool calling well
-    TOOL_MODELS = [
-        "qwen3", "qwen2.5", "llama3", "mistral", "functiongemma",
-        "gpt-oss", "granite4", "glm-4", "glm4",
-    ]
+    # Model capability mapping for tool calling reliability
+    # format: "native" = use Ollama's native tool calling
+    #         "prompt" = use prompt-based JSON tool calling (more reliable for some models)
+    TOOL_CAPABLE_MODELS = {
+        # High reliability - native tools work well
+        "qwen3": {"reliability": "high", "format": "native"},
+        "qwen2.5": {"reliability": "high", "format": "native"},
+        "llama3.2": {"reliability": "high", "format": "native"},
+        "llama3.1": {"reliability": "medium", "format": "native"},
+        "mistral": {"reliability": "medium", "format": "native"},
+        "functiongemma": {"reliability": "high", "format": "native"},
+        "granite4": {"reliability": "medium", "format": "native"},
+        "glm-4": {"reliability": "medium", "format": "native"},
+        "glm4": {"reliability": "medium", "format": "native"},
+
+        # Low reliability - prefer prompt-based
+        "deepseek-r1": {"reliability": "low", "format": "prompt"},
+        "qwq": {"reliability": "low", "format": "prompt"},
+        "gpt-oss": {"reliability": "medium", "format": "native"},
+
+        # Vision models - typically don't support tools well
+        "llava": {"reliability": "low", "format": "prompt"},
+    }
 
     # Reasoning models that need longer timeouts
     REASONING_MODELS = ["gpt-oss", "deepseek-r1", "qwq", "o1", "o3"]
@@ -46,6 +64,35 @@ class OllamaProvider(BaseProvider):
             )
         except ImportError:
             raise ImportError("ollama package required: pip install ollama")
+
+    def _should_use_native_tools(self) -> bool:
+        """Check if current model reliably supports native tool calling."""
+        if not self.model:
+            return False
+
+        model_base = self.model.split(":")[0].lower()
+
+        # Check against known models
+        for name, info in self.TOOL_CAPABLE_MODELS.items():
+            if name in model_base:
+                # Use native tools only if format is "native" and reliability isn't "low"
+                return info["format"] == "native" and info["reliability"] != "low"
+
+        # Default: try native tools for unknown models (let Ollama handle it)
+        return True
+
+    def get_tool_reliability(self) -> str:
+        """Get the tool calling reliability rating for the current model."""
+        if not self.model:
+            return "unknown"
+
+        model_base = self.model.split(":")[0].lower()
+
+        for name, info in self.TOOL_CAPABLE_MODELS.items():
+            if name in model_base:
+                return info["reliability"]
+
+        return "unknown"
 
     def _convert_tools_to_ollama(self, tools: List[Callable]) -> List[dict]:
         """Convert Python functions to Ollama tool format."""
