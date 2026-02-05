@@ -5,6 +5,14 @@ interface Message {
   content: string
   timestamp: Date
   tools?: ToolEvent[]
+  media?: MediaInfo
+}
+
+interface MediaInfo {
+  type: 'image' | 'video' | 'audio'
+  path: string
+  filename: string
+  url?: string
 }
 
 interface RagInfo {
@@ -47,6 +55,10 @@ interface WSMessage {
   reasoning_level?: string
   mode?: string
   context?: ContextStats
+  // Media generation fields
+  media_type?: 'image' | 'video' | 'audio'
+  path?: string
+  filename?: string
 }
 
 interface ToolEvent {
@@ -64,6 +76,7 @@ export function useWebSocket() {
   const [connected, setConnected] = useState(false)
   const [messages, setMessages] = useState<Message[]>([])
   const [streaming, setStreaming] = useState('')
+  const [streamingThinking, setStreamingThinking] = useState('')
   const [isLoading, setIsLoading] = useState(false)
   const [model, setModel] = useState('')
   const [provider, setProvider] = useState('')
@@ -74,6 +87,8 @@ export function useWebSocket() {
   const [contextStats, setContextStats] = useState<ContextStats | null>(null)
   // pendingTools is used via setPendingTools callback form, not directly referenced
   const [, setPendingTools] = useState<ToolEvent[]>([])
+  const thinkingStartRef = useRef<number | null>(null)
+  const isInsideThinkingRef = useRef(false)  // Track if currently inside <think> block
 
   useEffect(() => {
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null
@@ -125,8 +140,65 @@ export function useWebSocket() {
         setProject(data.project || '')
         break
 
+      case 'thinking':
+        // Dedicated thinking stream from backend
+        if (!thinkingStartRef.current) {
+          thinkingStartRef.current = Date.now()
+        }
+        setStreamingThinking((prev) => prev + (data.content || ''))
+        setIsLoading(false)
+        break
+
       case 'stream':
-        setStreaming((prev) => prev + (data.content || ''))
+        // Parse and separate thinking from response content using state tracking
+        let chunk = data.content || ''
+        let thinkingContent = ''
+        let responseContent = ''
+
+        // Process character by character to handle tag boundaries
+        while (chunk.length > 0) {
+          if (isInsideThinkingRef.current) {
+            // Currently inside thinking block - look for closing tag
+            const closeMatch = chunk.match(/<\/think(?:ing)?>/i)
+            if (closeMatch) {
+              // Found closing tag
+              const closeIdx = closeMatch.index!
+              thinkingContent += chunk.slice(0, closeIdx)
+              chunk = chunk.slice(closeIdx + closeMatch[0].length)
+              isInsideThinkingRef.current = false
+            } else {
+              // No closing tag - all content is thinking
+              thinkingContent += chunk
+              chunk = ''
+            }
+          } else {
+            // Outside thinking block - look for opening tag
+            const openMatch = chunk.match(/<think(?:ing)?>/i)
+            if (openMatch) {
+              // Found opening tag
+              const openIdx = openMatch.index!
+              responseContent += chunk.slice(0, openIdx)
+              chunk = chunk.slice(openIdx + openMatch[0].length)
+              isInsideThinkingRef.current = true
+              // Start timer when thinking begins
+              if (!thinkingStartRef.current) {
+                thinkingStartRef.current = Date.now()
+              }
+            } else {
+              // No opening tag - all content is response
+              responseContent += chunk
+              chunk = ''
+            }
+          }
+        }
+
+        // Update states
+        if (thinkingContent) {
+          setStreamingThinking((prev) => prev + thinkingContent)
+        }
+        if (responseContent) {
+          setStreaming((prev) => prev + responseContent)
+        }
         setIsLoading(false)
         break
 
@@ -136,31 +208,68 @@ export function useWebSocket() {
           if (data.context) {
             setContextStats(data.context)
           }
+
+          // Calculate thinking duration
+          const thinkingDuration = thinkingStartRef.current
+            ? (Date.now() - thinkingStartRef.current) / 1000
+            : undefined
+          thinkingStartRef.current = null
+          isInsideThinkingRef.current = false  // Reset for next message
+
           // Add message with content from response or accumulated streaming
           setStreaming((currentStreaming) => {
-            const finalContent = data.content || currentStreaming
-            if (finalContent) {
-              // Get pending tools and add message
-              setPendingTools((currentTools) => {
-                setMessages((prev) => {
-                  // Prevent duplicate messages
-                  const lastMsg = prev[prev.length - 1]
-                  if (lastMsg?.role === 'assistant' && lastMsg?.content === finalContent) {
-                    return prev  // Skip duplicate
-                  }
-                  return [
-                    ...prev,
-                    {
-                      role: 'assistant',
-                      content: finalContent,
-                      timestamp: new Date(),
-                      tools: currentTools.length ? currentTools : undefined
+            setStreamingThinking((currentThinking) => {
+              // Prefer already-parsed streamed content over data.content
+              let finalContent = currentStreaming || ''
+              let finalThinking = currentThinking?.trim() || ''
+
+              // If we have no streamed content, fall back to data.content and extract thinking
+              if (!finalContent && data.content) {
+                // Extract thinking from data.content first
+                const thinkMatch = data.content.match(/<think(?:ing)?>([\s\S]*?)<\/think(?:ing)?>/i)
+                if (thinkMatch && !finalThinking) {
+                  finalThinking = thinkMatch[1].trim()
+                }
+                // Use data.content as fallback
+                finalContent = data.content
+              }
+
+              // Clean any remaining thinking tags from final content
+              if (finalContent) {
+                finalContent = finalContent.replace(/<think(?:ing)?>([\s\S]*?)<\/think(?:ing)?>/gi, '')
+                finalContent = finalContent.replace(/<\/?think(ing)?>/gi, '')
+                finalContent = finalContent.trim()
+              }
+
+              // Convert empty string to undefined for thinking
+              const thinkingValue = finalThinking || undefined
+
+              if (finalContent || thinkingValue) {
+                // Get pending tools and add message
+                setPendingTools((currentTools) => {
+                  setMessages((prev) => {
+                    // Prevent duplicate messages
+                    const lastMsg = prev[prev.length - 1]
+                    if (lastMsg?.role === 'assistant' && lastMsg?.content === finalContent) {
+                      return prev  // Skip duplicate
                     }
-                  ]
+                    return [
+                      ...prev,
+                      {
+                        role: 'assistant',
+                        content: finalContent || '',
+                        timestamp: new Date(),
+                        tools: currentTools.length ? currentTools : undefined,
+                        thinking: thinkingValue,
+                        thinkingDuration
+                      }
+                    ]
+                  })
+                  return []  // Clear pending tools
                 })
-                return []  // Clear pending tools
-              })
-            }
+              }
+              return ''  // Clear streaming thinking
+            })
             return ''  // Clear streaming
           })
         }
@@ -207,23 +316,53 @@ export function useWebSocket() {
         }
         break
 
+      case 'media':
+        // Handle generated media (image, video, audio)
+        if (data.media_type && data.path) {
+          const mediaInfo: MediaInfo = {
+            type: data.media_type as 'image' | 'video' | 'audio',
+            path: data.path,
+            filename: data.filename || '',
+            url: `/api/generated/${data.filename || ''}`
+          }
+          // Add media message
+          setMessages((prev) => [...prev, {
+            role: 'assistant',
+            content: '',
+            timestamp: new Date(),
+            media: mediaInfo
+          }])
+        }
+        break
+
+      case 'status':
+        // Status updates during long operations (e.g., "Generating image...")
+        // Could show as a toast or status indicator
+        break
+
       case 'cleared':
         setMessages([])
         setStreaming('')
+        setStreamingThinking('')
         setRagStatus(null)
         setToolTimeline([])
         setIntentInfo(null)
         setContextStats(null)
+        thinkingStartRef.current = null
+        isInsideThinkingRef.current = false
         break
     }
   }
 
-  const send = useCallback((content: string, chatMode: boolean = true, reasoningLevel: string | null = null) => {
+  const send = useCallback((content: string, chatMode: boolean = true, reasoningLevel: string | null = null, attachments: string[] = []) => {
     if (!ws.current || ws.current.readyState !== WebSocket.OPEN) return
 
     setMessages((prev) => [...prev, { role: 'user', content, timestamp: new Date() }])
     setIsLoading(true)
     setStreaming('')
+    setStreamingThinking('')
+    thinkingStartRef.current = null
+    isInsideThinkingRef.current = false  // Reset thinking state
     setRagStatus(null)  // Reset RAG status for new query
     setToolTimeline([])
     setPendingTools([])
@@ -238,6 +377,11 @@ export function useWebSocket() {
     // Add reasoning level if user specified an override
     if (reasoningLevel) {
       message.reasoning_level = reasoningLevel
+    }
+
+    // Add file attachments if present
+    if (attachments && attachments.length > 0) {
+      message.attachments = attachments
     }
 
     ws.current.send(JSON.stringify(message))
@@ -262,6 +406,7 @@ export function useWebSocket() {
     connected,
     messages,
     streaming,
+    streamingThinking,
     isLoading,
     model,
     provider,

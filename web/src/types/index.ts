@@ -11,11 +11,21 @@ export interface ToolEvent {
   success?: boolean
 }
 
+export interface MediaInfo {
+  type: 'image' | 'video' | 'audio'
+  path: string
+  filename: string
+  url?: string
+}
+
 export interface Message {
   role: 'user' | 'assistant' | 'system'
   content: string
   timestamp: Date
   tools?: ToolEvent[]
+  media?: MediaInfo
+  thinking?: string
+  thinkingDuration?: number
 }
 
 // === RAG Types ===

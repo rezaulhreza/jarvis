@@ -663,7 +663,12 @@ def create_app() -> FastAPI:
         mime_type = file.content_type or mimetypes.guess_type(file.filename)[0] or "application/octet-stream"
 
         # Validate file type
-        allowed_prefixes = ("image/", "video/", "audio/", "text/", "application/pdf", "application/json")
+        allowed_prefixes = (
+            "image/", "video/", "audio/", "text/",
+            "application/pdf", "application/json",
+            "application/vnd.openxmlformats-officedocument",  # .docx, .xlsx
+            "application/msword", "application/vnd.ms-excel",  # .doc, .xls
+        )
         if not any(mime_type.startswith(p) for p in allowed_prefixes):
             return {"error": f"File type {mime_type} not supported"}
 
@@ -700,6 +705,41 @@ def create_app() -> FastAPI:
             if f.stem == file_id:
                 return FileResponse(f)
         return {"error": "File not found"}, 404
+
+    # ============== Generated Media API ==============
+
+    @app.get("/api/generated/{filename}")
+    async def get_generated_media(filename: str):
+        """Get a generated media file (image, video, audio)."""
+        from jarvis import get_data_dir
+        generated_dir = get_data_dir() / "generated"
+
+        # Security: only allow files from generated directory
+        file_path = generated_dir / filename
+        if file_path.exists() and file_path.parent == generated_dir:
+            return FileResponse(file_path)
+        return JSONResponse({"error": "File not found"}, status_code=404)
+
+    @app.get("/api/generated")
+    async def list_generated_media():
+        """List all generated media files."""
+        from jarvis import get_data_dir
+        generated_dir = get_data_dir() / "generated"
+
+        if not generated_dir.exists():
+            return {"files": []}
+
+        files = []
+        for f in sorted(generated_dir.iterdir(), key=lambda x: x.stat().st_mtime, reverse=True):
+            if f.is_file():
+                files.append({
+                    "name": f.name,
+                    "type": _get_file_type(f),
+                    "size": f.stat().st_size,
+                    "url": f"/api/generated/{f.name}"
+                })
+
+        return {"files": files[:50]}  # Last 50 files
 
     # ============== System Prompt API ==============
 
@@ -2435,8 +2475,9 @@ Analyze queries using multiple AI models simultaneously.
                     user_input = data.get("content", "").strip()
                     chat_mode = data.get("chat_mode", False)
                     reasoning_level = data.get("reasoning_level")  # User override: "fast", "balanced", "deep"
-                    if user_input:
-                        await process_message(websocket, jarvis, user_input, chat_mode, reasoning_level)
+                    attachments = data.get("attachments", [])  # File attachment IDs
+                    if user_input or attachments:
+                        await process_message(websocket, jarvis, user_input, chat_mode, reasoning_level, attachments)
 
                 elif msg_type == "switch_model":
                     model = data.get("model")
@@ -2478,7 +2519,11 @@ Analyze queries using multiple AI models simultaneously.
         except WebSocketDisconnect:
             pass
         except Exception as e:
-            await websocket.send_json({"type": "error", "message": str(e)})
+            # Try to send error, but don't fail if connection is already closed
+            try:
+                await websocket.send_json({"type": "error", "message": str(e)})
+            except Exception:
+                pass
         finally:
             connections.pop(session_id, None)
             instances.pop(session_id, None)
@@ -2492,15 +2537,45 @@ Analyze queries using multiple AI models simultaneously.
             pass
         return None
 
+    def _get_file_type(path: Path) -> str:
+        """Get file type from path."""
+        suffix = path.suffix.lower()
+        if suffix in ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp']:
+            return 'image'
+        if suffix in ['.mp4', '.webm', '.mov', '.avi']:
+            return 'video'
+        if suffix in ['.mp3', '.wav', '.ogg', '.m4a']:
+            return 'audio'
+        if suffix in ['.pdf']:
+            return 'document'
+        if suffix in ['.docx', '.doc']:
+            return 'document'
+        if suffix in ['.xlsx', '.xls', '.csv']:
+            return 'document'
+        if suffix in ['.txt', '.md', '.json', '.yaml', '.yml']:
+            return 'document'
+        return 'file'
+
     def _clean_for_web(text: str, streaming: bool = False) -> str:
         if not text:
             return ""
         import re
         cleaned = text
 
-        # Remove <think>...</think> and <thinking>...</thinking> tags
-        cleaned = re.sub(r'<think>.*?</think>', '', cleaned, flags=re.DOTALL | re.IGNORECASE)
-        cleaned = re.sub(r'<thinking>.*?</thinking>', '', cleaned, flags=re.DOTALL | re.IGNORECASE)
+        # During streaming, preserve thinking tags - frontend will parse and display them
+        # Only strip thinking tags for final/non-streaming responses
+        if not streaming:
+            # Remove <think>...</think> and <thinking>...</thinking> tags (complete pairs)
+            cleaned = re.sub(r'<think>.*?</think>', '', cleaned, flags=re.DOTALL | re.IGNORECASE)
+            cleaned = re.sub(r'<thinking>.*?</thinking>', '', cleaned, flags=re.DOTALL | re.IGNORECASE)
+
+            # Remove orphaned opening tags (thinking content continues to end of text)
+            cleaned = re.sub(r'<think>.*$', '', cleaned, flags=re.DOTALL | re.IGNORECASE)
+            cleaned = re.sub(r'<thinking>.*$', '', cleaned, flags=re.DOTALL | re.IGNORECASE)
+
+            # Remove orphaned closing tags (from previous streaming chunks)
+            cleaned = re.sub(r'</think>', '', cleaned, flags=re.IGNORECASE)
+            cleaned = re.sub(r'</thinking>', '', cleaned, flags=re.IGNORECASE)
 
         # Strip rich markup like [dim], [red], [/dim], [bold italic], etc.
         cleaned = re.sub(r'\[/?[a-zA-Z_][a-zA-Z0-9_]*(?:\s[^\]]+)?\]', '', cleaned)
@@ -2803,7 +2878,7 @@ Analyze queries using multiple AI models simultaneously.
             pass
         return None, tool_turn, tool_name_used, tool_result, explicit_search
 
-    async def process_message(websocket: WebSocket, jarvis, user_input: str, chat_mode: bool = False, reasoning_level: str = None):
+    async def process_message(websocket: WebSocket, jarvis, user_input: str, chat_mode: bool = False, reasoning_level: str = None, attachments: list = None):
         """
         Process a message with unified smart routing.
 
@@ -2817,7 +2892,22 @@ Analyze queries using multiple AI models simultaneously.
             user_input: User's message
             chat_mode: Hint for fast mode (auto-detected if not specified)
             reasoning_level: User-specified reasoning level override ("fast", "balanced", "deep")
+            attachments: List of file attachment IDs
         """
+        attachments = attachments or []
+
+        # Resolve attachment paths
+        attachment_files = []
+        for att_id in attachments:
+            for f in UPLOAD_DIR.iterdir():
+                if f.name.startswith(att_id):
+                    attachment_files.append({
+                        "id": att_id,
+                        "path": str(f),
+                        "type": _get_file_type(f),
+                        "name": f.name
+                    })
+                    break
         await websocket.send_json({
             "type": "processing",
             "content": user_input
@@ -2889,7 +2979,265 @@ Analyze queries using multiple AI models simultaneously.
 
                 except Exception as e:
                     print(f"[app] Intent classification error: {e}")
-                    # Fall back to original behavior
+                    # Fall back to original behavior - still respect user override
+                    if reasoning_level:
+                        detected_level = reasoning_level
+
+            # === MULTIMODAL HANDLING ===
+            image_attachments = [a for a in attachment_files if a["type"] == "image"]
+            doc_attachments = [a for a in attachment_files if a["type"] in ["pdf", "document", "file"]]
+
+            # Check if user wants to generate VIDEO from attached image
+            import re
+            video_from_image_patterns = [
+                r'\b(make|create|generate|turn).*(video|animate|animation|move|fly|flying|moving)\b',
+                r'\b(animate|video).*(this|these|it|them)\b',
+                r'\b(make|let).*(fly|move|run|walk|dance|swim)\b',
+            ]
+            wants_video_from_image = any(re.search(p, user_input.lower()) for p in video_from_image_patterns)
+
+            if image_attachments and wants_video_from_image:
+                # User has image + wants video -> generate video from image
+                try:
+                    from jarvis.skills.media_gen import generate_video
+                    img_path = image_attachments[0]["path"]
+
+                    await websocket.send_json({
+                        "type": "status",
+                        "content": "Generating video from image (this may take a few minutes)..."
+                    })
+
+                    result = generate_video(user_input, image_path=img_path)
+                    if result["success"]:
+                        response_text = f"Generated video: {result['filename']}\nSaved to: {result['path']}"
+                        await websocket.send_json({
+                            "type": "media",
+                            "media_type": "video",
+                            "path": result["path"],
+                            "filename": result["filename"]
+                        })
+                    else:
+                        response_text = f"Video generation failed: {result['error']}"
+
+                    jarvis.context.add_message_to_chat("assistant", response_text)
+                    response_msg = {
+                        "type": "response",
+                        "content": _clean_for_web(response_text),
+                        "done": True
+                    }
+                    context_stats = _get_context_stats(jarvis)
+                    if context_stats:
+                        response_msg["context"] = context_stats
+                    await websocket.send_json(response_msg)
+                    return
+                except Exception as e:
+                    print(f"[app] Video from image error: {e}")
+
+            # Check for document attachments -> analyze document
+            if doc_attachments:
+                try:
+                    from jarvis.skills.media_gen import analyze_document
+                    doc_path = doc_attachments[0]["path"]
+                    prompt = user_input if user_input else "Summarize this document."
+
+                    await websocket.send_json({
+                        "type": "status",
+                        "content": "Analyzing document..."
+                    })
+
+                    result = analyze_document(doc_path, prompt)
+                    if result["success"]:
+                        response_text = result["analysis"]
+                    else:
+                        response_text = f"Document analysis failed: {result['error']}"
+
+                    jarvis.context.add_message_to_chat("assistant", response_text)
+                    response_msg = {
+                        "type": "response",
+                        "content": _clean_for_web(response_text),
+                        "done": True
+                    }
+                    context_stats = _get_context_stats(jarvis)
+                    if context_stats:
+                        response_msg["context"] = context_stats
+                    await websocket.send_json(response_msg)
+                    return
+                except Exception as e:
+                    print(f"[app] Document analysis error: {e}")
+
+            # Check for image attachments -> analyze image (default behavior)
+            if image_attachments:
+                from jarvis.core.intent import Intent
+                if classified_intent is None or classified_intent.intent not in [Intent.IMAGE_GEN, Intent.VIDEO_GEN]:
+                    try:
+                        from jarvis.skills.media_gen import analyze_image
+                        img_path = image_attachments[0]["path"]
+                        prompt = user_input if user_input else "Describe this image in detail."
+
+                        # Determine provider preference based on current Jarvis provider
+                        provider_name = getattr(jarvis.provider, "name", "")
+                        vision_provider = "ollama" if provider_name in ["ollama", "ollama_cloud"] else "auto"
+
+                        await websocket.send_json({
+                            "type": "status",
+                            "content": f"Analyzing image{' (local)' if vision_provider == 'ollama' else ''}..."
+                        })
+
+                        result = analyze_image(img_path, prompt, provider=vision_provider)
+                        if result["success"]:
+                            response_text = result["analysis"]
+                            # Add model info if available
+                            if result.get("model"):
+                                print(f"[app] Vision analysis using: {result.get('model')}")
+                        else:
+                            response_text = f"Image analysis failed: {result['error']}"
+
+                        jarvis.context.add_message_to_chat("assistant", response_text)
+                        response_msg = {
+                            "type": "response",
+                            "content": _clean_for_web(response_text),
+                            "done": True
+                        }
+                        context_stats = _get_context_stats(jarvis)
+                        if context_stats:
+                            response_msg["context"] = context_stats
+                        await websocket.send_json(response_msg)
+                        return
+                    except Exception as e:
+                        print(f"[app] Image analysis error: {e}")
+
+            # Check for multimodal generation intents
+            if classified_intent:
+                from jarvis.core.intent import Intent
+                if classified_intent.intent == Intent.IMAGE_GEN:
+                    try:
+                        from jarvis.skills.media_gen import generate_image
+                        await websocket.send_json({
+                            "type": "status",
+                            "content": "Generating image..."
+                        })
+
+                        # Extract prompt from user input
+                        import re
+                        match = re.search(r"(?:draw|create|generate|make|paint|sketch|design)\s+(?:an?\s+)?(?:image\s+(?:of\s+)?)?(.+)", user_input.lower())
+                        prompt = match.group(1).strip() if match else user_input
+
+                        result = generate_image(prompt)
+                        if result["success"]:
+                            response_text = f"Generated image: {result['filename']}\nSaved to: {result['path']}"
+                            # Send media message with path
+                            await websocket.send_json({
+                                "type": "media",
+                                "media_type": "image",
+                                "path": result["path"],
+                                "filename": result["filename"]
+                            })
+                        else:
+                            response_text = f"Image generation failed: {result['error']}"
+
+                        jarvis.context.add_message_to_chat("assistant", response_text)
+                        response_msg = {
+                            "type": "response",
+                            "content": _clean_for_web(response_text),
+                            "done": True
+                        }
+                        context_stats = _get_context_stats(jarvis)
+                        if context_stats:
+                            response_msg["context"] = context_stats
+                        await websocket.send_json(response_msg)
+                        return
+                    except Exception as e:
+                        print(f"[app] Image generation error: {e}")
+
+                elif classified_intent.intent == Intent.VIDEO_GEN:
+                    try:
+                        from jarvis.skills.media_gen import generate_video
+
+                        # Video generation requires an image
+                        if not image_attachments:
+                            response_text = "Video generation requires an image. Please upload an image and describe what motion/action you want (e.g., 'make the birds fly', 'animate this scene')."
+                            jarvis.context.add_message_to_chat("assistant", response_text)
+                            await websocket.send_json({
+                                "type": "response",
+                                "content": response_text,
+                                "done": True
+                            })
+                            return
+
+                        await websocket.send_json({
+                            "type": "status",
+                            "content": "Generating video from image (this may take a few minutes)..."
+                        })
+
+                        import re
+                        match = re.search(r"(?:create|generate|make|animate)\s+(?:a\s+)?(?:video\s+(?:of\s+)?)?(.+)", user_input.lower())
+                        prompt = match.group(1).strip() if match else user_input
+
+                        img_path = image_attachments[0]["path"]
+                        result = generate_video(prompt, image_path=img_path)
+
+                        if result["success"]:
+                            response_text = f"Generated video: {result['filename']}\nSaved to: {result['path']}"
+                            await websocket.send_json({
+                                "type": "media",
+                                "media_type": "video",
+                                "path": result["path"],
+                                "filename": result["filename"]
+                            })
+                        else:
+                            response_text = f"Video generation failed: {result['error']}"
+
+                        jarvis.context.add_message_to_chat("assistant", response_text)
+                        response_msg = {
+                            "type": "response",
+                            "content": _clean_for_web(response_text),
+                            "done": True
+                        }
+                        context_stats = _get_context_stats(jarvis)
+                        if context_stats:
+                            response_msg["context"] = context_stats
+                        await websocket.send_json(response_msg)
+                        return
+                    except Exception as e:
+                        print(f"[app] Video generation error: {e}")
+
+                elif classified_intent.intent == Intent.MUSIC_GEN:
+                    try:
+                        from jarvis.skills.media_gen import generate_music
+                        await websocket.send_json({
+                            "type": "status",
+                            "content": "Generating music..."
+                        })
+
+                        import re
+                        match = re.search(r"(?:create|generate|make|compose)\s+(?:a\s+)?(?:music|song|soundtrack|jingle)\s+(?:for\s+|about\s+)?(.+)", user_input.lower())
+                        prompt = match.group(1).strip() if match else user_input
+
+                        result = generate_music(prompt)
+                        if result["success"]:
+                            response_text = f"Generated music: {result['filename']}\nSaved to: {result['path']}"
+                            await websocket.send_json({
+                                "type": "media",
+                                "media_type": "audio",
+                                "path": result["path"],
+                                "filename": result["filename"]
+                            })
+                        else:
+                            response_text = f"Music generation failed: {result['error']}"
+
+                        jarvis.context.add_message_to_chat("assistant", response_text)
+                        response_msg = {
+                            "type": "response",
+                            "content": _clean_for_web(response_text),
+                            "done": True
+                        }
+                        context_stats = _get_context_stats(jarvis)
+                        if context_stats:
+                            response_msg["context"] = context_stats
+                        await websocket.send_json(response_msg)
+                        return
+                    except Exception as e:
+                        print(f"[app] Music generation error: {e}")
 
             if use_fast_mode:
                 # CHAT MODE: Ultra-fast, minimal overhead, NO THINKING
@@ -2991,7 +3339,15 @@ RULES:
                         jarvis.context.add_message_to_chat("assistant", response_text.strip())
                     return
 
-                all_messages = recent + tool_messages + [Message(role="user", content=user_input)]
+                # Enable thinking mode for Qwen models when deep reasoning requested
+                effective_input = user_input
+                model_name = (jarvis.provider.model or "").lower()
+                if detected_level == "deep" and "qwen" in model_name:
+                    # Qwen 3 models use /think to enable extended thinking
+                    if not effective_input.rstrip().endswith("/think"):
+                        effective_input = f"{user_input} /think"
+
+                all_messages = recent + tool_messages + [Message(role="user", content=effective_input)]
 
                 # Use fast chat model (Ollama only)
                 provider_name = getattr(jarvis.provider, "name", "")
@@ -3063,11 +3419,14 @@ RULES:
                             response_text = "Error processing response"
                     else:
                         response_text = str(stream) if stream else "Error processing response"
-                    await websocket.send_json({
-                        "type": "stream",
-                        "content": _clean_for_web(response_text, streaming=True),
-                        "done": False
-                    })
+                    try:
+                        await websocket.send_json({
+                            "type": "stream",
+                            "content": _clean_for_web(response_text, streaming=True),
+                            "done": False
+                        })
+                    except Exception:
+                        pass  # Connection closed
 
                 # Restore original model
                 jarvis.provider.model = original_model
@@ -3100,8 +3459,15 @@ RULES:
                         "done": False
                     }))
 
+                # Enable thinking mode for Qwen models when deep reasoning requested
+                agent_input = user_input
+                model_name = (jarvis.provider.model or "").lower()
+                if detected_level == "deep" and "qwen" in model_name:
+                    if not agent_input.rstrip().endswith("/think"):
+                        agent_input = f"{user_input} /think"
+
                 jarvis.ui._stream_sender = stream_sender
-                response = jarvis.agent.run(user_input, jarvis.system_prompt, history)
+                response = jarvis.agent.run(agent_input, jarvis.system_prompt, history)
                 jarvis.ui._stream_sender = None
 
                 tool_turn = []
@@ -3150,10 +3516,15 @@ RULES:
 
         except Exception as e:
             import traceback
-            await websocket.send_json({
-                "type": "error",
-                "message": f"{e}\n{traceback.format_exc()}"
-            })
+            print(f"[process_message] Error: {e}")
+            try:
+                await websocket.send_json({
+                    "type": "error",
+                    "message": f"{e}"
+                })
+            except Exception:
+                # Connection already closed, ignore
+                pass
 
     return app
 

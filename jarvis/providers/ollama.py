@@ -40,6 +40,16 @@ class OllamaProvider(BaseProvider):
     # Reasoning models that need longer timeouts
     REASONING_MODELS = ["gpt-oss", "deepseek-r1", "qwq", "o1", "o3"]
 
+    # Vision-capable models (ordered by preference)
+    VISION_MODELS = [
+        "llama3.2-vision",  # Best quality
+        "llava-llama3",     # Good quality
+        "minicpm-v",        # Good balance
+        "llava",            # Classic
+        "moondream",        # Fast/small
+        "bakllava",         # Alternative
+    ]
+
     def __init__(self, model: str = None, **kwargs):
         # Default model will be auto-detected if None
         super().__init__(model=model or "pending", **kwargs)
@@ -233,7 +243,35 @@ class OllamaProvider(BaseProvider):
         except Exception:
             return []
 
-    def vision(self, image_path: str, prompt: str, model: str = "llava") -> str:
+    def get_vision_model(self) -> str | None:
+        """Find the best available vision model."""
+        available = [m.lower() for m in self.list_models()]
+        for vision_model in self.VISION_MODELS:
+            for avail in available:
+                if vision_model in avail:
+                    # Return the actual model name (with tag)
+                    for m in self.list_models():
+                        if vision_model in m.lower():
+                            return m
+        return None
+
+    def vision(self, image_path: str, prompt: str, model: str = None) -> str:
+        """Analyze an image using a vision model.
+
+        Args:
+            image_path: Path to the image file
+            prompt: Question or instruction about the image
+            model: Vision model to use (auto-detected if None)
+
+        Returns:
+            Text analysis of the image
+        """
+        # Auto-detect vision model if not specified
+        if not model:
+            model = self.get_vision_model()
+            if not model:
+                raise ValueError("No vision model available. Install one with: ollama pull llava")
+
         response = self.client.chat(
             model=model,
             messages=[{

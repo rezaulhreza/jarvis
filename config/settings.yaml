@@ -18,8 +18,8 @@ models:
 
 # Context Management
 context:
-  max_tokens: 8000
-  keep_recent_messages: 5
+  max_tokens: 128000
+  keep_recent_messages: 10
   auto_compact: true
   summary_model: "qwen3:4b"
 

@@ -24,6 +24,10 @@ from .skill_creator import (
 from .multi_model_analysis import (
     multi_model_analyze, list_analysis_profiles, analyze_parallel
 )
+from .media_gen import (
+    generate_image, generate_video, generate_music, analyze_image,
+    analyze_image_ollama, analyze_document, cleanup_generated_files, list_media_models
+)
 
 # Built-in skills
 BUILT_IN_SKILLS = {
@@ -225,6 +229,73 @@ BUILT_IN_SKILLS = {
         "function": list_analysis_profiles,
         "description": "List available multi-model analysis profiles",
         "parameters": {}
+    },
+
+    # Media Generation
+    "generate_image": {
+        "function": generate_image,
+        "description": "Generate an image from a text description. Use for drawing, creating art, logos, pictures.",
+        "parameters": {
+            "prompt": "string - description of the image to generate",
+            "model": "string - model (flux-schnell, flux-dev, sdxl, hidream, juggernaut) (optional)",
+            "width": "int - image width (default 1024) (optional)",
+            "height": "int - image height (default 1024) (optional)"
+        }
+    },
+    "generate_video": {
+        "function": generate_video,
+        "description": "Generate a video from an image (image-to-video). Animates a still image based on the prompt.",
+        "parameters": {
+            "prompt": "string - description of what should happen in the video",
+            "image_path": "string - path to source image (required)",
+            "frames": "int - number of frames, 21-140, default 81 (~5 seconds) (optional)",
+            "resolution": "string - '480p' or '720p' (optional)"
+        }
+    },
+    "generate_music": {
+        "function": generate_music,
+        "description": "Generate music from a text description. Use for soundtracks, jingles, background music.",
+        "parameters": {
+            "prompt": "string - description of the music to generate",
+            "duration": "float - duration in seconds (default 30) (optional)"
+        }
+    },
+    "analyze_image": {
+        "function": analyze_image,
+        "description": "Analyze an image and describe its contents. Use for image understanding, OCR, visual Q&A. Auto-detects Ollama or Chutes.",
+        "parameters": {
+            "image_path": "string - path to the image file",
+            "prompt": "string - question or instruction about the image (optional)",
+            "provider": "string - 'auto', 'ollama', or 'chutes' (optional, default: auto)"
+        }
+    },
+    "analyze_image_ollama": {
+        "function": analyze_image_ollama,
+        "description": "Analyze an image using local Ollama vision model (llava, llama3.2-vision, etc.)",
+        "parameters": {
+            "image_path": "string - path to the image file",
+            "prompt": "string - question or instruction about the image (optional)"
+        }
+    },
+    "list_media_models": {
+        "function": list_media_models,
+        "description": "List available media generation models for images, video, and music",
+        "parameters": {}
+    },
+    "analyze_document": {
+        "function": analyze_document,
+        "description": "Analyze a document (PDF, DOCX, XLSX, CSV, TXT). Extract text and answer questions about it.",
+        "parameters": {
+            "doc_path": "string - path to the document file",
+            "prompt": "string - question or instruction about the document (optional)"
+        }
+    },
+    "cleanup_generated_files": {
+        "function": cleanup_generated_files,
+        "description": "Clean up old generated media files to free disk space",
+        "parameters": {
+            "max_age_hours": "int - delete files older than this many hours (default 24)"
+        }
     },
 }
 

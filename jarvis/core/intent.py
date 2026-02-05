@@ -25,7 +25,10 @@ class Intent(Enum):
     CALCULATE = "calculate"          # Math/calculations
     RECALL = "recall"                # Memory/knowledge recall from RAG
     CONTROL = "control"              # System/device control
-    VISION = "vision"                # Image analysis
+    VISION = "vision"                # Image analysis (what's in this image?)
+    IMAGE_GEN = "image_gen"          # Image generation (draw, create, generate image)
+    VIDEO_GEN = "video_gen"          # Video generation (make video, animate)
+    MUSIC_GEN = "music_gen"          # Music generation (create music, song)
     NEWS = "news"                    # Current news/events
     FINANCE = "finance"              # Financial data (prices, stocks, crypto)
     UNKNOWN = "unknown"
@@ -81,7 +84,7 @@ Message: "{message}"
 Output this exact JSON structure:
 {{"intent": "<intent>", "confidence": <0.0-1.0>, "reasoning_level": "<level>", "requires_tools": <bool>, "suggested_tools": [<tools>]}}
 
-Intents: chat, search, weather, time_date, file_op, code, git, shell, calculate, recall, news, finance, vision, unknown
+Intents: chat, search, weather, time_date, file_op, code, git, shell, calculate, recall, news, finance, vision, image_gen, video_gen, music_gen, unknown
 
 reasoning_level:
 - "fast" = greetings, simple facts, quick info, yes/no questions
@@ -102,6 +105,10 @@ suggested_tools (only if requires_tools=true):
 - shell: run_command
 - calculate: calculate
 - recall: recall_memory
+- image_gen: generate_image
+- video_gen: generate_video
+- music_gen: generate_music
+- vision: analyze_image
 
 Examples:
 "hello" -> {{"intent": "chat", "confidence": 0.99, "reasoning_level": "fast", "requires_tools": false, "suggested_tools": []}}
@@ -110,6 +117,11 @@ Examples:
 "read main.py" -> {{"intent": "file_op", "confidence": 0.95, "reasoning_level": "fast", "requires_tools": true, "suggested_tools": ["read_file"]}}
 "explain quantum computing in detail" -> {{"intent": "chat", "confidence": 0.9, "reasoning_level": "deep", "requires_tools": false, "suggested_tools": []}}
 "who is the president of France" -> {{"intent": "search", "confidence": 0.9, "reasoning_level": "fast", "requires_tools": true, "suggested_tools": ["web_search"]}}
+"draw a cat in space" -> {{"intent": "image_gen", "confidence": 0.95, "reasoning_level": "balanced", "requires_tools": true, "suggested_tools": ["generate_image"]}}
+"generate an image of sunset" -> {{"intent": "image_gen", "confidence": 0.95, "reasoning_level": "balanced", "requires_tools": true, "suggested_tools": ["generate_image"]}}
+"what's in this image" -> {{"intent": "vision", "confidence": 0.95, "reasoning_level": "balanced", "requires_tools": true, "suggested_tools": ["analyze_image"]}}
+"make a video of a running horse" -> {{"intent": "video_gen", "confidence": 0.95, "reasoning_level": "balanced", "requires_tools": true, "suggested_tools": ["generate_video"]}}
+"create music for a podcast intro" -> {{"intent": "music_gen", "confidence": 0.95, "reasoning_level": "balanced", "requires_tools": true, "suggested_tools": ["generate_music"]}}
 
 Output JSON only, no explanation:'''
 
@@ -127,6 +139,17 @@ Output JSON only, no explanation:'''
         Intent.FINANCE: [r'\bprice\b', r'\bstock\b', r'\bgold\b', r'\bsilver\b', r'\bbitcoin\b', r'\bbtc\b',
                          r'\bcrypto\b', r'\bmarket\b', r'\bforex\b'],
         Intent.CODE: [r'\bcode\b', r'\bfunction\b', r'\bclass\b', r'\brefactor\b', r'\bdebug\b'],
+        # Multimodal intents
+        Intent.IMAGE_GEN: [r'\bdraw\b', r'\bsketch\b', r'\bpaint\b', r'\bcreate\s+(an?\s+)?image\b',
+                          r'\bgenerate\s+(an?\s+)?image\b', r'\bmake\s+(an?\s+)?(image|picture|art)\b',
+                          r'\billustrat', r'\bdesign\s+(an?\s+)?(logo|poster|banner)\b'],
+        Intent.VIDEO_GEN: [r'\bcreate\s+(a\s+)?video\b', r'\bgenerate\s+(a\s+)?video\b', r'\bmake\s+(a\s+)?video\b',
+                          r'\banimate\b', r'\bvideo\s+of\b', r'\bturn\s+.+\s+into\s+(a\s+)?video\b'],
+        Intent.MUSIC_GEN: [r'\bcreate\s+(a\s+)?music\b', r'\bgenerate\s+(a\s+)?music\b', r'\bmake\s+(a\s+)?song\b',
+                          r'\bcompose\b', r'\bmusic\s+for\b', r'\bsoundtrack\b', r'\bjingle\b'],
+        Intent.VISION: [r'\bwhat\'?s?\s+in\s+(this|the)\s+image\b', r'\banalyze\s+(this|the)\s+image\b',
+                       r'\bdescribe\s+(this|the)\s+(image|picture|photo)\b', r'\bcan\s+you\s+see\b',
+                       r'\blook\s+at\s+(this|the)\b', r'\bwhat\s+do\s+you\s+see\b'],
     }
 
     # Tools mapping for each intent
@@ -142,6 +165,11 @@ Output JSON only, no explanation:'''
         Intent.FINANCE: ["get_gold_price", "web_search"],
         Intent.CODE: ["read_file", "write_file", "edit_file", "search_files", "get_project_structure"],
         Intent.RECALL: ["recall_memory"],
+        # Multimodal
+        Intent.IMAGE_GEN: ["generate_image"],
+        Intent.VIDEO_GEN: ["generate_video"],
+        Intent.MUSIC_GEN: ["generate_music"],
+        Intent.VISION: ["analyze_image"],
     }
 
     # Current info signals that indicate need for fresh data
@@ -378,6 +406,9 @@ Output JSON only, no explanation:'''
             return ReasoningLevel.FAST
         if intent in [Intent.CODE, Intent.FILE_OP] and len(message) > 100:
             return ReasoningLevel.DEEP
+        # Multimodal tasks use balanced (need API call, not super fast but not deep reasoning)
+        if intent in [Intent.IMAGE_GEN, Intent.VIDEO_GEN, Intent.MUSIC_GEN, Intent.VISION]:
+            return ReasoningLevel.BALANCED
 
         return ReasoningLevel.BALANCED
 

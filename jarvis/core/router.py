@@ -73,6 +73,11 @@ INTENT_TO_TOOL = {
     Intent.FINANCE: "web_search",  # or get_gold_price for gold
     Intent.FILE_OP: "read_file",
     Intent.RECALL: "recall_memory",
+    # Multimodal
+    Intent.IMAGE_GEN: "generate_image",
+    Intent.VIDEO_GEN: "generate_video",
+    Intent.MUSIC_GEN: "generate_music",
+    Intent.VISION: "analyze_image",
 }
 
 
@@ -138,6 +143,38 @@ def extract_params(user_input: str, tool: str) -> dict:
             params["content"] = match.group(1).strip()
         else:
             params["content"] = user_input
+
+    elif tool == "generate_image":
+        # Extract image prompt - everything after generation keywords
+        match = re.search(r"(?:draw|create|generate|make|paint|sketch|design)\s+(?:an?\s+)?(?:image\s+(?:of\s+)?)?(.+)", input_lower)
+        if match:
+            params["prompt"] = match.group(1).strip()
+        else:
+            params["prompt"] = user_input
+
+    elif tool == "generate_video":
+        # Extract video prompt
+        match = re.search(r"(?:create|generate|make|animate)\s+(?:a\s+)?(?:video\s+(?:of\s+)?)?(.+)", input_lower)
+        if match:
+            params["prompt"] = match.group(1).strip()
+        else:
+            params["prompt"] = user_input
+
+    elif tool == "generate_music":
+        # Extract music prompt
+        match = re.search(r"(?:create|generate|make|compose)\s+(?:a\s+)?(?:music|song|soundtrack|jingle)\s+(?:for\s+|about\s+)?(.+)", input_lower)
+        if match:
+            params["prompt"] = match.group(1).strip()
+        else:
+            params["prompt"] = user_input
+
+    elif tool == "analyze_image":
+        # Extract image path and prompt
+        path_match = re.search(r'([/~][\w/\.\-]+\.(jpg|jpeg|png|gif|webp))', user_input, re.IGNORECASE)
+        if path_match:
+            params["image_path"] = path_match.group(1)
+        # The prompt is the whole question
+        params["prompt"] = user_input
 
     return params
 
@@ -307,11 +344,16 @@ def should_use_reasoning(user_input: str, classifier: IntentClassifier = None) -
     return any(kw in user_input.lower() for kw in keywords)
 
 
-def should_use_vision(user_input: str, classifier: IntentClassifier = None) -> bool:
+def should_use_vision(user_input: str, classifier: IntentClassifier = None, has_image: bool = False) -> bool:
     """
     Check if vision model is needed.
 
     Uses intent classification if available, otherwise falls back to patterns.
+
+    Args:
+        user_input: User's message
+        classifier: Intent classifier instance
+        has_image: Whether an image attachment is present
     """
     if classifier:
         try:
@@ -320,12 +362,69 @@ def should_use_vision(user_input: str, classifier: IntentClassifier = None) -> b
         except Exception:
             pass
 
+    # If image is attached, likely needs vision
+    if has_image:
+        return True
+
     # Fallback to patterns
     patterns = [
         r'\.(jpg|jpeg|png|gif|webp|bmp)\b',
         r'(this|the)\s+(image|picture|photo|screenshot)',
         r'analyze\s+(this|the)\s+image',
         r'what\'?s?\s+in\s+(this|the)\s+(image|picture|photo)',
+    ]
+    input_lower = user_input.lower()
+    return any(re.search(p, input_lower) for p in patterns)
+
+
+def should_generate_image(user_input: str, classifier: IntentClassifier = None) -> bool:
+    """Check if image generation is needed."""
+    if classifier:
+        try:
+            intent = classifier.classify_sync(user_input)
+            return intent.intent == Intent.IMAGE_GEN
+        except Exception:
+            pass
+
+    # Fallback patterns
+    patterns = [
+        r'\bdraw\b', r'\bsketch\b', r'\bpaint\b',
+        r'\bcreate\s+(an?\s+)?image\b', r'\bgenerate\s+(an?\s+)?image\b',
+        r'\bmake\s+(an?\s+)?(image|picture|art)\b',
+    ]
+    input_lower = user_input.lower()
+    return any(re.search(p, input_lower) for p in patterns)
+
+
+def should_generate_video(user_input: str, classifier: IntentClassifier = None) -> bool:
+    """Check if video generation is needed."""
+    if classifier:
+        try:
+            intent = classifier.classify_sync(user_input)
+            return intent.intent == Intent.VIDEO_GEN
+        except Exception:
+            pass
+
+    patterns = [
+        r'\bcreate\s+(a\s+)?video\b', r'\bgenerate\s+(a\s+)?video\b',
+        r'\bmake\s+(a\s+)?video\b', r'\banimate\b',
+    ]
+    input_lower = user_input.lower()
+    return any(re.search(p, input_lower) for p in patterns)
+
+
+def should_generate_music(user_input: str, classifier: IntentClassifier = None) -> bool:
+    """Check if music generation is needed."""
+    if classifier:
+        try:
+            intent = classifier.classify_sync(user_input)
+            return intent.intent == Intent.MUSIC_GEN
+        except Exception:
+            pass
+
+    patterns = [
+        r'\bcreate\s+(a\s+)?music\b', r'\bgenerate\s+(a\s+)?music\b',
+        r'\bmake\s+(a\s+)?song\b', r'\bcompose\b',
     ]
     input_lower = user_input.lower()
     return any(re.search(p, input_lower) for p in patterns)

@@ -1,5 +1,6 @@
 import { useRef, useEffect } from 'react'
 import { MessageBubble } from './MessageBubble'
+import { ThinkingBlock } from './ThinkingBlock'
 import type { Message } from '../../types'
 import { Loader2 } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
@@ -8,6 +9,7 @@ import remarkGfm from 'remark-gfm'
 interface MessageListProps {
   messages: Message[]
   streaming: string
+  streamingThinking?: string
   isLoading: boolean
   loadingText?: string
 }
@@ -15,6 +17,7 @@ interface MessageListProps {
 export function MessageList({
   messages,
   streaming,
+  streamingThinking,
   isLoading,
   loadingText = 'Thinking...',
 }: MessageListProps) {
@@ -23,7 +26,7 @@ export function MessageList({
   // Auto-scroll to bottom on new messages
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages, streaming])
+  }, [messages, streaming, streamingThinking])
 
   return (
     <div className="flex-1 overflow-y-auto p-4 scrollbar-thin">
@@ -53,20 +56,36 @@ export function MessageList({
           <MessageBubble key={i} message={msg} />
         ))}
 
+        {/* Streaming thinking */}
+        {streamingThinking && !streaming && (
+          <div className="mr-12">
+            <ThinkingBlock content={streamingThinking} isStreaming={true} />
+          </div>
+        )}
+
         {/* Streaming response */}
-        {streaming && (
+        {(streaming || streamingThinking) && (
           <div className="p-4 rounded-2xl bg-surface/80 border border-border/30 mr-12 backdrop-blur-sm">
-            <p className="text-xs text-emerald-400 font-medium mb-2">Assistant</p>
-            <div className="prose prose-invert prose-sm max-w-none text-text leading-relaxed
-              prose-p:my-2 prose-p:leading-relaxed
-              prose-headings:text-text prose-headings:font-semibold
-              prose-code:text-cyan-400 prose-code:bg-surface-2 prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded prose-code:text-sm prose-code:before:content-none prose-code:after:content-none
-              prose-pre:bg-surface-2 prose-pre:border prose-pre:border-border/30 prose-pre:rounded-lg
-              prose-a:text-cyan-400 prose-ul:my-2 prose-ol:my-2 prose-li:my-0.5
-            ">
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>{streaming}</ReactMarkdown>
-              <span className="inline-block w-2 ml-0.5 animate-pulse text-cyan-400">▍</span>
-            </div>
+            <p className="text-xs text-emerald-400 font-medium mb-2">Jarvis</p>
+
+            {/* Show thinking block while streaming response */}
+            {streamingThinking && streaming && (
+              <ThinkingBlock content={streamingThinking} isStreaming={!streaming} />
+            )}
+
+            {/* Response content */}
+            {streaming && (
+              <div className="prose prose-invert prose-sm max-w-none text-text leading-relaxed
+                prose-p:my-2 prose-p:leading-relaxed
+                prose-headings:text-text prose-headings:font-semibold
+                prose-code:text-cyan-400 prose-code:bg-surface-2 prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded prose-code:text-sm prose-code:before:content-none prose-code:after:content-none
+                prose-pre:bg-surface-2 prose-pre:border prose-pre:border-border/30 prose-pre:rounded-lg
+                prose-a:text-cyan-400 prose-ul:my-2 prose-ol:my-2 prose-li:my-0.5
+              ">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{streaming}</ReactMarkdown>
+                <span className="inline-block w-2 ml-0.5 animate-pulse text-cyan-400">▍</span>
+              </div>
+            )}
           </div>
         )}
 

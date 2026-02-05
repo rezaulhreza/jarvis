@@ -26,6 +26,11 @@ from .tools import (
     # Task management
     task_create, task_update, task_list, task_get,
 )
+# Media generation (lazy import to avoid startup delays)
+def _get_media_tools():
+    """Lazy import of media tools."""
+    from jarvis.skills.media_gen import generate_image, generate_video, generate_music, analyze_image
+    return generate_image, generate_video, generate_music, analyze_image
 from .intent import IntentClassifier, Intent, ReasoningLevel, ClassifiedIntent
 
 class Agent:
@@ -461,6 +466,42 @@ class Agent:
                     if "weather" in msg_lower:
                         return None
                     return "web_search", {"query": msg}
+
+        # === MULTIMODAL GENERATION ===
+        # Image generation
+        image_gen_patterns = [
+            r'\bdraw\b', r'\bsketch\b', r'\bpaint\b',
+            r'\bcreate\s+(an?\s+)?image\b', r'\bgenerate\s+(an?\s+)?image\b',
+            r'\bmake\s+(an?\s+)?(image|picture|art)\b', r'\billustrat',
+        ]
+        for pattern in image_gen_patterns:
+            if re.search(pattern, msg_lower):
+                # Extract prompt
+                match = re.search(r"(?:draw|create|generate|make|paint|sketch|design)\s+(?:an?\s+)?(?:image\s+(?:of\s+)?)?(.+)", msg_lower)
+                prompt = match.group(1).strip() if match else msg
+                return "generate_image", {"prompt": prompt}
+
+        # Video generation
+        video_gen_patterns = [
+            r'\bcreate\s+(a\s+)?video\b', r'\bgenerate\s+(a\s+)?video\b',
+            r'\bmake\s+(a\s+)?video\b', r'\banimate\b', r'\bvideo\s+of\b',
+        ]
+        for pattern in video_gen_patterns:
+            if re.search(pattern, msg_lower):
+                match = re.search(r"(?:create|generate|make|animate)\s+(?:a\s+)?(?:video\s+(?:of\s+)?)?(.+)", msg_lower)
+                prompt = match.group(1).strip() if match else msg
+                return "generate_video", {"prompt": prompt}
+
+        # Music generation
+        music_gen_patterns = [
+            r'\bcreate\s+(a\s+)?music\b', r'\bgenerate\s+(a\s+)?music\b',
+            r'\bmake\s+(a\s+)?song\b', r'\bcompose\b', r'\bmusic\s+for\b',
+        ]
+        for pattern in music_gen_patterns:
+            if re.search(pattern, msg_lower):
+                match = re.search(r"(?:create|generate|make|compose)\s+(?:a\s+)?(?:music|song|soundtrack|jingle)\s+(?:for\s+|about\s+)?(.+)", msg_lower)
+                prompt = match.group(1).strip() if match else msg
+                return "generate_music", {"prompt": prompt}
 
         return None
 
@@ -918,6 +959,16 @@ RULES:
             "github_search": github_search,
         }
 
+        # Add media tools (lazy loaded)
+        if tool_name in ["generate_image", "generate_video", "generate_music", "analyze_image"]:
+            generate_image, generate_video, generate_music, analyze_image = _get_media_tools()
+            tool_map.update({
+                "generate_image": generate_image,
+                "generate_video": generate_video,
+                "generate_music": generate_music,
+                "analyze_image": analyze_image,
+            })
+
         if tool_name not in tool_map:
             print(f"[TOOL] ERROR: Unknown tool '{tool_name}'")
             return f"Unknown tool: {tool_name}. Available: {list(tool_map.keys())}"
@@ -927,6 +978,35 @@ RULES:
             start = time.time()
             result = tool_map[tool_name](**args)
             duration = time.time() - start
+
+            # Handle media generation results (return dict instead of string)
+            if tool_name in ["generate_image", "generate_video", "generate_music", "analyze_image"]:
+                if isinstance(result, dict):
+                    if result.get("success"):
+                        # Print media result in terminal
+                        if self.ui and hasattr(self.ui, "print_media"):
+                            media_type = {
+                                "generate_image": "image",
+                                "generate_video": "video",
+                                "generate_music": "music",
+                                "analyze_image": "analysis",
+                            }.get(tool_name, "file")
+                            if tool_name == "analyze_image":
+                                # For analysis, just return the text
+                                return result.get("analysis", "Analysis complete.")
+                            self.ui.print_media(
+                                media_type,
+                                result.get("path", ""),
+                                result.get("filename", "")
+                            )
+                        # Return a nice formatted string
+                        path = result.get("path", "")
+                        filename = result.get("filename", "")
+                        return f"Generated {tool_name.replace('generate_', '')}: {filename}\nSaved to: {path}"
+                    else:
+                        return f"Error: {result.get('error', 'Unknown error')}"
+                return str(result)
+
             result_preview = (result[:100] + "...") if len(result) > 100 else result
             result_preview = result_preview.replace("\n", " ")
             print(f"[TOOL] Completed: {tool_name} in {duration:.2f}s → {result_preview}")

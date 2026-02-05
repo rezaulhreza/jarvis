@@ -67,6 +67,7 @@ export default function App() {
     connected,
     messages,
     streaming,
+    streamingThinking,
     isLoading,
     project,
     model,
@@ -80,7 +81,7 @@ export default function App() {
   } = useWebSocket()
 
   // File upload hook
-  const { files, addFiles, removeFile, clearFiles } = useFileUpload()
+  const { files, addFiles, removeFile, clearFiles, getAttachmentIds } = useFileUpload()
 
   // Voice callbacks
   const handleVoiceInput = useCallback((transcript: string) => {
@@ -241,11 +242,13 @@ export default function App() {
 
   // Handlers
   const handleSend = useCallback(() => {
-    if (!input.trim() || !connected) return
-    send(input.trim(), true, reasoningLevel)
+    const attachments = getAttachmentIds()
+    // Allow sending with just attachments (no text)
+    if ((!input.trim() && attachments.length === 0) || !connected) return
+    send(input.trim(), true, reasoningLevel, attachments)
     setInput('')
     clearFiles()
-  }, [input, connected, send, reasoningLevel, clearFiles])
+  }, [input, connected, send, reasoningLevel, clearFiles, getAttachmentIds])
 
   const handleVoiceToggle = useCallback(async () => {
     if (isRecording) {
@@ -667,6 +670,7 @@ export default function App() {
         <MessageList
           messages={messages}
           streaming={streaming}
+          streamingThinking={streamingThinking}
           isLoading={isLoading}
           loadingText={loadingText}
         />

@@ -582,6 +582,22 @@ class TerminalUI:
     def print_system(self, message: str):
         self.console.print(f"[dim]{message}[/dim]")
 
+    def print_media(self, media_type: str, path: str, filename: str = None):
+        """Print media generation result with clean formatting."""
+        icons = {
+            "image": "🖼️",
+            "video": "🎬",
+            "audio": "🎵",
+            "music": "🎵",
+        }
+        icon = icons.get(media_type, "📁")
+        name = filename or Path(path).name
+
+        self.console.print()
+        self.console.print(f"[bold green]{icon} Generated {media_type}:[/bold green] [cyan]{name}[/cyan]")
+        self.console.print(f"[dim]Saved to:[/dim] {path}")
+        self.console.print()
+
     def stream_text(self, text: str):
         """Stream text to the terminal without newlines."""
         if not text:

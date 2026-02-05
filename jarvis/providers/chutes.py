@@ -284,7 +284,8 @@ class ChutesProvider(BaseProvider):
         for chunk in response:
             if self._stop_flag:
                 break
-            if chunk.choices[0].delta.content:
+            # Some chunks have empty choices array - skip those
+            if chunk.choices and chunk.choices[0].delta.content:
                 yield chunk.choices[0].delta.content
 
     def _chat_non_streaming(self, msg_list: List[dict]) -> str:
