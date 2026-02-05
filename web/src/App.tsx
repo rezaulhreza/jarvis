@@ -451,6 +451,21 @@ export default function App() {
                 ))}
               </div>
             )}
+
+            {/* Mic control - close to orb */}
+            <div className="flex justify-center mt-6">
+              <button
+                onClick={() => isListening ? stopListening() : startListening()}
+                className={cn(
+                  'w-14 h-14 rounded-full flex items-center justify-center transition-all',
+                  isListening
+                    ? 'bg-purple-500/20 border-2 border-purple-500 text-purple-400'
+                    : 'bg-white/5 border border-white/20 text-white/60 hover:bg-white/10 hover:text-white'
+                )}
+              >
+                <Mic size={22} />
+              </button>
+            </div>
           </div>
         </div>
 
@@ -472,21 +487,7 @@ export default function App() {
           </div>
         )}
 
-        {/* Bottom controls */}
-        <div className="relative z-10 px-6 py-4 flex items-center justify-center gap-4">
-          <button
-            onClick={() => isListening ? stopListening() : startListening()}
-            className={cn(
-              'w-16 h-16 rounded-full flex items-center justify-center transition-all',
-              isListening
-                ? 'bg-purple-500/20 border-2 border-purple-500 text-purple-400'
-                : 'bg-white/5 border border-white/20 text-white/60 hover:bg-white/10 hover:text-white'
-            )}
-          >
-            <Mic size={24} />
-          </button>
-        </div>
-
+        
         {/* Settings Panel */}
         <SettingsPanel
           isOpen={showSettings}
@@ -586,7 +587,7 @@ export default function App() {
                 'p-2 rounded-lg transition-all border',
                 isRecording
                   ? 'bg-error/20 border-error/30 text-error animate-pulse'
-                  : 'bg-surface/40 border-border/10 text-text-muted hover:text-listening'
+                  : 'bg-surface/40 border-border/10 text-text-muted hover:text-primary hover:border-primary/30'
               )}
               title={isRecording ? 'Stop recording' : 'Voice input (push to talk)'}
             >

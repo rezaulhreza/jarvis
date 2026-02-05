@@ -34,6 +34,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
   const sttProviderRef = useRef(sttProvider)
   const silenceTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const speakingRef = useRef(false)
+  const startingRef = useRef(false) // Guard against concurrent startListening calls
 
   // Keep refs in sync
   useEffect(() => {
@@ -156,6 +157,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
     console.log('[Voice] startListening called', {
       isListening: isListeningRef.current,
       isPlaying: isPlayingRef.current,
+      starting: startingRef.current,
       sttProvider: sttProviderRef.current,
       hasRecognition: !!recognition.current
     })
@@ -169,11 +171,19 @@ export function useVoice(options: UseVoiceOptions = {}) {
       console.log('[Voice] Audio is playing, returning early')
       return
     }
+    // Prevent concurrent startListening calls
+    if (startingRef.current) {
+      console.log('[Voice] Already starting, returning early')
+      return
+    }
+
+    startingRef.current = true
 
     try {
       console.log('[Voice] Requesting microphone access...')
       stream.current = await navigator.mediaDevices.getUserMedia({ audio: true })
       console.log('[Voice] Microphone access granted')
+      startingRef.current = false // Clear the starting flag
       audioContext.current = new AudioContext()
       analyser.current = audioContext.current.createAnalyser()
       analyser.current.fftSize = 512
@@ -279,6 +289,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
       checkVolume()
     } catch (err) {
       console.error('Mic access denied:', err)
+      startingRef.current = false // Clear the starting flag on error
     }
   }, [processWithWhisper])
 
@@ -435,6 +446,30 @@ export function useVoice(options: UseVoiceOptions = {}) {
 
     console.log(`[TTS] speak called with provider: "${provider}", text length: ${text.length}`)
 
+    // Helper to fallback to browser TTS
+    const fallbackToBrowser = (reason: string) => {
+      console.warn(`[TTS] Falling back to browser TTS: ${reason}`)
+      const utterance = new SpeechSynthesisUtterance(text)
+      utterance.rate = 1.1
+      utterance.onend = onFinished
+      utterance.onerror = onFinished
+      speechSynthesis.speak(utterance)
+    }
+
+    // Define onFinished early so fallback can use it
+    const onFinished = () => {
+      stopPlaybackAnalysis()
+      setIsPlaying(false)
+      isPlayingRef.current = false
+      speakingRef.current = false
+      // Resume listening after a short delay
+      setTimeout(() => {
+        if (isListeningRef.current) {
+          resumeRecognition()
+        }
+      }, 300)
+    }
+
     // Stop any current audio first
     stopCurrentAudio()
 
@@ -449,19 +484,6 @@ export function useVoice(options: UseVoiceOptions = {}) {
 
     // Pause mic input while speaking
     pauseRecognition()
-
-    const onFinished = () => {
-      stopPlaybackAnalysis()
-      setIsPlaying(false)
-      isPlayingRef.current = false
-      speakingRef.current = false
-      // Resume listening after a short delay
-      setTimeout(() => {
-        if (isListeningRef.current) {
-          resumeRecognition()
-        }
-      }, 300)
-    }
 
     // Browser TTS - simulate volume pulse
     if (provider === 'browser') {
@@ -512,12 +534,12 @@ export function useVoice(options: UseVoiceOptions = {}) {
         } else {
           const data = await res.json().catch(() => ({}))
           console.error('ElevenLabs error:', data.error || 'Unknown error')
-          onFinished()
+          fallbackToBrowser('ElevenLabs API error')
           return
         }
       } catch (err) {
         console.error('ElevenLabs network error:', err)
-        onFinished()
+        fallbackToBrowser('ElevenLabs network error')
         return
       }
     }
@@ -551,8 +573,10 @@ export function useVoice(options: UseVoiceOptions = {}) {
         }
       } catch (err) {
         console.error('Edge TTS error:', err)
+        fallbackToBrowser('Edge TTS error')
+        return
       }
-      onFinished()
+      fallbackToBrowser('Edge TTS failed')
       return
     }
 
@@ -587,15 +611,19 @@ export function useVoice(options: UseVoiceOptions = {}) {
         } else {
           const data = await res.json().catch(() => ({}))
           console.error('Kokoro TTS error:', data.error || 'Unknown error')
-          onFinished()
+          fallbackToBrowser('Kokoro TTS API error')
           return
         }
       } catch (err) {
         console.error('Kokoro TTS network error:', err)
-        onFinished()
+        fallbackToBrowser('Kokoro TTS network error')
         return
       }
     }
+
+    // Unknown provider - fallback to browser
+    console.warn(`[TTS] Unknown provider: ${provider}, using browser`)
+    fallbackToBrowser(`Unknown provider: ${provider}`)
   }, [stopCurrentAudio, pauseRecognition, resumeRecognition, startPlaybackAnalysis, stopPlaybackAnalysis])
 
   const stopSpeaking = useCallback(() => {
