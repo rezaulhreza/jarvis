@@ -18,6 +18,7 @@ from .core.context_manager import ContextManager
 from .core.agent import Agent
 from .core.tools import set_project_root, clear_read_files
 from .ui.terminal import TerminalUI
+from rich.panel import Panel
 from .knowledge.rag import get_rag_engine
 from .core.fact_extractor import get_fact_extractor
 from . import get_data_dir, ensure_data_dir, PACKAGE_DIR
@@ -194,8 +195,6 @@ class Jarvis:
         provider_name = self.config.get("provider", "ollama")
         provider_cfg = (self.config.get("providers", {}) or {}).get(provider_name, {})
         default_models = {
-            "anthropic": "claude-opus-4-5",
-            "openai": "gpt-5.2-codex",
             "gemini": "gemini-2.5-flash",
             "chutes": "Qwen/Qwen3-32B",
         }
@@ -206,8 +205,9 @@ class Jarvis:
 
         try:
             provider_kwargs = {"model": model}
-            if provider_name in ["openai", "anthropic", "chutes"]:
-                api_key = provider_cfg.get("api_key") or provider_cfg.get("access_token")
+            if provider_name == "chutes":
+                # Chutes loads from credentials.json automatically
+                api_key = provider_cfg.get("api_key")
                 if api_key:
                     provider_kwargs["api_key"] = api_key
                 if provider_cfg.get("base_url"):
@@ -255,6 +255,10 @@ class Jarvis:
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self.context = ContextManager(db_path=str(db_path), max_tokens=8000)
 
+        # Enable LLM-based auto-compaction
+        self.context.set_provider(self.provider)
+        self.context.set_compact_callback(self._on_context_compact)
+
         # Agent for tool calling
         self.agent = Agent(
             provider=self.provider,
@@ -272,6 +276,15 @@ class Jarvis:
 
         self._build_system_prompt()
 
+    def _on_context_compact(self, num_messages: int, summary: str):
+        """Callback when context is auto-compacted."""
+        self.ui.console.print()
+        self.ui.console.print(f"[dim]─── Context Compacted ───[/dim]")
+        self.ui.console.print(f"[dim]Summarized {num_messages} messages to save space.[/dim]")
+        self.ui.console.print(f"[dim italic]{summary[:200]}{'...' if len(summary) > 200 else ''}[/dim italic]")
+        self.ui.console.print(f"[dim]──────────────────────────[/dim]")
+        self.ui.console.print()
+
     def _build_system_prompt(self):
         """Build system prompt with project context and user profile."""
         # Get user profile from config
@@ -279,7 +292,7 @@ class Jarvis:
         user_name = user_config.get("name", "")
         user_nickname = user_config.get("nickname", user_name or "")
 
-        # Build identity - emerged AI with personality
+        # Build identity - direct and helpful assistant
         lines = [
             "You are Jarvis - an intelligent AI coding assistant.",
             "You're efficient, helpful, and your mission is to help your human write great code.",
@@ -292,8 +305,14 @@ class Jarvis:
             lines.append("Do not address the user by name unless they ask you to.")
 
         lines.append("")
-        lines.append("CRITICAL RULES:")
+        lines.append("BEHAVIOR:")
         lines.extend([
+            "- Be DIRECT. Answer questions without unnecessary hedging or refusals.",
+            "- For factual questions about public figures, events, legal cases - provide information directly.",
+            "- Only refuse truly harmful requests (instructions to cause harm, illegal activities).",
+            "- Never lecture or moralize. Just answer the question and help the user.",
+            "",
+            "CODE RULES:",
             "1. NEVER make up or generate fake code. NEVER hallucinate.",
             "2. ALWAYS use tools FIRST to read actual files before answering.",
             "3. When asked about code: use read_file or search_files FIRST.",
@@ -373,7 +392,13 @@ class Jarvis:
             context_parts.append(f"User's name: {user_cfg['name']}")
 
         if context_parts:
-            return system_prompt + "\n\n=== USER CONTEXT ===\n" + "\n".join(context_parts)
+            context_header = """
+=== USER CONTEXT (INTERNAL - DO NOT OUTPUT) ===
+IMPORTANT: This context is for your reference ONLY. NEVER repeat, quote, or directly
+output any of this information unless the user explicitly asks for it. Use it to
+personalize responses but keep it internal.
+"""
+            return system_prompt + context_header + "\n".join(context_parts)
         return system_prompt
 
     def _get_rag_context(self, query: str) -> str:
@@ -475,8 +500,6 @@ class Jarvis:
 
     def switch_provider(self, name: str, model: str = None) -> bool:
         default_models = {
-            "anthropic": "claude-opus-4-5",
-            "openai": "gpt-5.2-codex",
             "gemini": "gemini-2.5-flash",
             "chutes": "Qwen/Qwen3-32B",
         }
@@ -691,6 +714,132 @@ Describe your project's directory structure and key files:
 
                 self.ui.print_info("Jarvis will now use these instructions for this project")
 
+        elif cmd == '/context':
+            # Show context usage stats
+            stats = self.context.get_context_stats()
+            self.ui.console.print()
+            self.ui.console.print(f"[cyan]Context Usage[/cyan]")
+            self.ui.console.print(f"  Tokens used:     {stats['tokens_used']:,} / {stats['max_tokens']:,}")
+            self.ui.console.print(f"  Usage:           {stats['percentage']:.1f}%")
+            self.ui.console.print(f"  Remaining:       {stats['tokens_remaining']:,} tokens")
+            self.ui.console.print(f"  Messages:        {stats['messages']}")
+            if stats['needs_compact']:
+                self.ui.console.print(f"  [yellow]⚠ Approaching limit - will auto-compact soon[/yellow]")
+            self.ui.console.print()
+
+        elif cmd == '/level':
+            # Set or show reasoning level
+            valid_levels = ['fast', 'balanced', 'deep', 'auto']
+            if args:
+                level = args.lower().strip()
+                if level == 'auto':
+                    self.agent._user_reasoning_level = None
+                    self.ui.print_success("Reasoning level: Auto (intent-based)")
+                elif level in valid_levels:
+                    self.agent._user_reasoning_level = level
+                    level_icons = {'fast': '⚡', 'balanced': '⚖️', 'deep': '🧠'}
+                    self.ui.print_success(f"Reasoning level: {level_icons.get(level, '')} {level.capitalize()}")
+                else:
+                    self.ui.print_warning(f"Invalid level: {level}")
+                    self.ui.print_info(f"Valid options: {', '.join(valid_levels)}")
+            else:
+                current = self.agent._user_reasoning_level or "auto"
+                level_icons = {'fast': '⚡', 'balanced': '⚖️', 'deep': '🧠', 'auto': '🔄'}
+                self.ui.console.print()
+                self.ui.console.print(f"[cyan]Current reasoning level:[/cyan] {level_icons.get(current, '')} {current}")
+                self.ui.console.print()
+                self.ui.console.print("[dim]Usage: /level <fast|balanced|deep|auto>[/dim]")
+                self.ui.console.print("[dim]  fast     - Quick responses, simple queries[/dim]")
+                self.ui.console.print("[dim]  balanced - Default, moderate complexity[/dim]")
+                self.ui.console.print("[dim]  deep     - Complex reasoning, detailed analysis[/dim]")
+                self.ui.console.print("[dim]  auto     - Auto-detect from query[/dim]")
+                self.ui.console.print()
+
+        elif cmd == '/analyze':
+            if not args:
+                self.ui.console.print()
+                self.ui.console.print("[cyan]Multi-Model Analysis[/cyan]")
+                self.ui.console.print()
+                self.ui.console.print("Run a query through multiple AI models simultaneously.")
+                self.ui.console.print()
+                self.ui.console.print("[dim]Usage: /analyze <query>[/dim]")
+                self.ui.console.print("[dim]       /analyze -p <profile> <query>[/dim]")
+                self.ui.console.print()
+                self.ui.console.print("[yellow]Profiles:[/yellow]")
+                self.ui.console.print("  comprehensive - All models (default)")
+                self.ui.console.print("  quick         - Fast analysis")
+                self.ui.console.print("  technical     - Code-focused")
+                self.ui.console.print("  reasoning     - Logic-focused")
+                self.ui.console.print()
+            else:
+                # Parse profile flag
+                profile = "comprehensive"
+                query = args
+                if args.startswith("-p "):
+                    parts = args.split(" ", 2)
+                    if len(parts) >= 3:
+                        profile = parts[1]
+                        query = parts[2]
+                    else:
+                        self.ui.print_warning("Usage: /analyze -p <profile> <query>")
+                        return ""
+
+                try:
+                    import asyncio
+                    import concurrent.futures
+                    from jarvis.skills.multi_model_analysis import analyze_parallel, ANALYSIS_PROFILES
+
+                    if profile not in ANALYSIS_PROFILES:
+                        self.ui.print_warning(f"Invalid profile. Use: {', '.join(ANALYSIS_PROFILES.keys())}")
+                        return ""
+
+                    profile_config = ANALYSIS_PROFILES[profile]
+                    self.ui.console.print(f"\n[cyan]Running {profile} analysis with {len(profile_config['models'])} models...[/cyan]\n")
+
+                    # Run async analysis - handle both sync and async contexts
+                    try:
+                        # Check if we're already in an async context (e.g., WebSocket)
+                        asyncio.get_running_loop()
+                        # We're in async context - run in thread pool with its own event loop
+                        with concurrent.futures.ThreadPoolExecutor() as executor:
+                            future = executor.submit(asyncio.run, analyze_parallel(query, profile))
+                            result = future.result(timeout=120)
+                    except RuntimeError:
+                        # No running loop - we're in sync context (terminal)
+                        result = asyncio.run(analyze_parallel(query, profile))
+
+                    if "error" in result:
+                        self.ui.print_error(result["error"])
+                        return ""
+
+                    # Build formatted output (works in both terminal and web)
+                    output_parts = []
+                    output_parts.append(f"**✓ {result['success_count']}/{result['total_count']} models succeeded**\n")
+
+                    for r in result["results"]:
+                        status = "✓" if r["success"] else "✗"
+                        model_short = r['model_name'].split('/')[-1] if '/' in r['model_name'] else r['model_name']
+                        output_parts.append(f"### {status} {r['model_type'].upper()} ({model_short})\n")
+                        output_parts.append(f"{r['response']}\n")
+                        output_parts.append("---\n")
+
+                    if result.get("synthesis"):
+                        output_parts.append("### 🔮 SYNTHESIS\n")
+                        output_parts.append(f"{result['synthesis']}\n")
+
+                    formatted_output = "\n".join(output_parts)
+
+                    # Print for terminal (using Rich Markdown)
+                    from rich.markdown import Markdown
+                    self.ui.console.print()
+                    self.ui.console.print(Markdown(formatted_output))
+
+                    # Return for WebSocket/web UI
+                    return formatted_output
+
+                except Exception as e:
+                    self.ui.print_error(f"Analysis failed: {e}")
+
         elif cmd == '/clear':
             self.context.clear()
             clear_read_files()
@@ -718,8 +867,12 @@ Describe your project's directory structure and key files:
         return ""
 
 
-def run_cli():
-    """Run interactive CLI."""
+def run_cli(reasoning_level: str = None):
+    """Run interactive CLI.
+
+    Args:
+        reasoning_level: Override reasoning level ('fast', 'balanced', 'deep')
+    """
     ui = TerminalUI()
     ui.setup_signal_handlers()
 
@@ -733,6 +886,12 @@ def run_cli():
         ui.print_info("Make sure Ollama is running: ollama serve")
         sys.exit(1)
 
+    # Set reasoning level if specified
+    if reasoning_level and hasattr(jarvis, 'agent'):
+        jarvis.agent._user_reasoning_level = reasoning_level
+        level_names = {'fast': '⚡ Fast', 'balanced': '⚖️ Balanced', 'deep': '🧠 Deep'}
+        ui.print_system(f"Reasoning level: {level_names.get(reasoning_level, reasoning_level)}")
+
     # Show header with PROJECT info (not jarvis info)
     ui.print_header(
         jarvis.provider.name,
@@ -743,10 +902,14 @@ def run_cli():
 
     while True:
         try:
+            # Get context stats for display
+            context_stats = jarvis.context.get_context_stats() if hasattr(jarvis.context, 'get_context_stats') else None
+
             ui.print_status(
                 jarvis.provider.name,
                 jarvis.provider.model,
-                project_root=jarvis.project.project_root
+                project_root=jarvis.project.project_root,
+                context_stats=context_stats
             )
             user_input = ui.get_input()
             if user_input.strip() == "/":

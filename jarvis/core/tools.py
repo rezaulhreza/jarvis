@@ -1139,14 +1139,16 @@ def web_search(query: str, max_results: int = 5) -> str:
         from ddgs import DDGS
         import time
 
+        # Ensure max_results is an integer (fixes type errors in ddgs library)
+        max_results = int(max_results) if max_results else 5
+
         results = []
-        for attempt, (search_query, params) in enumerate([
-            (query, {}),
-            (query, {"timelimit": "m"}),
-        ]):
+        for attempt in range(2):
             try:
                 with DDGS() as ddgs:
-                    results = list(ddgs.text(search_query, max_results=max_results, **params))
+                    # Use text() - ddgs v9 API
+                    search_results = ddgs.text(query, max_results=max_results)
+                    results = list(search_results) if search_results else []
                     if results:
                         break
                 if attempt < 1:
@@ -1332,7 +1334,9 @@ def get_current_news(topic: str) -> str:
         from ddgs import DDGS
 
         with DDGS() as ddgs:
-            results = list(ddgs.news(topic, max_results=5))
+            # ddgs v9 API
+            news_results = ddgs.news(topic, max_results=5)
+            results = list(news_results) if news_results else []
 
     except Exception as e:
         print(f"[get_current_news] DuckDuckGo news error: {e}")

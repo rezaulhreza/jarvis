@@ -1,14 +1,18 @@
 """
 Tool router - determines which skill to use for a request.
 
-Uses simple keyword matching for reliability, with LLM fallback for complex cases.
+Supports both LLM-based intent classification (preferred) and
+keyword matching (fallback) for reliable routing.
 """
 
 import re
-from typing import Optional
+from typing import Optional, Dict, Any
+
+from .intent import IntentClassifier, Intent, ClassifiedIntent
 
 
-# Keyword patterns for common tools (fast, reliable)
+# Legacy keyword patterns (used as fallback when intent classification unavailable)
+# These are kept for backward compatibility but intent classification is preferred
 TOOL_PATTERNS = {
     "get_weather": [
         r"weather\s+(in|for|at)\s+(\w+[\w\s]*)",
@@ -57,6 +61,18 @@ TOOL_PATTERNS = {
         r"(my|list)\s+(github\s+)?repos",
         r"github\s+repositories",
     ],
+}
+
+# Intent to tool mapping
+INTENT_TO_TOOL = {
+    Intent.WEATHER: "get_weather",
+    Intent.TIME_DATE: "current_time",
+    Intent.CALCULATE: "calculate",
+    Intent.SEARCH: "web_search",
+    Intent.NEWS: "get_current_news",
+    Intent.FINANCE: "web_search",  # or get_gold_price for gold
+    Intent.FILE_OP: "read_file",
+    Intent.RECALL: "recall_memory",
 }
 
 
@@ -127,21 +143,56 @@ def extract_params(user_input: str, tool: str) -> dict:
 
 
 class ToolRouter:
-    """Routes user requests to appropriate tools."""
+    """
+    Routes user requests to appropriate tools.
 
-    def __init__(self, ollama_client=None, router_model: str = "functiongemma"):
+    Supports LLM-based intent classification (preferred) with
+    keyword pattern fallback for reliability.
+    """
+
+    def __init__(self, ollama_client=None, router_model: str = "functiongemma", config: dict = None):
         self.client = ollama_client
         self.router_model = router_model
+        self.config = config or {}
+
+        # Initialize intent classifier if config enables it
+        self.classifier = None
+        if self.config.get("intent", {}).get("enabled", True):
+            self.classifier = IntentClassifier(provider=ollama_client, config=config)
 
     def route(self, user_input: str, context: dict = None) -> dict:
         """
         Determine which tool to use.
 
-        Uses fast keyword matching first, LLM fallback for unclear cases.
+        Priority:
+        1. Intent classification (if enabled and confident)
+        2. Keyword pattern matching (fast, reliable)
+        3. LLM routing (for complex cases)
         """
         input_lower = user_input.lower()
 
-        # Try keyword patterns first (fast and reliable)
+        # === Try intent classification first ===
+        if self.classifier:
+            try:
+                intent = self.classifier.classify_sync(user_input)
+                confidence_threshold = self.config.get("intent", {}).get("confidence_threshold", 0.7)
+
+                if intent.confidence >= confidence_threshold:
+                    tool = self._intent_to_tool(intent, user_input)
+                    if tool:
+                        params = extract_params(user_input, tool)
+                        return {
+                            "tool": tool,
+                            "params": params,
+                            "method": "intent",
+                            "intent": intent.intent.value,
+                            "confidence": intent.confidence,
+                            "reasoning_level": intent.reasoning_level.value,
+                        }
+            except Exception as e:
+                print(f"[ToolRouter] Intent classification failed: {e}")
+
+        # === Fall back to keyword patterns ===
         for tool, patterns in TOOL_PATTERNS.items():
             for pattern in patterns:
                 if re.search(pattern, input_lower):
@@ -153,9 +204,8 @@ class ToolRouter:
                     }
 
         # Check for simple greetings - no tool needed
-        greetings = ['hello', 'hi', 'hey', 'good morning', 'good evening', 'how are you']
-        if any(g in input_lower for g in greetings):
-            return {"tool": "none", "params": {}}
+        if self._is_greeting(input_lower):
+            return {"tool": "none", "params": {}, "method": "greeting"}
 
         # For complex requests, use LLM router if available
         if self.client and self._is_complex_request(user_input):
@@ -163,6 +213,36 @@ class ToolRouter:
 
         # Default: no tool, just chat
         return {"tool": "none", "params": {}}
+
+    def _intent_to_tool(self, intent: ClassifiedIntent, user_input: str) -> Optional[str]:
+        """Convert classified intent to tool name."""
+        if not intent.requires_tools:
+            return None
+
+        # Direct mapping
+        if intent.intent in INTENT_TO_TOOL:
+            tool = INTENT_TO_TOOL[intent.intent]
+
+            # Special case: Finance with gold -> get_gold_price
+            if intent.intent == Intent.FINANCE and "gold" in user_input.lower():
+                import os
+                if os.getenv("GOLDAPI_KEY") or os.getenv("GOLD_API_KEY"):
+                    return "get_gold_price"
+
+            return tool
+
+        # Use suggested tools from classifier
+        if intent.suggested_tools:
+            return intent.suggested_tools[0]
+
+        return None
+
+    def _is_greeting(self, text: str) -> bool:
+        """Check if text is a simple greeting."""
+        greetings = ['hello', 'hi', 'hey', 'good morning', 'good evening', 'good afternoon',
+                     'how are you', 'what\'s up', 'howdy', 'greetings']
+        return any(text.strip() == g or text.startswith(g + " ") or text.startswith(g + ",")
+                   for g in greetings)
 
     def _is_complex_request(self, user_input: str) -> bool:
         """Check if request needs LLM routing."""
@@ -207,17 +287,76 @@ If no tool needed, respond: {{"tool": "none", "params": {{}}}}"""
         return {"tool": "none", "params": {}}
 
 
-def should_use_reasoning(user_input: str) -> bool:
-    """Check if deep reasoning is needed."""
-    keywords = ['why', 'explain', 'analyze', 'compare', 'debug', 'figure out']
+def should_use_reasoning(user_input: str, classifier: IntentClassifier = None) -> bool:
+    """
+    Check if deep reasoning is needed.
+
+    Uses intent classification if available, otherwise falls back to keywords.
+    """
+    if classifier:
+        try:
+            intent = classifier.classify_sync(user_input)
+            from .intent import ReasoningLevel
+            return intent.reasoning_level == ReasoningLevel.DEEP
+        except Exception:
+            pass
+
+    # Fallback to keywords
+    keywords = ['why', 'explain', 'analyze', 'compare', 'debug', 'figure out',
+                'step by step', 'in detail', 'thoroughly', 'comprehensive']
     return any(kw in user_input.lower() for kw in keywords)
 
 
-def should_use_vision(user_input: str) -> bool:
-    """Check if vision model is needed."""
+def should_use_vision(user_input: str, classifier: IntentClassifier = None) -> bool:
+    """
+    Check if vision model is needed.
+
+    Uses intent classification if available, otherwise falls back to patterns.
+    """
+    if classifier:
+        try:
+            intent = classifier.classify_sync(user_input)
+            return intent.intent == Intent.VISION
+        except Exception:
+            pass
+
+    # Fallback to patterns
     patterns = [
         r'\.(jpg|jpeg|png|gif|webp|bmp)\b',
         r'(this|the)\s+(image|picture|photo|screenshot)',
+        r'analyze\s+(this|the)\s+image',
+        r'what\'?s?\s+in\s+(this|the)\s+(image|picture|photo)',
     ]
     input_lower = user_input.lower()
     return any(re.search(p, input_lower) for p in patterns)
+
+
+def get_reasoning_level(user_input: str, classifier: IntentClassifier = None) -> str:
+    """
+    Get the recommended reasoning level for a user input.
+
+    Returns: "fast", "balanced", or "deep"
+    """
+    if classifier:
+        try:
+            intent = classifier.classify_sync(user_input)
+            return intent.reasoning_level.value
+        except Exception:
+            pass
+
+    # Fallback heuristics
+    input_lower = user_input.lower()
+
+    # Fast indicators
+    fast_patterns = [r'^(hi|hello|hey|thanks|ok|yes|no)\b', r'^\w+\?$']
+    for p in fast_patterns:
+        if re.search(p, input_lower):
+            return "fast"
+
+    # Deep indicators
+    deep_keywords = ['explain', 'analyze', 'compare', 'debug', 'step by step',
+                     'in detail', 'thoroughly', 'comprehensive', 'why']
+    if any(kw in input_lower for kw in deep_keywords):
+        return "deep"
+
+    return "balanced"

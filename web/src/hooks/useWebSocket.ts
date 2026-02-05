@@ -15,6 +15,23 @@ interface RagInfo {
   error?: string
 }
 
+interface IntentInfo {
+  detected: boolean
+  intent?: string
+  confidence?: number
+  reasoning_level?: string
+  requires_tools?: boolean
+}
+
+interface ContextStats {
+  tokens_used: number
+  max_tokens: number
+  percentage: number
+  messages: number
+  needs_compact: boolean
+  tokens_remaining: number
+}
+
 interface WSMessage {
   type: string
   content?: string
@@ -26,6 +43,10 @@ interface WSMessage {
   message?: string  // Error message from backend
   rag?: RagInfo
   tools?: ToolEvent[]
+  intent?: IntentInfo
+  reasoning_level?: string
+  mode?: string
+  context?: ContextStats
 }
 
 interface ToolEvent {
@@ -49,6 +70,8 @@ export function useWebSocket() {
   const [project, setProject] = useState('')
   const [ragStatus, setRagStatus] = useState<RagInfo | null>(null)
   const [toolTimeline, setToolTimeline] = useState<ToolEvent[]>([])
+  const [intentInfo, setIntentInfo] = useState<IntentInfo | null>(null)
+  const [contextStats, setContextStats] = useState<ContextStats | null>(null)
   // pendingTools is used via setPendingTools callback form, not directly referenced
   const [, setPendingTools] = useState<ToolEvent[]>([])
 
@@ -109,6 +132,10 @@ export function useWebSocket() {
 
       case 'response':
         if (data.done) {
+          // Update context stats if provided
+          if (data.context) {
+            setContextStats(data.context)
+          }
           // Add message with content from response or accumulated streaming
           setStreaming((currentStreaming) => {
             const finalContent = data.content || currentStreaming
@@ -174,16 +201,24 @@ export function useWebSocket() {
         }
         break
 
+      case 'intent':
+        if (data.intent) {
+          setIntentInfo(data.intent)
+        }
+        break
+
       case 'cleared':
         setMessages([])
         setStreaming('')
         setRagStatus(null)
         setToolTimeline([])
+        setIntentInfo(null)
+        setContextStats(null)
         break
     }
   }
 
-  const send = useCallback((content: string, chatMode: boolean = false) => {
+  const send = useCallback((content: string, chatMode: boolean = true, reasoningLevel: string | null = null) => {
     if (!ws.current || ws.current.readyState !== WebSocket.OPEN) return
 
     setMessages((prev) => [...prev, { role: 'user', content, timestamp: new Date() }])
@@ -192,8 +227,20 @@ export function useWebSocket() {
     setRagStatus(null)  // Reset RAG status for new query
     setToolTimeline([])
     setPendingTools([])
+    setIntentInfo(null)  // Reset intent for new query
 
-    ws.current.send(JSON.stringify({ type: 'message', content, chat_mode: chatMode }))
+    const message: Record<string, unknown> = {
+      type: 'message',
+      content,
+      chat_mode: chatMode
+    }
+
+    // Add reasoning level if user specified an override
+    if (reasoningLevel) {
+      message.reasoning_level = reasoningLevel
+    }
+
+    ws.current.send(JSON.stringify(message))
   }, [])
 
   const switchModel = useCallback((newModel: string) => {
@@ -221,6 +268,8 @@ export function useWebSocket() {
     project,
     ragStatus,
     toolTimeline,
+    intentInfo,
+    contextStats,
     send,
     switchModel,
     switchProvider,

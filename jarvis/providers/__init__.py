@@ -3,26 +3,18 @@ LLM Providers - Abstract interface for different AI backends
 
 Supported:
 - Ollama (local)
-- Anthropic (Claude)
-- OpenAI (GPT)
-- Google (Gemini)
-- Chutes (OpenAI-compatible with various models)
+- Ollama Cloud (remote Ollama)
+- Chutes (recommended - comprehensive AI platform)
 """
 
 from .base import BaseProvider, Message
 from .ollama import OllamaProvider
-from .anthropic import AnthropicProvider
-from .openai import OpenAIProvider
-from .gemini import GeminiProvider
 from .ollama_cloud import OllamaCloudProvider
 from .chutes import ChutesProvider
 
 PROVIDERS = {
     "ollama": OllamaProvider,
     "ollama_cloud": OllamaCloudProvider,
-    "anthropic": AnthropicProvider,
-    "openai": OpenAIProvider,
-    "gemini": GeminiProvider,
     "chutes": ChutesProvider,
 }
 
@@ -43,9 +35,6 @@ __all__ = [
     "BaseProvider",
     "Message",
     "OllamaProvider",
-    "AnthropicProvider",
-    "OpenAIProvider",
-    "GeminiProvider",
     "OllamaCloudProvider",
     "ChutesProvider",
     "get_provider",

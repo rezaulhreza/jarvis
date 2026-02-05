@@ -16,8 +16,11 @@ from . import __version__, ensure_data_dir
 @click.option('--voice', is_flag=True, help='Enable voice input mode')
 @click.option('--port', default=7777, help='Port for web UI (default: 7777)')
 @click.option('--daemon', is_flag=True, help='Run as background daemon')
+@click.option('--fast', is_flag=True, help='Use fast reasoning (quick responses)')
+@click.option('--deep', is_flag=True, help='Use deep reasoning (complex analysis)')
+@click.option('--level', type=click.Choice(['fast', 'balanced', 'deep']), help='Set reasoning level')
 @click.pass_context
-def main(ctx, version, dev, voice, port, daemon):
+def main(ctx, version, dev, voice, port, daemon, fast, deep, level):
     """
     Jarvis - Your local AI assistant.
 
@@ -37,6 +40,17 @@ def main(ctx, version, dev, voice, port, daemon):
     # Ensure data directory exists
     ensure_data_dir()
 
+    # Determine reasoning level from flags
+    reasoning_level = level
+    if fast:
+        reasoning_level = 'fast'
+    elif deep:
+        reasoning_level = 'deep'
+
+    # Store in context for subcommands
+    ctx.ensure_object(dict)
+    ctx.obj['reasoning_level'] = reasoning_level
+
     if dev:
         _launch_dev(port)
     elif voice:
@@ -45,16 +59,41 @@ def main(ctx, version, dev, voice, port, daemon):
         _launch_daemon()
     elif ctx.invoked_subcommand is None:
         # Default: interactive CLI
-        _launch_cli()
+        _launch_cli(reasoning_level=reasoning_level)
 
 
 @main.command()
 @click.argument('message')
-def chat(message):
-    """Send a single message and get a response."""
+@click.option('--fast', is_flag=True, help='Use fast reasoning')
+@click.option('--deep', is_flag=True, help='Use deep reasoning')
+@click.option('--level', type=click.Choice(['fast', 'balanced', 'deep']), help='Set reasoning level')
+@click.pass_context
+def chat(ctx, message, fast, deep, level):
+    """Send a single message and get a response.
+
+    \b
+    Examples:
+        jarvis chat "hello"              # Default balanced
+        jarvis chat "quick summary" --fast
+        jarvis chat "explain in detail" --deep
+    """
     from .assistant import Jarvis
 
+    # Determine reasoning level (command options > parent context)
+    reasoning_level = level
+    if fast:
+        reasoning_level = 'fast'
+    elif deep:
+        reasoning_level = 'deep'
+    elif ctx.obj and ctx.obj.get('reasoning_level'):
+        reasoning_level = ctx.obj['reasoning_level']
+
     jarvis = Jarvis()
+
+    # Set reasoning level if specified
+    if reasoning_level and hasattr(jarvis, 'agent') and hasattr(jarvis.agent, 'set_reasoning_level'):
+        jarvis.agent.set_reasoning_level(reasoning_level)
+
     response = jarvis.process(message)
     # Response is already printed by the assistant
 
@@ -94,93 +133,102 @@ def setup():
 
 
 @main.group()
-def auth():
-    """Authentication helpers for providers."""
+def config():
+    """Manage API credentials (stored in ~/.jarvis/credentials.json)."""
     pass
 
 
-@auth.group()
-def codex():
-    """Codex CLI auth helpers (OAuth/device)."""
-    pass
+@config.command("set")
+@click.argument("provider")
+@click.argument("key", default="api_key")
+@click.argument("value", required=False)
+def config_set(provider, key, value):
+    """Set an API credential.
+
+    \b
+    Examples:
+        jarvis config set chutes api_key YOUR_KEY
+        jarvis config set brave api_key YOUR_KEY
+        jarvis config set goldapi api_key YOUR_KEY
+    """
+    from .auth.credentials import set_credential
+
+    if not value:
+        # Read from stdin or prompt
+        value = click.prompt(f"Enter {provider} {key}", hide_input=True)
+
+    set_credential(provider, key, value)
+    click.echo(f"✓ Saved {provider}.{key}")
 
 
-@codex.command("device")
-def codex_device():
-    """Run Codex device auth and import credentials."""
-    from .auth.codex import codex_device_login
+@config.command("get")
+@click.argument("provider", required=False)
+def config_get(provider):
+    """Show configured credentials (masked).
 
-    result = codex_device_login()
-    click.echo(result.get("output") or "")
-    imported = result.get("import", {})
-    if imported.get("imported"):
-        click.echo("✓ Codex credentials imported into ~/.jarvis/config/settings.yaml")
+    \b
+    Examples:
+        jarvis config get          # Show all
+        jarvis config get chutes   # Show chutes only
+    """
+    from .auth.credentials import get_all_credentials, list_configured_providers
+
+    if provider:
+        creds = get_all_credentials()
+        if provider in creds:
+            click.echo(f"{provider}:")
+            for k, v in creds[provider].items():
+                click.echo(f"  {k}: {v}")
+        else:
+            click.echo(f"No credentials for {provider}")
     else:
-        click.echo("✗ No Codex credentials imported")
+        providers = list_configured_providers()
+        if not providers:
+            click.echo("No credentials configured.")
+            click.echo("\nSet credentials with:")
+            click.echo("  jarvis config set chutes api_key YOUR_KEY")
+            return
+
+        creds = get_all_credentials()
+        click.echo("Configured credentials:")
+        for p in providers:
+            click.echo(f"  {p}:")
+            for k, v in creds.get(p, {}).items():
+                click.echo(f"    {k}: {v}")
 
 
-@codex.command("import")
-def codex_import():
-    """Import Codex CLI credentials into settings.yaml."""
-    from .auth.codex import import_codex_auth
+@config.command("delete")
+@click.argument("provider")
+@click.argument("key", required=False)
+def config_delete(provider, key):
+    """Delete a credential.
 
-    imported = import_codex_auth()
-    if imported.get("imported"):
-        click.echo("✓ Codex credentials imported into ~/.jarvis/config/settings.yaml")
+    \b
+    Examples:
+        jarvis config delete chutes           # Delete all chutes creds
+        jarvis config delete chutes api_key   # Delete specific key
+    """
+    from .auth.credentials import delete_credential
+
+    delete_credential(provider, key)
+    if key:
+        click.echo(f"✓ Deleted {provider}.{key}")
     else:
-        click.echo("✗ No Codex credentials found to import")
+        click.echo(f"✓ Deleted all {provider} credentials")
 
 
-@auth.group()
-def claude():
-    """Claude auth helpers (OAuth/setup-token)."""
-    pass
+@config.command("migrate")
+def config_migrate():
+    """Migrate API keys from environment variables to credentials.json."""
+    from .auth.credentials import migrate_from_env
 
-
-@claude.command("device")
-def claude_device():
-    """Run Claude setup-token and import credentials if found."""
-    from .auth.claude import claude_device_login
-
-    result = claude_device_login()
-    click.echo(result.get("output") or "")
-    imported = result.get("import", {})
-    if imported.get("imported"):
-        click.echo("✓ Claude credentials imported into ~/.jarvis/config/settings.yaml")
+    migrated = migrate_from_env()
+    if migrated:
+        click.echo("✓ Migrated credentials:")
+        for item in migrated:
+            click.echo(f"  {item}")
     else:
-        click.echo("✗ No Claude credentials imported")
-
-
-@claude.command("import")
-def claude_import():
-    """Import Claude credentials from OpenClaw or env into settings.yaml."""
-    from .auth.claude import import_claude_access_token, import_anthropic_key_from_env
-
-    imported = import_claude_access_token()
-    if not imported.get("imported"):
-        imported = import_anthropic_key_from_env()
-
-    if imported.get("imported"):
-        click.echo("✓ Claude credentials imported into ~/.jarvis/config/settings.yaml")
-    else:
-        click.echo("✗ No Claude credentials found to import")
-
-
-@claude.command("store")
-@click.option("--token", help="Claude access token (if omitted, read from stdin)")
-def claude_store(token):
-    """Store a Claude access token in ~/.jarvis/credentials/claude.json."""
-    from .auth.claude import store_access_token_locally
-
-    if not token:
-        token = sys.stdin.read().strip()
-
-    result = store_access_token_locally(token)
-    if result.get("stored"):
-        click.echo("✓ Claude access token stored")
-        click.echo(f"  {result.get('path')}")
-    else:
-        click.echo("✗ Failed to store token")
+        click.echo("No environment variables to migrate.")
 
 @main.command()
 def models():
@@ -257,10 +305,10 @@ def facts():
         click.echo(f"Facts will be saved to: {facts_path}")
 
 
-def _launch_cli():
+def _launch_cli(reasoning_level: str = None):
     """Launch interactive CLI mode."""
     from .assistant import run_cli
-    run_cli()
+    run_cli(reasoning_level=reasoning_level)
 
 
 def _launch_dev(port: int):
@@ -559,6 +607,457 @@ def knowledge_sync(projects, personal, docs):
             click.echo(f"  Added {readme_count} project READMEs")
 
     click.echo(f"\nTotal: {rag.count()} chunks in knowledge base")
+
+
+# ============== Integration Commands ==============
+
+@main.group()
+def telegram():
+    """Telegram bot integration commands."""
+    pass
+
+
+@telegram.command("run")
+def telegram_run():
+    """Run the Telegram bot.
+
+    \b
+    Prerequisites:
+        1. Create a bot via @BotFather on Telegram
+        2. Set TELEGRAM_BOT_TOKEN in .env or via:
+           jarvis config set telegram bot_token YOUR_TOKEN
+
+    \b
+    Optional security:
+        Set TELEGRAM_ALLOWED_USERS to comma-separated user IDs
+        to restrict who can use the bot.
+
+    \b
+    Example:
+        jarvis telegram run
+    """
+    import asyncio
+    from .integrations.telegram_bot import TelegramBot
+    from .assistant import Jarvis
+
+    # Check if token is configured
+    import os
+    from .auth.credentials import get_credential
+
+    token = get_credential("telegram", "bot_token") or os.getenv("TELEGRAM_BOT_TOKEN")
+    if not token:
+        click.echo("❌ Telegram bot token not configured.")
+        click.echo("\nSet it with:")
+        click.echo("  jarvis config set telegram bot_token YOUR_BOT_TOKEN")
+        click.echo("\nOr add to .env:")
+        click.echo("  TELEGRAM_BOT_TOKEN=your_token_here")
+        return
+
+    # Create message handler that uses Jarvis
+    async def handle_message(user_id: str, username: str, text: str) -> str:
+        """Process message through Jarvis."""
+        import asyncio
+        jarvis = Jarvis()
+        # process() is sync, run in executor
+        loop = asyncio.get_event_loop()
+        response = await loop.run_in_executor(None, jarvis.process, text)
+        return response or "I couldn't generate a response."
+
+    async def run():
+        bot = TelegramBot(token=token, message_handler=handle_message)
+        if not await bot.start():
+            click.echo("❌ Failed to start Telegram bot")
+            return
+
+        click.echo("✅ Telegram bot is running!")
+        click.echo("   Press Ctrl+C to stop\n")
+
+        try:
+            while True:
+                await asyncio.sleep(1)
+        except KeyboardInterrupt:
+            click.echo("\n\nStopping...")
+        finally:
+            await bot.stop()
+
+    asyncio.run(run())
+
+
+@telegram.command("status")
+def telegram_status():
+    """Check Telegram bot configuration status."""
+    import os
+    from .auth.credentials import get_credential
+
+    token = get_credential("telegram", "bot_token") or os.getenv("TELEGRAM_BOT_TOKEN")
+    allowed = get_credential("telegram", "allowed_users") or os.getenv("TELEGRAM_ALLOWED_USERS")
+    chat_id = get_credential("telegram", "chat_id")
+
+    if token:
+        masked = f"{token[:8]}...{token[-4:]}" if len(token) > 12 else "***"
+        click.echo(f"✅ Bot token: {masked}")
+    else:
+        click.echo("❌ Bot token: Not configured")
+
+    if chat_id:
+        click.echo(f"✅ Default chat ID: {chat_id}")
+    else:
+        click.echo("⚠️  Default chat ID: Not set")
+
+    if allowed:
+        click.echo(f"✅ Allowed users: {allowed}")
+    else:
+        click.echo("⚠️  Allowed users: All (not restricted)")
+
+    click.echo("\nRun 'jarvis telegram setup' for interactive configuration")
+
+
+@telegram.command("setup")
+def telegram_setup():
+    """Interactive setup wizard for Telegram bot.
+
+    This will guide you through:
+    1. Creating a bot via @BotFather
+    2. Setting up the bot token
+    3. Getting your chat ID
+    4. Configuring allowed users
+    """
+    import httpx
+    from .auth.credentials import set_credential, get_credential
+
+    click.echo("=" * 50)
+    click.echo("🤖 Telegram Bot Setup Wizard")
+    click.echo("=" * 50)
+    click.echo()
+
+    # Step 1: Bot Token
+    click.echo("STEP 1: Bot Token")
+    click.echo("-" * 30)
+
+    existing_token = get_credential("telegram", "bot_token")
+    if existing_token:
+        masked = f"{existing_token[:8]}...{existing_token[-4:]}"
+        click.echo(f"Current token: {masked}")
+        if not click.confirm("Do you want to change it?", default=False):
+            token = existing_token
+        else:
+            token = None
+    else:
+        token = None
+
+    if not token:
+        click.echo()
+        click.echo("To get a bot token:")
+        click.echo("  1. Open Telegram and search for @BotFather")
+        click.echo("  2. Send /newbot")
+        click.echo("  3. Follow the prompts to name your bot")
+        click.echo("  4. Copy the token (looks like: 123456789:ABCdef...)")
+        click.echo()
+        token = click.prompt("Paste your bot token", hide_input=True)
+
+    # Test the token
+    click.echo("\nTesting token...", nl=False)
+    try:
+        import httpx
+        resp = httpx.get(f"https://api.telegram.org/bot{token}/getMe", timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data.get("ok"):
+                bot_info = data.get("result", {})
+                click.echo(f" ✅ Valid!")
+                click.echo(f"   Bot name: {bot_info.get('first_name')}")
+                click.echo(f"   Username: @{bot_info.get('username')}")
+                set_credential("telegram", "bot_token", token)
+            else:
+                click.echo(" ❌ Invalid token")
+                return
+        else:
+            click.echo(f" ❌ Error: {resp.status_code}")
+            return
+    except Exception as e:
+        click.echo(f" ❌ Error: {e}")
+        return
+
+    # Step 2: Get Chat ID
+    click.echo()
+    click.echo("STEP 2: Get Your Chat ID")
+    click.echo("-" * 30)
+    click.echo()
+    click.echo(f"Now message your bot (@{bot_info.get('username')}) on Telegram.")
+    click.echo("Send any message (like 'hello') to register your chat.")
+    click.echo()
+
+    if click.confirm("Have you sent a message to your bot?", default=True):
+        click.echo("\nFetching your chat ID...", nl=False)
+        try:
+            resp = httpx.get(f"https://api.telegram.org/bot{token}/getUpdates", timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                updates = data.get("result", [])
+                if updates:
+                    # Get the most recent message
+                    for update in reversed(updates):
+                        msg = update.get("message", {})
+                        if msg:
+                            chat_id = str(msg.get("chat", {}).get("id"))
+                            user = msg.get("from", {})
+                            username = user.get("username") or user.get("first_name")
+                            click.echo(f" ✅ Found!")
+                            click.echo(f"   Chat ID: {chat_id}")
+                            click.echo(f"   User: {username}")
+
+                            if click.confirm(f"\nSave {chat_id} as your default chat ID?", default=True):
+                                set_credential("telegram", "chat_id", chat_id)
+                                click.echo("   ✅ Saved!")
+
+                            if click.confirm(f"Restrict bot to only your user ID ({chat_id})?", default=True):
+                                set_credential("telegram", "allowed_users", chat_id)
+                                click.echo("   ✅ Access restricted to you only!")
+                            break
+                else:
+                    click.echo(" ⚠️  No messages found")
+                    click.echo("   Make sure you sent a message to the bot, then try again.")
+            else:
+                click.echo(f" ❌ Error: {resp.status_code}")
+        except Exception as e:
+            click.echo(f" ❌ Error: {e}")
+    else:
+        click.echo("\nYou can get your chat ID later by:")
+        click.echo("  1. Message the bot")
+        click.echo("  2. Run: jarvis telegram setup")
+
+    # Step 3: Done
+    click.echo()
+    click.echo("=" * 50)
+    click.echo("✅ Setup Complete!")
+    click.echo("=" * 50)
+    click.echo()
+    click.echo("To start the bot:")
+    click.echo("  jarvis telegram run")
+    click.echo()
+    click.echo("To check status:")
+    click.echo("  jarvis telegram status")
+
+
+@telegram.command("set-chat")
+@click.argument("chat_id")
+def telegram_set_chat(chat_id):
+    """Set the default chat ID for sending messages.
+
+    \b
+    Example:
+        jarvis telegram set-chat 123456789
+    """
+    from .auth.credentials import set_credential
+    set_credential("telegram", "chat_id", chat_id)
+    click.echo(f"✅ Default chat ID set to: {chat_id}")
+
+
+@telegram.command("webhook")
+@click.argument("url", required=False)
+@click.option("--remove", is_flag=True, help="Remove webhook (use polling instead)")
+def telegram_webhook(url, remove):
+    """Set up webhook for seamless Telegram integration.
+
+    When webhook is active, messages are received automatically
+    through your web server - no separate bot process needed!
+
+    \b
+    Examples:
+        jarvis telegram webhook https://your-domain.com
+        jarvis telegram webhook --remove
+    """
+    import httpx
+    from .auth.credentials import get_credential, set_credential, delete_credential
+
+    token = get_credential("telegram", "bot_token")
+    if not token:
+        click.echo("❌ Bot token not configured. Run: jarvis telegram setup")
+        return
+
+    if remove:
+        click.echo("Removing webhook...", nl=False)
+        try:
+            resp = httpx.post(
+                f"https://api.telegram.org/bot{token}/deleteWebhook",
+                timeout=10
+            )
+            if resp.json().get("ok"):
+                delete_credential("telegram", "webhook_url")
+                click.echo(" ✅ Removed")
+                click.echo("   Now use: jarvis telegram run (polling mode)")
+            else:
+                click.echo(f" ❌ {resp.json().get('description')}")
+        except Exception as e:
+            click.echo(f" ❌ {e}")
+        return
+
+    if not url:
+        # Show current status
+        current = get_credential("telegram", "webhook_url")
+        if current:
+            click.echo(f"✅ Webhook active: {current}")
+        else:
+            click.echo("⚠️  No webhook configured")
+            click.echo("\nSet up with:")
+            click.echo("  jarvis telegram webhook https://your-domain.com")
+            click.echo("\nFor local testing with ngrok:")
+            click.echo("  ngrok http 7777")
+            click.echo("  jarvis telegram webhook https://abc123.ngrok.io")
+        return
+
+    # Set up webhook
+    webhook_url = f"{url.rstrip('/')}/api/telegram/webhook"
+    click.echo(f"Setting webhook to: {webhook_url}...", nl=False)
+
+    try:
+        resp = httpx.post(
+            f"https://api.telegram.org/bot{token}/setWebhook",
+            json={"url": webhook_url},
+            timeout=10
+        )
+        result = resp.json()
+
+        if result.get("ok"):
+            set_credential("telegram", "webhook_url", webhook_url)
+            click.echo(" ✅ Success!")
+            click.echo("\n🎉 Telegram is now integrated!")
+            click.echo("   Messages will be handled automatically by your web server.")
+            click.echo("   Just run: jarvis --dev")
+        else:
+            click.echo(f" ❌ {result.get('description')}")
+    except Exception as e:
+        click.echo(f" ❌ {e}")
+
+
+@telegram.command("start")
+def telegram_start_daemon():
+    """Start Telegram bot as a background daemon.
+
+    The bot will run in the background and auto-restart if it crashes.
+    Logs are written to ~/.jarvis/logs/telegram.log
+    """
+    import subprocess
+    import os
+
+    # Create log directory
+    log_dir = Path.home() / ".jarvis" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_file = log_dir / "telegram.log"
+    pid_file = log_dir / "telegram.pid"
+
+    # Check if already running
+    if pid_file.exists():
+        try:
+            pid = int(pid_file.read_text().strip())
+            os.kill(pid, 0)  # Check if process exists
+            click.echo(f"⚠️  Telegram bot already running (PID: {pid})")
+            click.echo(f"   Stop with: jarvis telegram stop")
+            return
+        except (ProcessLookupError, ValueError):
+            pid_file.unlink()  # Clean up stale pid file
+
+    # Start in background
+    jarvis_path = Path(__file__).parent.parent
+    venv_python = sys.executable
+
+    process = subprocess.Popen(
+        [venv_python, "-m", "jarvis.cli", "telegram", "run"],
+        stdout=open(log_file, "a"),
+        stderr=subprocess.STDOUT,
+        cwd=jarvis_path,
+        start_new_session=True,
+    )
+
+    # Save PID
+    pid_file.write_text(str(process.pid))
+
+    click.echo(f"✅ Telegram bot started (PID: {process.pid})")
+    click.echo(f"   Logs: {log_file}")
+    click.echo(f"   Stop: jarvis telegram stop")
+
+
+@telegram.command("stop")
+def telegram_stop_daemon():
+    """Stop the Telegram bot daemon."""
+    import os
+    import signal
+
+    pid_file = Path.home() / ".jarvis" / "logs" / "telegram.pid"
+
+    if not pid_file.exists():
+        click.echo("⚠️  No running Telegram bot found")
+        return
+
+    try:
+        pid = int(pid_file.read_text().strip())
+        os.kill(pid, signal.SIGTERM)
+        pid_file.unlink()
+        click.echo(f"✅ Telegram bot stopped (PID: {pid})")
+    except ProcessLookupError:
+        pid_file.unlink()
+        click.echo("⚠️  Bot was not running (cleaned up stale PID)")
+    except Exception as e:
+        click.echo(f"❌ Error stopping bot: {e}")
+
+
+@telegram.command("logs")
+@click.option("--follow", "-f", is_flag=True, help="Follow log output")
+@click.option("--lines", "-n", default=50, help="Number of lines to show")
+def telegram_logs(follow, lines):
+    """View Telegram bot logs."""
+    import subprocess
+
+    log_file = Path.home() / ".jarvis" / "logs" / "telegram.log"
+
+    if not log_file.exists():
+        click.echo("No logs found. Start the bot first: jarvis telegram start")
+        return
+
+    if follow:
+        subprocess.run(["tail", "-f", str(log_file)])
+    else:
+        subprocess.run(["tail", "-n", str(lines), str(log_file)])
+
+
+@telegram.command("send")
+@click.argument("message")
+@click.option("--chat", "-c", help="Chat ID (uses default if not specified)")
+def telegram_send(message, chat):
+    """Send a message via Telegram.
+
+    \b
+    Examples:
+        jarvis telegram send "Hello from Jarvis!"
+        jarvis telegram send "Alert!" --chat 123456789
+    """
+    import httpx
+    from .auth.credentials import get_credential
+
+    token = get_credential("telegram", "bot_token")
+    if not token:
+        click.echo("❌ Bot token not configured. Run: jarvis telegram setup")
+        return
+
+    chat_id = chat or get_credential("telegram", "chat_id")
+    if not chat_id:
+        click.echo("❌ No chat ID specified and no default set.")
+        click.echo("   Use --chat or run: jarvis telegram set-chat YOUR_CHAT_ID")
+        return
+
+    try:
+        resp = httpx.post(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            json={"chat_id": chat_id, "text": message},
+            timeout=10
+        )
+        if resp.status_code == 200 and resp.json().get("ok"):
+            click.echo(f"✅ Message sent to chat {chat_id}")
+        else:
+            error = resp.json().get("description", "Unknown error")
+            click.echo(f"❌ Failed: {error}")
+    except Exception as e:
+        click.echo(f"❌ Error: {e}")
 
 
 if __name__ == "__main__":

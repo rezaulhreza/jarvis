@@ -1,0 +1,186 @@
+import { cn } from '../../lib/utils'
+import type { Message, ToolEvent } from '../../types'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
+
+interface MessageBubbleProps {
+  message: Message
+}
+
+// Extract URLs from text
+const extractUrls = (text?: string): string[] => {
+  if (!text) return []
+  const matches = text.match(/https?:\/\/[^\s)]+/g) || []
+  return Array.from(new Set(matches))
+}
+
+export function MessageBubble({ message }: MessageBubbleProps) {
+  const { role, content, timestamp, tools } = message
+
+  if (role === 'system') {
+    return (
+      <div className="p-4 rounded-xl bg-transparent text-center text-text-muted text-sm">
+        {content}
+      </div>
+    )
+  }
+
+  const isUser = role === 'user'
+
+  return (
+    <div className="space-y-3">
+      {/* Message bubble */}
+      <div
+        className={cn(
+          'p-4 rounded-2xl backdrop-blur-sm',
+          'border transition-colors',
+          isUser
+            ? 'bg-surface-2/80 border-border/50 ml-12'
+            : 'bg-surface/80 border-border/30 mr-12'
+        )}
+      >
+        <div className="flex justify-between items-center mb-2">
+          <p className={cn(
+            'text-xs font-medium',
+            isUser ? 'text-cyan-400' : 'text-emerald-400'
+          )}>
+            {isUser ? 'You' : 'Jarvis'}
+          </p>
+          <p className="text-xs text-text-muted/60">
+            {timestamp?.toLocaleTimeString([], {
+              hour: '2-digit',
+              minute: '2-digit',
+            })}
+          </p>
+        </div>
+        {isUser ? (
+          <p className="whitespace-pre-wrap text-text leading-relaxed">{content}</p>
+        ) : (
+          <div className="prose prose-invert prose-sm max-w-none text-text leading-relaxed
+            prose-p:my-2 prose-p:leading-relaxed
+            prose-headings:text-text prose-headings:font-semibold prose-headings:mt-4 prose-headings:mb-2
+            prose-h1:text-xl prose-h2:text-lg prose-h3:text-base
+            prose-strong:text-text prose-strong:font-semibold
+            prose-em:text-text/90
+            prose-code:text-cyan-400 prose-code:bg-surface-2 prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded prose-code:text-sm prose-code:before:content-none prose-code:after:content-none
+            prose-pre:bg-surface-2 prose-pre:border prose-pre:border-border/30 prose-pre:rounded-lg prose-pre:my-3
+            prose-a:text-cyan-400 prose-a:no-underline hover:prose-a:underline
+            prose-ul:my-2 prose-ol:my-2 prose-li:my-0.5
+            prose-blockquote:border-l-primary prose-blockquote:text-text-muted prose-blockquote:not-italic
+            prose-table:text-sm prose-th:bg-surface-2 prose-td:border-border/30
+          ">
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{content || ''}</ReactMarkdown>
+          </div>
+        )}
+      </div>
+
+      {/* Tool timeline */}
+      {tools && tools.length > 0 && !isUser && (
+        <ToolTimeline tools={tools} />
+      )}
+    </div>
+  )
+}
+
+interface ToolTimelineProps {
+  tools: ToolEvent[]
+}
+
+function ToolTimeline({ tools }: ToolTimelineProps) {
+  return (
+    <div className="p-4 rounded-2xl bg-background/50 border border-border/20 mr-12 backdrop-blur-sm">
+      <div className="flex items-center justify-between mb-3">
+        <p className="text-xs text-text-muted uppercase tracking-wider font-medium">
+          Tools
+        </p>
+        <p className="text-xs text-text-muted/60">
+          {tools.length} step{tools.length > 1 ? 's' : ''}
+        </p>
+      </div>
+      <div className="space-y-2">
+        {tools.map((tool, idx) => (
+          <ToolItem key={`${tool.name}-${idx}`} tool={tool} />
+        ))}
+      </div>
+    </div>
+  )
+}
+
+interface ToolItemProps {
+  tool: ToolEvent
+}
+
+function ToolItem({ tool }: ToolItemProps) {
+  const urls = extractUrls(tool.result_preview ?? undefined)
+
+  return (
+    <details className="group rounded-xl bg-surface/50 border border-border/30 p-3 transition-colors hover:border-border/50">
+      <summary className="flex items-start gap-3 text-sm cursor-pointer list-none select-none">
+        <span
+          className={cn(
+            'mt-1.5 h-2 w-2 rounded-full flex-shrink-0',
+            'transition-all duration-300',
+            tool.success === false
+              ? 'bg-red-400 shadow-glow-red'
+              : 'bg-emerald-400 shadow-glow-green-sm'
+          )}
+        />
+        <div className="flex-1 min-w-0">
+          <div className="text-text font-medium">{tool.display}</div>
+          {tool.result_preview && (
+            <div className="text-xs text-text-muted mt-1 line-clamp-2">
+              {tool.result_preview}
+            </div>
+          )}
+        </div>
+        <div className="text-xs text-text-muted/60 flex-shrink-0">
+          {tool.duration_s?.toFixed(1)}s
+        </div>
+      </summary>
+      <div className="mt-3 text-xs text-text-muted space-y-3 border-t border-border/20 pt-3">
+        {tool.args && Object.keys(tool.args).length > 0 && (
+          <div>
+            <div className="text-text-muted/60 mb-1.5 uppercase tracking-wider text-[10px]">
+              Arguments
+            </div>
+            <pre className="whitespace-pre-wrap text-cyan-300/80 bg-background/50 p-2.5 rounded-lg border border-border/20 font-mono text-[11px]">
+              {JSON.stringify(tool.args, null, 2)}
+            </pre>
+          </div>
+        )}
+        {tool.result_preview && (
+          <div>
+            <div className="text-text-muted/60 mb-1.5 uppercase tracking-wider text-[10px]">
+              Result
+            </div>
+            <div className="whitespace-pre-wrap text-text/80 bg-background/50 p-2.5 rounded-lg border border-border/20">
+              {tool.result_preview}
+            </div>
+          </div>
+        )}
+        {urls.length > 0 && (
+          <div>
+            <div className="text-text-muted/60 mb-1.5 uppercase tracking-wider text-[10px]">
+              Sources
+            </div>
+            <div className="flex flex-col gap-1.5">
+              {urls.map((url) => (
+                <a
+                  key={url}
+                  href={url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-cyan-400 hover:text-cyan-300 hover:underline break-all transition-colors"
+                >
+                  {url}
+                </a>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    </details>
+  )
+}
+
+export { ToolTimeline }

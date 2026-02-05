@@ -1,0 +1,89 @@
+import { useRef, useEffect } from 'react'
+import { MessageBubble } from './MessageBubble'
+import type { Message } from '../../types'
+import { Loader2 } from 'lucide-react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
+
+interface MessageListProps {
+  messages: Message[]
+  streaming: string
+  isLoading: boolean
+  loadingText?: string
+}
+
+export function MessageList({
+  messages,
+  streaming,
+  isLoading,
+  loadingText = 'Thinking...',
+}: MessageListProps) {
+  const messagesEndRef = useRef<HTMLDivElement>(null)
+
+  // Auto-scroll to bottom on new messages
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [messages, streaming])
+
+  return (
+    <div className="flex-1 overflow-y-auto p-4 scrollbar-thin">
+      <div className="max-w-3xl mx-auto space-y-4">
+        {/* Empty state */}
+        {messages.length === 0 && !streaming && !isLoading && (
+          <div className="flex flex-col items-center justify-center py-20 text-center">
+            <div className="w-20 h-20 rounded-full bg-surface-2/50 flex items-center justify-center mb-4">
+              <img
+                src="/jarvis.jpeg"
+                alt="Jarvis"
+                className="w-16 h-16 rounded-full object-cover"
+              />
+            </div>
+            <h2 className="text-xl font-medium text-text mb-2">
+              Hello, I'm Jarvis
+            </h2>
+            <p className="text-text-muted max-w-md">
+              Your personal AI assistant. Ask me anything, or use voice mode for
+              a hands-free experience.
+            </p>
+          </div>
+        )}
+
+        {/* Message list */}
+        {messages.map((msg, i) => (
+          <MessageBubble key={i} message={msg} />
+        ))}
+
+        {/* Streaming response */}
+        {streaming && (
+          <div className="p-4 rounded-2xl bg-surface/80 border border-border/30 mr-12 backdrop-blur-sm">
+            <p className="text-xs text-emerald-400 font-medium mb-2">Assistant</p>
+            <div className="prose prose-invert prose-sm max-w-none text-text leading-relaxed
+              prose-p:my-2 prose-p:leading-relaxed
+              prose-headings:text-text prose-headings:font-semibold
+              prose-code:text-cyan-400 prose-code:bg-surface-2 prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded prose-code:text-sm prose-code:before:content-none prose-code:after:content-none
+              prose-pre:bg-surface-2 prose-pre:border prose-pre:border-border/30 prose-pre:rounded-lg
+              prose-a:text-cyan-400 prose-ul:my-2 prose-ol:my-2 prose-li:my-0.5
+            ">
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{streaming}</ReactMarkdown>
+              <span className="inline-block w-2 ml-0.5 animate-pulse text-cyan-400">▍</span>
+            </div>
+          </div>
+        )}
+
+        {/* Loading indicator */}
+        {isLoading && !streaming && (
+          <div className="flex items-center gap-3 text-text-muted py-2">
+            <div className="relative">
+              <Loader2 size={18} className="animate-spin text-cyan-500" />
+              <div className="absolute inset-0 blur-md bg-cyan-500/30" />
+            </div>
+            <span className="text-sm">{loadingText}</span>
+          </div>
+        )}
+
+        {/* Scroll anchor */}
+        <div ref={messagesEndRef} />
+      </div>
+    </div>
+  )
+}

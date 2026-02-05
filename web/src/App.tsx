@@ -1,54 +1,68 @@
-import { useState, useRef, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useWebSocket } from './hooks/useWebSocket'
 import { useVoice } from './hooks/useVoice'
+import { useFileUpload } from './hooks/useFileUpload'
+import { useWakeWord } from './hooks/useWakeWord'
 import { cn } from './lib/utils'
+
+// Components
+import { MessageList } from './components/chat'
+import { UnifiedInput, FileUploadZone } from './components/input'
+import { SettingsPanel } from './components/settings'
+import { Orb, getOrbState } from './components/orb'
+
+// Icons
 import {
-  Mic,
-  MicOff,
-  Send,
+  Settings,
+  Zap,
+  Scale,
+  Brain,
+  Trash2,
   Volume2,
   VolumeX,
-  MessageSquare,
-  Phone,
-  Trash2,
-  Loader2,
-  ChevronDown,
-  Settings,
+  Mic,
+  Keyboard,
+  AudioWaveform,
 } from 'lucide-react'
 
-type Mode = 'chat' | 'voice'
+// Types
+import type { ReasoningLevel, TTSProvider, STTProvider } from './types'
 
-const extractUrls = (text?: string) => {
-  if (!text) return []
-  const matches = text.match(/https?:\/\/[^\s)]+/g) || []
-  return Array.from(new Set(matches))
-}
+// Loading text options
+const LOADING_TEXTS = [
+  'Thinking...', 'Processing...', 'Analyzing...', 'Computing...',
+  'On it...', 'One moment...', 'Working on it...', 'Let me check...',
+]
 
 export default function App() {
-  const [mode, setMode] = useState<Mode>('chat')
-  const [chatMode, setChatMode] = useState(true)
+  // Assistant configuration (customizable name, etc.)
+  const [assistantName, setAssistantName] = useState('Jarvis')
+
+  // State
+  const [mode, setMode] = useState<'chat' | 'voice'>('chat')
+  const [reasoningLevel, setReasoningLevel] = useState<ReasoningLevel>(null)
   const [voiceOutput, setVoiceOutput] = useState(false)
   const [input, setInput] = useState('')
   const [lastSpokenIndex, setLastSpokenIndex] = useState(-1)
-  const messagesEndRef = useRef<HTMLDivElement>(null)
-
-  const [models, setModels] = useState<string[]>([])
-  const [providers, setProviders] = useState<Record<string, {configured: boolean, model?: string | null}>>({})
-  const [codexAuth, setCodexAuth] = useState<{configured: boolean, source?: string | null, codex_cli_found?: boolean}>({configured: false})
-  const [claudeAuth, setClaudeAuth] = useState<{configured: boolean, source?: string | null}>({configured: false})
-  const [claudeToken, setClaudeToken] = useState('')
-  const [authMessage, setAuthMessage] = useState('')
-  const [voices, setVoices] = useState<{id: string, name: string}[]>([])
-  const [elevenVoices, setElevenVoices] = useState<{id: string, name: string}[]>([])
-  const [currentVoice, setCurrentVoice] = useState('en-GB-SoniaNeural')
-  const [showSettings, setShowSettings] = useState(false)
-  const [settingsTab, setSettingsTab] = useState<'model' | 'voice' | 'stt'>('model')
-  const [isMuted, setIsMuted] = useState(false)
   const [loadingText, setLoadingText] = useState('')
-  const [ttsProvider, setTtsProvider] = useState<'browser' | 'edge' | 'elevenlabs'>('browser')
-  const [sttProvider, setSttProvider] = useState<'browser' | 'whisper'>('browser')
-  const [elevenLabsKey, setElevenLabsKey] = useState('')
+  const [wakeWordEnabled, setWakeWordEnabled] = useState(false) // Disabled for now
+  const [wakeWord, setWakeWord] = useState('jarvis')
 
+  // Settings state
+  const [showSettings, setShowSettings] = useState(false)
+  const [models, setModels] = useState<string[]>([])
+  const [providers, setProviders] = useState<Record<string, { configured: boolean; model?: string | null }>>({})
+  const [voices, setVoices] = useState<{ id: string; name: string }[]>([])
+  const [elevenVoices, setElevenVoices] = useState<{ id: string; name: string }[]>([])
+  const [kokoroVoices, setKokoroVoices] = useState<{ id: string; name: string }[]>([])
+  const [chutesConfigured, setChutesConfigured] = useState(false)
+  const [ttsProvider, setTtsProvider] = useState<TTSProvider>('browser')
+  const [sttProvider, setSttProvider] = useState<STTProvider>('browser')
+  const [currentVoice, setCurrentVoice] = useState('en-GB-SoniaNeural')
+  const [systemPrompt, setSystemPromptState] = useState('')
+  const [isDefaultPrompt, setIsDefaultPrompt] = useState(true)
+
+  // WebSocket hook
   const {
     connected,
     messages,
@@ -57,194 +71,29 @@ export default function App() {
     project,
     model,
     provider,
-    ragStatus: _ragStatus,  // For future RAG indicator feature
-    toolTimeline: _toolTimeline,  // For future tool timeline feature
+    intentInfo,
+    contextStats,
     send,
     clear,
     switchModel,
     switchProvider,
   } = useWebSocket()
 
-  // Suppress unused warnings - these will be used for RAG/tool indicators
-  void _ragStatus
-  void _toolTimeline
+  // File upload hook
+  const { files, addFiles, removeFile, clearFiles } = useFileUpload()
 
-  // Randomize loading text when loading starts
-  useEffect(() => {
-    if (isLoading) {
-      const texts = [
-        'Crunching...', 'Cooking...', 'Brewing...', 'Conjuring...', 'Summoning...',
-        'Accomplishing...', 'Manifesting...', 'Crafting...', 'Whipping up...',
-        'On it...', 'One sec...', 'Hmm...', 'Let me see...', 'Working on it...',
-        'Hold tight...', 'Spinning up...', 'Pondering...', 'Assembling...'
-      ]
-      setLoadingText(texts[Math.floor(Math.random() * texts.length)])
-    }
-  }, [isLoading])
-
-  // Fetch available providers, models, voices, and settings
-  useEffect(() => {
-    fetch('/api/providers')
-      .then(res => res.json())
-      .then(data => setProviders(data.providers || {}))
-      .catch(() => {})
-    fetch('/api/auth/codex/status')
-      .then(res => res.json())
-      .then(data => setCodexAuth(data))
-      .catch(() => {})
-    fetch('/api/auth/claude/status')
-      .then(res => res.json())
-      .then(data => setClaudeAuth(data))
-      .catch(() => {})
-    fetch('/api/voices')
-      .then(res => res.json())
-      .then(data => setVoices(data.voices || []))
-      .catch(() => {})
-    // Fetch ElevenLabs voices if configured
-    fetch('/api/elevenlabs/voices')
-      .then(res => res.json())
-      .then(data => {
-        if (data.voices?.length > 0) {
-          setElevenVoices(data.voices)
-        }
-      })
-      .catch(() => {})
-    // Load saved voice settings
-    fetch('/api/settings/voice')
-      .then(res => res.json())
-      .then(data => {
-        if (data.tts_provider) setTtsProvider(data.tts_provider)
-        if (data.tts_voice) setCurrentVoice(data.tts_voice)
-        if (data.stt_provider) setSttProvider(data.stt_provider)
-      })
-      .catch(() => {})
-  }, [])
-
-  // Fetch models for selected provider
-  useEffect(() => {
-    const activeProvider = provider || 'ollama'
-    fetch(`/api/models?provider=${encodeURIComponent(activeProvider)}`)
-      .then(res => res.json())
-      .then(data => setModels(data.models || []))
-      .catch(() => {})
-  }, [provider])
-
-  const runCodexDeviceAuth = async () => {
-    setAuthMessage('Starting Codex device auth...')
-    const res = await fetch('/api/auth/codex/device', { method: 'POST' })
-    const data = await res.json()
-    setAuthMessage(data.output || (data.ok ? 'Codex auth complete' : 'Codex auth failed'))
-    const status = await fetch('/api/auth/codex/status').then(r => r.json()).catch(() => null)
-    if (status) setCodexAuth(status)
-  }
-
-  const importCodexAuth = async () => {
-    setAuthMessage('Importing Codex credentials...')
-    const res = await fetch('/api/auth/codex/import', { method: 'POST' })
-    const data = await res.json()
-    setAuthMessage(data.imported ? 'Imported Codex credentials' : 'No Codex credentials found')
-    const status = await fetch('/api/auth/codex/status').then(r => r.json()).catch(() => null)
-    if (status) setCodexAuth(status)
-  }
-
-  const runClaudeAuth = async () => {
-    setAuthMessage('Starting Claude login...')
-    const res = await fetch('/api/auth/claude/device', { method: 'POST' })
-    const data = await res.json()
-    setAuthMessage(data.output || (data.ok ? 'Claude login complete' : 'Claude login failed'))
-    const status = await fetch('/api/auth/claude/status').then(r => r.json()).catch(() => null)
-    if (status) setClaudeAuth(status)
-  }
-
-  const importClaudeAuth = async () => {
-    setAuthMessage('Importing Claude key from env...')
-    const res = await fetch('/api/auth/claude/import', { method: 'POST' })
-    const data = await res.json()
-    setAuthMessage(data.imported ? 'Imported ANTHROPIC_API_KEY' : 'No ANTHROPIC_API_KEY found')
-    const status = await fetch('/api/auth/claude/status').then(r => r.json()).catch(() => null)
-    if (status) setClaudeAuth(status)
-  }
-
-  const storeClaudeToken = async () => {
-    if (!claudeToken) return
-    setAuthMessage('Storing Claude access token...')
-    const res = await fetch('/api/auth/claude/store', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ access_token: claudeToken }),
-    })
-    const data = await res.json()
-    setAuthMessage(data.stored ? 'Stored Claude access token' : 'Failed to store token')
-    const status = await fetch('/api/auth/claude/status').then(r => r.json()).catch(() => null)
-    if (status) setClaudeAuth(status)
-    setClaudeToken('')
-  }
-
-  // Save TTS provider when changed
-  const changeTtsProvider = (provider: 'browser' | 'edge' | 'elevenlabs') => {
-    setTtsProvider(provider)
-    fetch('/api/settings/voice', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tts_provider: provider })
-    }).catch(() => {})
-  }
-
-  // Save STT provider when changed
-  const changeSttProvider = (provider: 'browser' | 'whisper') => {
-    setSttProvider(provider)
-    fetch('/api/settings/voice', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ stt_provider: provider })
-    }).catch(() => {})
-  }
-
-  const switchVoice = async (voiceId: string, provider: 'edge' | 'elevenlabs' = 'edge') => {
-    setCurrentVoice(voiceId)
-    if (provider === 'elevenlabs') {
-      await fetch('/api/settings/elevenlabs', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ voice_id: voiceId })
-      }).catch(() => {})
-    } else {
-      await fetch('/api/settings/voice', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ voice: voiceId })
-      }).catch(() => {})
-    }
-  }
-
-  const saveElevenLabsKey = async () => {
-    if (!elevenLabsKey) return
-    await fetch('/api/settings/elevenlabs', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ api_key: elevenLabsKey })
-    })
-    // Refresh voices
-    const res = await fetch('/api/elevenlabs/voices')
-    const data = await res.json()
-    if (data.voices?.length > 0) {
-      setElevenVoices(data.voices)
-    }
-  }
-
-  // Callback for when voice input is detected and processed
+  // Voice callbacks
   const handleVoiceInput = useCallback((transcript: string) => {
     if (transcript && connected) {
-      send(transcript, true) // Always chat mode for voice
+      send(transcript, true)
     }
   }, [connected, send])
 
-  // Handle interruption - user started speaking while Jarvis was talking
   const handleInterrupt = useCallback(() => {
     console.log('User interrupted')
-    // Could cancel pending requests here if needed
   }, [])
 
+  // Voice hook - for push-to-talk and voice mode
   const {
     isListening,
     isRecording,
@@ -263,22 +112,90 @@ export default function App() {
     sttProvider,
   })
 
-  // Close settings dropdown when clicking outside
+  // Load assistant config from localStorage
   useEffect(() => {
-    const handleClick = (e: MouseEvent) => {
-      if (showSettings && !(e.target as Element).closest('.relative')) {
-        setShowSettings(false)
+    const savedName = localStorage.getItem('jarvis_assistant_name')
+    if (savedName) setAssistantName(savedName)
+    const savedWakeWord = localStorage.getItem('jarvis_wake_word')
+    if (savedWakeWord) setWakeWord(savedWakeWord)
+  }, [])
+
+  // Wake word detection - disabled for now
+  useWakeWord({
+    keyword: wakeWord,
+    onWakeWord: () => {},
+    enabled: false,
+  })
+
+  // Randomize loading text
+  useEffect(() => {
+    if (isLoading) {
+      setLoadingText(LOADING_TEXTS[Math.floor(Math.random() * LOADING_TEXTS.length)])
+    }
+  }, [isLoading])
+
+  // Fetch initial data
+  useEffect(() => {
+    const fetchData = async () => {
+      try {
+        const [providersRes, voicesRes, elevenRes, kokoroRes, kokoroStatusRes, voiceSettingsRes, promptRes] = await Promise.all([
+          fetch('/api/providers').catch(() => null),
+          fetch('/api/voices').catch(() => null),
+          fetch('/api/elevenlabs/voices').catch(() => null),
+          fetch('/api/kokoro/voices').catch(() => null),
+          fetch('/api/kokoro/status').catch(() => null),
+          fetch('/api/settings/voice').catch(() => null),
+          fetch('/api/system-prompt').catch(() => null),
+        ])
+
+        if (providersRes?.ok) {
+          const data = await providersRes.json()
+          setProviders(data.providers || {})
+        }
+        if (voicesRes?.ok) {
+          const data = await voicesRes.json()
+          setVoices(data.voices || [])
+        }
+        if (elevenRes?.ok) {
+          const data = await elevenRes.json()
+          if (data.voices?.length > 0) setElevenVoices(data.voices)
+        }
+        if (kokoroRes?.ok) {
+          const data = await kokoroRes.json()
+          if (data.voices?.length > 0) setKokoroVoices(data.voices)
+        }
+        if (kokoroStatusRes?.ok) {
+          const data = await kokoroStatusRes.json()
+          setChutesConfigured(data.configured || false)
+        }
+        if (voiceSettingsRes?.ok) {
+          const data = await voiceSettingsRes.json()
+          if (data.tts_provider) setTtsProvider(data.tts_provider)
+          if (data.tts_voice) setCurrentVoice(data.tts_voice)
+          if (data.stt_provider) setSttProvider(data.stt_provider)
+        }
+        if (promptRes?.ok) {
+          const data = await promptRes.json()
+          setSystemPromptState(data.content || '')
+          setIsDefaultPrompt(data.isDefault ?? true)
+        }
+      } catch (error) {
+        console.error('Failed to fetch initial data:', error)
       }
     }
-    document.addEventListener('click', handleClick)
-    return () => document.removeEventListener('click', handleClick)
-  }, [showSettings])
+    fetchData()
+  }, [])
 
+  // Fetch models when provider changes
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages, streaming])
+    const activeProvider = provider || 'ollama'
+    fetch(`/api/models?provider=${encodeURIComponent(activeProvider)}`)
+      .then(res => res.json())
+      .then(data => setModels(data.models || []))
+      .catch(() => {})
+  }, [provider])
 
-  // Auto-speak in voice mode OR when voice output is on
+  // Auto-speak assistant responses in voice mode or when voice output is enabled
   useEffect(() => {
     if ((mode === 'voice' || voiceOutput) && messages.length > 0) {
       const lastIndex = messages.length - 1
@@ -290,18 +207,17 @@ export default function App() {
     }
   }, [messages, mode, voiceOutput, speak, lastSpokenIndex, ttsProvider])
 
-  // Auto-resume listening after Jarvis stops speaking (voice mode only, if not muted)
+  // Auto-resume listening in voice mode after speaking
   useEffect(() => {
-    if (mode === 'voice' && !isPlaying && !isLoading && connected && !isListening && !isMuted) {
-      // Small delay before resuming listening
+    if (mode === 'voice' && !isPlaying && !isLoading && connected && !isListening) {
       const timer = setTimeout(() => {
-        if (mode === 'voice' && !isPlaying && !isLoading && !isMuted) {
+        if (mode === 'voice' && !isPlaying && !isLoading) {
           startListening()
         }
       }, 500)
       return () => clearTimeout(timer)
     }
-  }, [mode, isPlaying, isLoading, connected, isListening, isMuted, startListening])
+  }, [mode, isPlaying, isLoading, connected, isListening, startListening])
 
   // Stop listening when leaving voice mode
   useEffect(() => {
@@ -310,13 +226,28 @@ export default function App() {
     }
   }, [mode, isListening, stopListening])
 
-  const handleSend = () => {
-    if (!input.trim() || !connected) return
-    send(input.trim(), chatMode)
-    setInput('')
-  }
+  // Voice mode handlers
+  const enterVoiceMode = useCallback(() => {
+    setMode('voice')
+    stopSpeaking()
+    startListening()
+  }, [stopSpeaking, startListening])
 
-  const handleVoiceToggle = async () => {
+  const exitVoiceMode = useCallback(() => {
+    stopListening()
+    stopSpeaking()
+    setMode('chat')
+  }, [stopListening, stopSpeaking])
+
+  // Handlers
+  const handleSend = useCallback(() => {
+    if (!input.trim() || !connected) return
+    send(input.trim(), true, reasoningLevel)
+    setInput('')
+    clearFiles()
+  }, [input, connected, send, reasoningLevel, clearFiles])
+
+  const handleVoiceToggle = useCallback(async () => {
     if (isRecording) {
       const transcript = await stopRecording()
       if (transcript) {
@@ -326,648 +257,475 @@ export default function App() {
       stopSpeaking()
       startRecording()
     }
-  }
+  }, [isRecording, stopRecording, send, stopSpeaking, startRecording])
 
-  const enterVoiceMode = () => {
-    setMode('voice')
-    stopSpeaking()
-    startListening()
-  }
+  // Settings handlers
+  const handleSetTTSProvider = useCallback(async (p: TTSProvider) => {
+    setTtsProvider(p)
+    await fetch('/api/settings/voice', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tts_provider: p }),
+    })
+  }, [])
 
-  const exitVoiceMode = () => {
-    stopListening()
-    stopSpeaking()
-    setMode('chat')
-  }
+  const handleSetSTTProvider = useCallback(async (p: STTProvider) => {
+    setSttProvider(p)
+    await fetch('/api/settings/voice', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ stt_provider: p }),
+    })
+  }, [])
 
-  // Voice mode - immersive always-listening experience
+  const handleSetVoice = useCallback(async (voiceId: string, p: 'edge' | 'elevenlabs' | 'kokoro') => {
+    setCurrentVoice(voiceId)
+    if (p === 'elevenlabs') {
+      await fetch('/api/settings/elevenlabs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ voice_id: voiceId }),
+      })
+    } else if (p === 'kokoro') {
+      await fetch('/api/settings/voice', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ kokoro_voice: voiceId }),
+      })
+    } else {
+      await fetch('/api/settings/voice', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ voice: voiceId }),
+      })
+    }
+  }, [])
+
+  const handleSetSystemPrompt = useCallback(async (prompt: string) => {
+    setSystemPromptState(prompt)
+    setIsDefaultPrompt(false)
+    await fetch('/api/system-prompt', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: prompt }),
+    })
+  }, [])
+
+  const handleResetSystemPrompt = useCallback(async () => {
+    const res = await fetch('/api/system-prompt/reset', { method: 'POST' })
+    if (res.ok) {
+      const data = await res.json()
+      setSystemPromptState(data.content || '')
+      setIsDefaultPrompt(true)
+    }
+  }, [])
+
+  // Smart defaults: Auto-configure TTS when switching to Chutes
+  // Note: Keep browser STT as default since it's more reliable
+  useEffect(() => {
+    if (provider === 'chutes' && chutesConfigured) {
+      // Auto-set Kokoro TTS for best voice quality
+      if (ttsProvider !== 'kokoro') {
+        handleSetTTSProvider('kokoro')
+      }
+      // Keep browser STT - it's more reliable than Chutes STT
+    }
+  }, [provider, chutesConfigured, ttsProvider, handleSetTTSProvider])
+
+  // Get orb state
+  const orbState = getOrbState({ isPlaying, isLoading, isListening, isRecording })
+
+  // ============================================
+  // VOICE MODE - Futuristic Full Screen Interface
+  // ============================================
   if (mode === 'voice') {
     return (
-      <div className="flex flex-col h-full bg-gradient-to-b from-[#0a0a0f] to-[#12121a]">
-        {/* Minimal header */}
-        <header className="flex items-center justify-between px-6 py-4">
+      <div className="h-full bg-[#030306] flex flex-col overflow-hidden relative">
+        {/* Animated background gradient */}
+        <div className="absolute inset-0 overflow-hidden">
+          <div className={cn(
+            'absolute inset-0 transition-all duration-1000',
+            isListening && 'bg-gradient-radial from-purple-900/20 via-transparent to-transparent',
+            isPlaying && 'bg-gradient-radial from-emerald-900/20 via-transparent to-transparent',
+            isLoading && 'bg-gradient-radial from-cyan-900/20 via-transparent to-transparent',
+            !isListening && !isPlaying && !isLoading && 'bg-gradient-radial from-slate-900/20 via-transparent to-transparent'
+          )} />
+          {/* Subtle grid overlay */}
+          <div className="absolute inset-0 opacity-[0.02]" style={{
+            backgroundImage: 'linear-gradient(rgba(255,255,255,0.1) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.1) 1px, transparent 1px)',
+            backgroundSize: '50px 50px'
+          }} />
+        </div>
+
+        {/* Top bar */}
+        <header className="relative flex items-center justify-between px-6 py-4 z-10">
           <div className="flex items-center gap-3">
-            <img src="/jarvis.jpeg" alt="Jarvis" className="w-10 h-10 rounded-full" />
-            <span className="text-lg font-medium">Jarvis</span>
+            <div className={cn(
+              'w-2 h-2 rounded-full transition-colors',
+              connected ? 'bg-emerald-400 shadow-lg shadow-emerald-400/50' : 'bg-red-500'
+            )} />
+            <span className="text-sm text-white/60 font-light tracking-wide">
+              {connected ? 'ONLINE' : 'OFFLINE'}
+            </span>
           </div>
-          <button
-            onClick={exitVoiceMode}
-            className="p-2 rounded-lg hover:bg-[#1a1a24] text-[#71717a]"
-          >
-            <MessageSquare size={20} />
-          </button>
+
+          <div className="flex items-center gap-4">
+            {/* Model info */}
+            <span className="text-xs text-white/40 font-mono">{model?.split('/').pop() || 'AI'}</span>
+
+            {/* Back to chat */}
+            <button
+              onClick={exitVoiceMode}
+              className="flex items-center gap-2 px-4 py-2 rounded-full bg-white/5 hover:bg-white/10 border border-white/10 text-white/70 hover:text-white transition-all"
+            >
+              <Keyboard size={16} />
+              <span className="text-sm">Chat</span>
+            </button>
+          </div>
         </header>
 
-        {/* Center - Voice interface */}
-        <div className="flex-1 flex flex-col items-center justify-center gap-6">
-          {/* Animated orb with volume indicator */}
-          <div className={cn(
-            'relative w-48 h-48 rounded-full flex items-center justify-center transition-all duration-300',
-            isRecording && volume > 0.02 ? 'scale-110' : '',
-            isPlaying ? 'bg-green-500/20' :
-            isLoading ? 'bg-blue-500/20' :
-            isListening ? 'bg-purple-500/10' :
-            'bg-[#1a1a24]'
-          )}>
-            {/* Volume ring - listening (purple) */}
-            {isListening && !isPlaying && (
-              <div
-                className="absolute inset-0 rounded-full border-2 border-purple-500/50 transition-transform duration-75"
-                style={{ transform: `scale(${1 + volume * 2})`, opacity: volume > 0.01 ? 1 : 0.3 }}
-              />
+        {/* Center - The Orb */}
+        <div className="flex-1 flex flex-col items-center justify-center relative z-10">
+          {/* Orb container with extra glow effects */}
+          <div className="relative">
+            {/* Outer pulse rings */}
+            {isListening && (
+              <>
+                <div className="absolute inset-0 -m-8 rounded-full border border-purple-500/20 animate-ping" style={{ animationDuration: '2s' }} />
+                <div className="absolute inset-0 -m-16 rounded-full border border-purple-500/10 animate-ping" style={{ animationDuration: '3s' }} />
+              </>
             )}
-            {/* Volume ring - speaking (green) */}
             {isPlaying && (
-              <div
-                className="absolute inset-0 rounded-full border-2 border-green-500/50 transition-transform duration-75"
-                style={{ transform: `scale(${1 + playbackVolume * 1.5})`, opacity: playbackVolume > 0.1 ? 1 : 0.5 }}
-              />
+              <>
+                <div className="absolute inset-0 -m-8 rounded-full border border-emerald-500/20 animate-ping" style={{ animationDuration: '1.5s' }} />
+                <div className="absolute inset-0 -m-16 rounded-full border border-emerald-500/10 animate-ping" style={{ animationDuration: '2.5s' }} />
+              </>
+            )}
+            {isLoading && (
+              <div className="absolute inset-0 -m-12 rounded-full border-2 border-transparent border-t-cyan-500/50 animate-spin" style={{ animationDuration: '1s' }} />
             )}
 
-            <div className={cn(
-              'w-36 h-36 rounded-full flex items-center justify-center transition-all duration-300',
-              isPlaying ? 'bg-green-500/30' :
-              isLoading ? 'bg-blue-500/30 animate-pulse' :
-              isRecording && volume > 0.02 ? 'bg-purple-500/30' :
-              'bg-[#22222a]'
-            )}>
-              <img
-                src="/jarvis.jpeg"
-                alt="Jarvis"
-                className={cn(
-                  'w-24 h-24 rounded-full object-cover transition-all duration-300',
-                  isPlaying && 'scale-105'
-                )}
-              />
-            </div>
+            <Orb
+              state={orbState}
+              volume={volume}
+              playbackVolume={playbackVolume}
+              onClick={() => isListening ? stopListening() : startListening()}
+              size="lg"
+            />
           </div>
 
           {/* Status text */}
-          <div className="text-center h-8">
-            {isLoading && <p className="text-blue-400">{loadingText}</p>}
-            {isPlaying && <p className="text-green-400">Speaking...</p>}
-            {isListening && !isLoading && !isPlaying && (
-              <p className={cn(
-                'transition-colors',
-                volume > 0.02 ? 'text-purple-400' : 'text-[#71717a]'
-              )}>
-                {volume > 0.02 ? 'Listening...' : 'Speak anytime'}
-              </p>
-            )}
-            {!isListening && !isLoading && !isPlaying && !connected && (
-              <p className="text-red-400">Disconnected</p>
-            )}
-          </div>
-
-          {/* Control buttons */}
-          <div className="flex gap-4">
-            {/* Mute button - stops listening so you can type/use keyboard */}
-            <button
-              onClick={() => {
-                setIsMuted(!isMuted)
-                if (!isMuted) stopListening()
-              }}
-              className={cn(
-                'w-12 h-12 rounded-full flex items-center justify-center transition-all duration-200',
-                isMuted
-                  ? 'bg-red-500/20 text-red-400'
-                  : 'bg-[#2a2a3a] text-[#71717a] hover:bg-[#3a3a4a]'
+          <div className="mt-12 text-center space-y-3">
+            <div className="h-8 flex items-center justify-center">
+              {isLoading && (
+                <p className="text-cyan-400 text-lg font-light animate-pulse">{loadingText}</p>
               )}
-              title={isMuted ? 'Unmute' : 'Mute (use keyboard)'}
-            >
-              {isMuted ? <VolumeX size={20} /> : <Volume2 size={20} />}
-            </button>
-
-            {/* Mic toggle */}
-            <button
-              onClick={() => isListening ? stopListening() : startListening()}
-              disabled={isLoading || !connected || isMuted}
-              className={cn(
-                'w-16 h-16 rounded-full flex items-center justify-center transition-all duration-200',
-                isListening
-                  ? 'bg-purple-500 shadow-lg shadow-purple-500/30'
-                  : 'bg-[#2a2a3a] hover:bg-[#3a3a4a]',
-                (isLoading || !connected || isMuted) && 'opacity-50 cursor-not-allowed'
+              {isPlaying && (
+                <p className="text-emerald-400 text-lg font-light">Speaking...</p>
               )}
-            >
-              {isListening ? <Mic size={24} className="text-white" /> : <MicOff size={24} className="text-[#71717a]" />}
-            </button>
+              {isListening && !isLoading && !isPlaying && (
+                <p className={cn(
+                  'text-lg font-light transition-colors',
+                  volume > 0.02 ? 'text-purple-400' : 'text-white/40'
+                )}>
+                  {volume > 0.02 ? 'Listening...' : 'Speak now...'}
+                </p>
+              )}
+              {!isListening && !isLoading && !isPlaying && (
+                <p className="text-white/30 text-lg font-light">Tap orb to speak</p>
+              )}
+            </div>
+
+            {/* Volume indicator */}
+            {isListening && (
+              <div className="flex items-center justify-center gap-1">
+                {[...Array(7)].map((_, i) => (
+                  <div
+                    key={i}
+                    className={cn(
+                      'w-1 rounded-full bg-purple-500 transition-all duration-75',
+                      volume > i * 0.12 ? 'opacity-100' : 'opacity-20'
+                    )}
+                    style={{ height: `${12 + i * 4}px` }}
+                  />
+                ))}
+              </div>
+            )}
           </div>
         </div>
 
         {/* Last message preview */}
-        {messages.length > 0 && !isLoading && (
-          <div className="px-6 py-4 text-center">
-            <p className="text-[#71717a] text-sm max-w-md mx-auto line-clamp-2">
-              {messages[messages.length - 1].content}
-            </p>
+        {messages.length > 0 && (
+          <div className="relative z-10 px-8 py-6">
+            <div className="max-w-2xl mx-auto">
+              <div className={cn(
+                'p-4 rounded-2xl backdrop-blur-xl border transition-colors',
+                messages[messages.length - 1].role === 'assistant'
+                  ? 'bg-white/5 border-white/10'
+                  : 'bg-purple-500/10 border-purple-500/20'
+              )}>
+                <p className="text-white/80 text-sm leading-relaxed line-clamp-3">
+                  {messages[messages.length - 1].content}
+                </p>
+              </div>
+            </div>
           </div>
         )}
+
+        {/* Bottom controls */}
+        <div className="relative z-10 px-6 py-4 flex items-center justify-center gap-4">
+          <button
+            onClick={() => isListening ? stopListening() : startListening()}
+            className={cn(
+              'w-16 h-16 rounded-full flex items-center justify-center transition-all',
+              isListening
+                ? 'bg-purple-500/20 border-2 border-purple-500 text-purple-400'
+                : 'bg-white/5 border border-white/20 text-white/60 hover:bg-white/10 hover:text-white'
+            )}
+          >
+            <Mic size={24} />
+          </button>
+        </div>
+
+        {/* Settings Panel */}
+        <SettingsPanel
+          isOpen={showSettings}
+          onClose={() => setShowSettings(false)}
+          currentModel={model}
+          currentProvider={provider}
+          providers={providers}
+          models={models}
+          onSwitchModel={switchModel}
+          onSwitchProvider={switchProvider}
+          voiceSettings={{
+            tts_provider: ttsProvider,
+            tts_voice: currentVoice,
+            stt_provider: sttProvider,
+          }}
+          onSetTTSProvider={handleSetTTSProvider}
+          onSetSTTProvider={handleSetSTTProvider}
+          onSetVoice={handleSetVoice}
+          edgeVoices={voices}
+          elevenVoices={elevenVoices}
+          kokoroVoices={kokoroVoices}
+          wakeWord={wakeWord}
+          wakeWordEnabled={wakeWordEnabled}
+          onSetWakeWord={setWakeWord}
+          onSetWakeWordEnabled={setWakeWordEnabled}
+          systemPrompt={systemPrompt}
+          isDefaultPrompt={isDefaultPrompt}
+          onSetSystemPrompt={handleSetSystemPrompt}
+          onResetSystemPrompt={handleResetSystemPrompt}
+          chutesConfigured={chutesConfigured}
+        />
       </div>
     )
   }
 
-  // Chat mode
+  // ============================================
+  // CHAT MODE - Clean and minimal
+  // ============================================
   return (
-    <div className="flex flex-col h-full">
-      <header className="flex items-center justify-between px-6 py-4 border-b border-[#2a2a3a]">
-        <div className="flex items-center gap-3">
-          <img src="/jarvis.jpeg" alt="Jarvis" className="w-8 h-8 rounded-full" />
-          <h1 className="text-xl font-semibold">Jarvis</h1>
-          {project && (
-            <span className="text-sm px-2 py-1 rounded bg-[#1a1a24] text-[#71717a]">{project}</span>
-          )}
-        </div>
-        <div className="flex items-center gap-2">
-          {/* Model selector */}
-          <div className="relative">
-            <button
-              onClick={() => setShowSettings(!showSettings)}
-              className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-sm bg-[#1a1a24] text-[#71717a] hover:text-white"
-            >
-              <Settings size={14} />
-              <span className="max-w-[140px] truncate">{provider ? `${provider} · ${model || 'Model'}` : (model || 'Model')}</span>
-              <ChevronDown size={14} />
-            </button>
-            {showSettings && (
-              <div className="absolute right-0 top-full mt-1 w-72 bg-[#1a1a24] border border-[#2a2a3a] rounded-lg shadow-xl z-50 max-h-96 overflow-hidden">
-                {/* Tabs */}
-                <div className="flex border-b border-[#2a2a3a]">
-                  <button
-                    onClick={() => setSettingsTab('model')}
-                    className={cn(
-                      'flex-1 px-3 py-2 text-xs',
-                      settingsTab === 'model' ? 'text-blue-400 border-b-2 border-blue-400' : 'text-[#71717a]'
-                    )}
-                  >
-                    Model
-                  </button>
-                  <button
-                    onClick={() => setSettingsTab('voice')}
-                    className={cn(
-                      'flex-1 px-3 py-2 text-xs',
-                      settingsTab === 'voice' ? 'text-blue-400 border-b-2 border-blue-400' : 'text-[#71717a]'
-                    )}
-                  >
-                    TTS
-                  </button>
-                  <button
-                    onClick={() => setSettingsTab('stt')}
-                    className={cn(
-                      'flex-1 px-3 py-2 text-xs',
-                      settingsTab === 'stt' ? 'text-blue-400 border-b-2 border-blue-400' : 'text-[#71717a]'
-                    )}
-                  >
-                    STT
-                  </button>
-                </div>
-                {/* Content */}
-                <div className="max-h-72 overflow-y-auto">
-                  {settingsTab === 'model' && (
-                    <>
-                      <div className="px-3 py-2 border-b border-[#2a2a3a]">
-                        <span className="text-xs text-[#71717a] block mb-2">Provider</span>
-                        <div className="grid grid-cols-2 gap-1">
-                          {Object.keys(providers).length === 0 && (
-                            <div className="col-span-2 text-xs text-[#71717a]">No providers found</div>
-                          )}
-                          {Object.entries(providers).map(([name, info]) => (
-                            <button
-                              key={name}
-                              onClick={() => {
-                                switchProvider(name)
-                                setShowSettings(false)
-                              }}
-                              className={cn(
-                                'px-2 py-1 text-xs rounded transition-colors',
-                                provider === name
-                                  ? 'bg-blue-500/30 text-blue-300'
-                                  : info.configured
-                                    ? 'bg-[#2a2a3a] text-[#d4d4d8] hover:text-white'
-                                    : 'bg-[#1a1a24] text-[#52525b]'
-                              )}
-                              title={info.configured ? name : `${name} (not configured)`}
-                            >
-                              {name}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                      {models.map((m) => (
-                        <button
-                          key={m}
-                          onClick={() => { switchModel(m); setShowSettings(false) }}
-                          className={cn(
-                            'w-full px-3 py-2 text-left text-sm hover:bg-[#2a2a3a] transition-colors',
-                            m === model ? 'text-blue-400' : 'text-white'
-                          )}
-                        >
-                          {m}
-                        </button>
-                      ))}
-                      {models.length === 0 && (
-                        <div className="px-3 py-2 text-sm text-[#71717a]">No models found</div>
-                      )}
-                      <div className="px-3 py-2 border-t border-[#2a2a3a]">
-                        <div className="text-xs text-[#71717a] mb-2">Auth (CLI-friendly)</div>
-                        <div className="flex flex-col gap-2">
-                          <div className="flex items-center justify-between">
-                            <span className="text-xs text-[#d4d4d8]">Codex</span>
-                            <span className={cn('text-[11px]', codexAuth.configured ? 'text-green-400' : 'text-[#71717a]')}>
-                              {codexAuth.configured ? `connected${codexAuth.source ? ` (${codexAuth.source})` : ''}` : 'not connected'}
-                            </span>
-                          </div>
-                          <div className="flex gap-1">
-                            <button
-                              onClick={runCodexDeviceAuth}
-                              className="flex-1 px-2 py-1 text-xs rounded bg-[#2a2a3a] text-[#d4d4d8] hover:text-white"
-                            >
-                              Device Login
-                            </button>
-                            <button
-                              onClick={importCodexAuth}
-                              className="flex-1 px-2 py-1 text-xs rounded bg-[#1a1a24] text-[#71717a] hover:text-white"
-                            >
-                              Import
-                            </button>
-                          </div>
-
-                          <div className="flex items-center justify-between mt-2">
-                            <span className="text-xs text-[#d4d4d8]">Claude</span>
-                            <span className={cn('text-[11px]', claudeAuth.configured ? 'text-green-400' : 'text-[#71717a]')}>
-                              {claudeAuth.configured ? `connected${claudeAuth.source ? ` (${claudeAuth.source})` : ''}` : 'not connected'}
-                            </span>
-                          </div>
-                          <div className="flex gap-1">
-                            <button
-                              onClick={runClaudeAuth}
-                              className="flex-1 px-2 py-1 text-xs rounded bg-[#2a2a3a] text-[#d4d4d8] hover:text-white"
-                            >
-                              Login
-                            </button>
-                            <button
-                              onClick={importClaudeAuth}
-                              className="flex-1 px-2 py-1 text-xs rounded bg-[#1a1a24] text-[#71717a] hover:text-white"
-                            >
-                              Import Env
-                            </button>
-                          </div>
-                          <div className="mt-2">
-                            <input
-                              type="password"
-                              value={claudeToken}
-                              onChange={(e) => setClaudeToken(e.target.value)}
-                              placeholder="Paste Claude access token"
-                              className="w-full px-2 py-1 text-xs rounded bg-[#0f0f15] border border-[#2a2a3a] text-white placeholder-[#51515a]"
-                            />
-                            <button
-                              onClick={storeClaudeToken}
-                              className="w-full mt-1 px-2 py-1 text-xs rounded bg-[#2a2a3a] text-[#d4d4d8] hover:text-white"
-                            >
-                              Save Token
-                            </button>
-                          </div>
-                          {authMessage && (
-                            <div className="text-[11px] text-[#71717a] mt-1">
-                              {authMessage}
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    </>
-                  )}
-                  {settingsTab === 'voice' && (
-                    <>
-                      {/* TTS Provider Selection */}
-                      <div className="px-3 py-2 border-b border-[#2a2a3a]">
-                        <span className="text-xs text-[#71717a] block mb-2">TTS Provider</span>
-                        <div className="flex gap-1">
-                          {(['browser', 'edge', 'elevenlabs'] as const).map((p) => (
-                            <button
-                              key={p}
-                              onClick={() => changeTtsProvider(p)}
-                              className={cn(
-                                'px-2 py-1 text-xs rounded transition-colors flex-1',
-                                ttsProvider === p
-                                  ? p === 'elevenlabs' ? 'bg-purple-500/30 text-purple-300'
-                                    : p === 'edge' ? 'bg-blue-500/30 text-blue-300'
-                                    : 'bg-green-500/30 text-green-300'
-                                  : 'bg-[#2a2a3a] text-[#71717a] hover:text-white'
-                              )}
-                            >
-                              {p === 'browser' ? 'Fast' : p === 'edge' ? 'Edge' : '11Labs'}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-
-                      {/* Browser TTS info */}
-                      {ttsProvider === 'browser' && (
-                        <div className="px-3 py-2 text-xs text-[#51515a]">
-                          Instant response using browser's built-in voice.
-                        </div>
-                      )}
-
-                      {/* Edge TTS voices */}
-                      {ttsProvider === 'edge' && (
-                        <>
-                          <div className="px-3 py-1 text-xs text-[#51515a]">Neural voices (free)</div>
-                          {voices.map((v) => (
-                            <button
-                              key={v.id}
-                              onClick={() => { switchVoice(v.id, 'edge'); setShowSettings(false) }}
-                              className={cn(
-                                'w-full px-3 py-2 text-left text-sm hover:bg-[#2a2a3a] transition-colors',
-                                v.id === currentVoice ? 'text-blue-400' : 'text-white'
-                              )}
-                            >
-                              {v.name}
-                            </button>
-                          ))}
-                        </>
-                      )}
-
-                      {/* ElevenLabs */}
-                      {ttsProvider === 'elevenlabs' && (
-                        <>
-                          {elevenVoices.length === 0 ? (
-                            <div className="px-3 py-2">
-                              <p className="text-xs text-[#71717a] mb-2">Enter your ElevenLabs API key:</p>
-                              <input
-                                type="password"
-                                value={elevenLabsKey}
-                                onChange={(e) => setElevenLabsKey(e.target.value)}
-                                placeholder="xi-xxxxxxxx..."
-                                className="w-full px-2 py-1 text-sm bg-[#12121a] border border-[#3a3a4a] rounded mb-2"
-                              />
-                              <button
-                                onClick={saveElevenLabsKey}
-                                disabled={!elevenLabsKey}
-                                className="w-full px-2 py-1 text-xs bg-purple-500/30 text-purple-300 rounded hover:bg-purple-500/50 disabled:opacity-50"
-                              >
-                                Save & Load Voices
-                              </button>
-                            </div>
-                          ) : (
-                            <>
-                              <div className="px-3 py-1 text-xs text-[#51515a]">ElevenLabs voices (streaming)</div>
-                              {elevenVoices.map((v) => (
-                                <button
-                                  key={v.id}
-                                  onClick={() => { switchVoice(v.id, 'elevenlabs'); setShowSettings(false) }}
-                                  className={cn(
-                                    'w-full px-3 py-2 text-left text-sm hover:bg-[#2a2a3a] transition-colors',
-                                    v.id === currentVoice ? 'text-purple-400' : 'text-white'
-                                  )}
-                                >
-                                  {v.name}
-                                </button>
-                              ))}
-                              <button
-                                onClick={() => setElevenVoices([])}
-                                className="w-full px-3 py-1 text-xs text-[#51515a] hover:text-red-400"
-                              >
-                                Change API Key
-                              </button>
-                            </>
-                          )}
-                        </>
-                      )}
-                    </>
-                  )}
-                  {settingsTab === 'stt' && (
-                    <>
-                      {/* STT Provider Selection */}
-                      <div className="px-3 py-2 border-b border-[#2a2a3a]">
-                        <span className="text-xs text-[#71717a] block mb-2">Speech-to-Text</span>
-                        <div className="flex gap-1">
-                          <button
-                            onClick={() => changeSttProvider('browser')}
-                            className={cn(
-                              'px-3 py-1.5 text-xs rounded transition-colors flex-1',
-                              sttProvider === 'browser'
-                                ? 'bg-green-500/30 text-green-300'
-                                : 'bg-[#2a2a3a] text-[#71717a] hover:text-white'
-                            )}
-                          >
-                            Browser (instant)
-                          </button>
-                          <button
-                            onClick={() => changeSttProvider('whisper')}
-                            className={cn(
-                              'px-3 py-1.5 text-xs rounded transition-colors flex-1',
-                              sttProvider === 'whisper'
-                                ? 'bg-purple-500/30 text-purple-300'
-                                : 'bg-[#2a2a3a] text-[#71717a] hover:text-white'
-                            )}
-                          >
-                            Whisper (accurate)
-                          </button>
-                        </div>
-                      </div>
-                      <div className="px-3 py-2 text-xs text-[#51515a]">
-                        {sttProvider === 'browser'
-                          ? 'Real-time transcription using browser API. Instant but may be less accurate.'
-                          : 'OpenAI Whisper for accurate transcription. Processes after you stop speaking.'}
-                      </div>
-                    </>
-                  )}
-                </div>
-              </div>
-            )}
-          </div>
-
-          <button
-            onClick={() => setChatMode(!chatMode)}
-            className={cn(
-              'px-3 py-1.5 rounded-lg text-sm transition-colors',
-              chatMode ? 'bg-blue-500 text-white' : 'bg-[#1a1a24] text-[#71717a]'
-            )}
-          >
-            {chatMode ? 'Chat' : 'Agent'}
-          </button>
-
-          <button
-            onClick={() => { setVoiceOutput(!voiceOutput); if (voiceOutput) stopSpeaking() }}
-            className={cn(
-              'p-2 rounded-lg transition-colors',
-              voiceOutput ? 'bg-green-500 text-white' : 'bg-[#1a1a24] text-[#71717a]'
-            )}
-          >
-            {voiceOutput ? <Volume2 size={18} /> : <VolumeX size={18} />}
-          </button>
-
-          <button
-            onClick={enterVoiceMode}
-            className="p-2 rounded-lg bg-[#1a1a24] text-[#71717a] hover:text-white hover:bg-purple-500"
-            title="Voice Mode"
-          >
-            <Phone size={18} />
-          </button>
-
-          <button onClick={clear} className="p-2 rounded-lg bg-[#1a1a24] text-[#71717a] hover:text-red-500">
-            <Trash2 size={18} />
-          </button>
-
-          <span className={cn('w-2 h-2 rounded-full ml-2', connected ? 'bg-green-500' : 'bg-red-500')} />
-        </div>
-      </header>
-
-      <main className="flex-1 overflow-y-auto p-4">
-        <div className="max-w-3xl mx-auto space-y-4">
-          {messages.map((msg, i) => (
-            <div key={i} className="space-y-3">
-              <div
-                className={cn(
-                  'p-4 rounded-xl',
-                  msg.role === 'user' ? 'bg-[#1a1a24] ml-12' :
-                  msg.role === 'system' ? 'bg-transparent text-center text-[#71717a] text-sm' :
-                  'bg-[#12121a] mr-12'
-                )}
-              >
-                {msg.role !== 'system' && (
-                  <div className="flex justify-between items-center mb-2">
-                    <p className="text-xs text-[#71717a]">{msg.role === 'user' ? 'You' : 'Jarvis'}</p>
-                    <p className="text-xs text-[#51515a]">
-                      {msg.timestamp?.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                    </p>
-                  </div>
-                )}
-                <p className="whitespace-pre-wrap">{msg.content}</p>
-              </div>
-
-              {msg.tools && msg.tools.length > 0 && msg.role === 'assistant' && (
-                <div className="p-4 rounded-xl bg-[#0f1117] border border-[#2a2a3a] mr-12">
-                  <div className="flex items-center justify-between mb-3">
-                    <p className="text-xs text-[#a1a1aa] uppercase tracking-wider">Tools</p>
-                    <p className="text-xs text-[#51515a]">{msg.tools.length} step{msg.tools.length > 1 ? 's' : ''}</p>
-                  </div>
-                  <div className="space-y-2">
-                    {msg.tools.map((tool, idx) => (
-                      <details key={`${tool.name}-${idx}`} className="group rounded-lg bg-[#12121a] border border-[#1f1f2a] p-3">
-                        <summary className="flex items-start gap-2 text-sm cursor-pointer list-none">
-                          <span
-                            className={cn(
-                              'mt-1 h-2 w-2 rounded-full',
-                              tool.success === false ? 'bg-red-400' : 'bg-emerald-400'
-                            )}
-                          />
-                          <div className="flex-1">
-                            <div className="text-[#e4e4e7]">{tool.display}</div>
-                            {tool.result_preview && (
-                              <div className="text-xs text-[#71717a] mt-0.5 line-clamp-2">{tool.result_preview}</div>
-                            )}
-                          </div>
-                          <div className="text-xs text-[#51515a]">
-                            {tool.duration_s?.toFixed(1)}s
-                          </div>
-                        </summary>
-                        <div className="mt-3 text-xs text-[#a1a1aa] space-y-2">
-                          {tool.args && Object.keys(tool.args).length > 0 && (
-                            <div>
-                              <div className="text-[#71717a] mb-1">Args</div>
-                              <pre className="whitespace-pre-wrap text-[#cbd5f5] bg-[#0b0d12] p-2 rounded-md border border-[#1f1f2a]">
-                                {JSON.stringify(tool.args, null, 2)}
-                              </pre>
-                            </div>
-                          )}
-                          {tool.result_preview && (
-                            <div>
-                              <div className="text-[#71717a] mb-1">Result</div>
-                              <div className="whitespace-pre-wrap text-[#cbd5f5] bg-[#0b0d12] p-2 rounded-md border border-[#1f1f2a]">
-                                {tool.result_preview}
-                              </div>
-                            </div>
-                          )}
-                          {tool.result_preview && extractUrls(tool.result_preview).length > 0 && (
-                            <div>
-                              <div className="text-[#71717a] mb-1">Sources</div>
-                              <div className="flex flex-col gap-1">
-                                {extractUrls(tool.result_preview).map((url) => (
-                                  <a
-                                    key={url}
-                                    href={url}
-                                    target="_blank"
-                                    rel="noreferrer"
-                                    className="text-[#7dd3fc] hover:underline break-all"
-                                  >
-                                    {url}
-                                  </a>
-                                ))}
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      </details>
-                    ))}
-                  </div>
-                </div>
+    <FileUploadZone onFilesAdded={addFiles} disabled={isLoading}>
+      <div className="flex flex-col h-full">
+        {/* Compact Header */}
+        <header className="flex items-center justify-between px-4 py-3 border-b border-border/20 bg-background/80 backdrop-blur-xl">
+          <div className="flex items-center gap-3">
+            <div className="relative">
+              <img src="/jarvis.jpeg" alt={assistantName} className="w-8 h-8 rounded-xl" />
+              <div className={cn(
+                'absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-background',
+                connected ? 'bg-success' : 'bg-error'
+              )} />
+            </div>
+            <div className="flex flex-col">
+              <h1 className="text-sm font-semibold leading-none">{assistantName}</h1>
+              {project && (
+                <span className="text-xs text-text-muted">{project}</span>
               )}
             </div>
-          ))}
+          </div>
 
-          {/* RAG Status Indicator - only show when knowledge is found */}
-          {/* {ragStatus && ragStatus.chunks > 0 && (
-            <div className="flex items-center gap-2 text-xs mb-2">
-              <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                <div className={cn("w-2 h-2 rounded-full bg-emerald-400", (streaming || isLoading) && "animate-pulse")} />
-                <span>📚 {ragStatus.chunks} chunks from {ragStatus.sources.join(', ')}</span>
+          <div className="flex items-center gap-1">
+            {/* Reasoning Level - Compact */}
+            <div className="flex items-center bg-surface/40 rounded-lg p-0.5 border border-border/10">
+              {[
+                { level: 'fast' as const, icon: Zap, color: 'warning', title: 'Fast' },
+                { level: null, icon: Scale, color: 'primary', title: 'Auto' },
+                { level: 'deep' as const, icon: Brain, color: 'listening', title: 'Deep' },
+              ].map(({ level, icon: Icon, color, title }) => (
+                <button
+                  key={title}
+                  onClick={() => setReasoningLevel(level === reasoningLevel ? null : level)}
+                  className={cn(
+                    'p-1.5 rounded-md transition-all',
+                    reasoningLevel === level
+                      ? `bg-${color}/20 text-${color}`
+                      : 'text-text-muted/60 hover:text-text-muted'
+                  )}
+                  title={title}
+                >
+                  <Icon size={14} />
+                </button>
+              ))}
+            </div>
+
+            {/* Voice Mode Button */}
+            <button
+              onClick={enterVoiceMode}
+              className="p-2 rounded-lg bg-surface/40 border border-border/10 text-text-muted hover:text-purple-400 hover:border-purple-400/30 transition-all"
+              title="Voice mode"
+            >
+              <AudioWaveform size={16} />
+            </button>
+
+            {/* Voice Input Button - Push to Talk */}
+            <button
+              onClick={handleVoiceToggle}
+              className={cn(
+                'p-2 rounded-lg transition-all border',
+                isRecording
+                  ? 'bg-error/20 border-error/30 text-error animate-pulse'
+                  : 'bg-surface/40 border-border/10 text-text-muted hover:text-listening'
+              )}
+              title={isRecording ? 'Stop recording' : 'Voice input (push to talk)'}
+            >
+              <Mic size={16} />
+            </button>
+
+            {/* Voice Output */}
+            <button
+              onClick={() => { setVoiceOutput(!voiceOutput); if (voiceOutput) stopSpeaking() }}
+              className={cn(
+                'p-2 rounded-lg transition-all border',
+                voiceOutput
+                  ? 'bg-success/10 border-success/30 text-success'
+                  : 'bg-surface/40 border-border/10 text-text-muted'
+              )}
+              title={voiceOutput ? 'Voice output on' : 'Voice output off'}
+            >
+              {voiceOutput ? <Volume2 size={16} /> : <VolumeX size={16} />}
+            </button>
+
+            {/* Clear */}
+            <button
+              onClick={clear}
+              className="p-2 rounded-lg bg-surface/40 text-text-muted hover:text-error border border-border/10 transition-all"
+              title="Clear"
+            >
+              <Trash2 size={16} />
+            </button>
+
+            {/* Settings */}
+            <button
+              onClick={() => setShowSettings(true)}
+              className="p-2 rounded-lg bg-surface/40 text-text-muted hover:text-text border border-border/10 transition-colors"
+              title="Settings"
+            >
+              <Settings size={16} />
+            </button>
+          </div>
+        </header>
+
+        {/* Context Bar - Only when significant */}
+        {contextStats && contextStats.percentage > 30 && (
+          <div className="px-4 py-1.5 border-b border-border/10 bg-surface/20">
+            <div className="flex items-center gap-2 max-w-3xl mx-auto">
+              <div className="flex-1 h-1 bg-surface-2 rounded-full overflow-hidden">
+                <div
+                  className={cn(
+                    'h-full rounded-full transition-all duration-500',
+                    contextStats.percentage > 80 ? 'bg-error' :
+                    contextStats.percentage > 60 ? 'bg-warning' : 'bg-primary/60'
+                  )}
+                  style={{ width: `${Math.min(contextStats.percentage, 100)}%` }}
+                />
               </div>
+              <span className={cn(
+                'text-[10px] tabular-nums',
+                contextStats.percentage > 80 ? 'text-error' :
+                contextStats.percentage > 60 ? 'text-warning' : 'text-text-muted/60'
+              )}>
+                {contextStats.percentage.toFixed(0)}%
+              </span>
             </div>
-          )} */}
+          </div>
+        )}
 
-          {streaming && (
-            <div className="p-4 rounded-xl bg-[#12121a] mr-12">
-              <p className="text-xs text-[#71717a] mb-2">Jarvis</p>
-              <p className="whitespace-pre-wrap">
-                {streaming}
-                <span className="inline-block w-2 animate-pulse">▍</span>
-              </p>
+        {/* Intent Badge - Floating */}
+        {intentInfo?.detected && intentInfo.intent && (
+          <div className="absolute top-16 right-4 z-10">
+            <div className="text-[10px] px-2 py-1 bg-surface/80 backdrop-blur-sm rounded-lg border border-border/20 text-text-muted flex items-center gap-1.5">
+              <span className="w-1.5 h-1.5 rounded-full bg-primary" />
+              {intentInfo.intent}
             </div>
-          )}
+          </div>
+        )}
 
-          {isLoading && !streaming && (
-            <div className="flex items-center gap-2 text-[#71717a]">
-              <Loader2 size={16} className="animate-spin" />
+        {/* Messages */}
+        <MessageList
+          messages={messages}
+          streaming={streaming}
+          isLoading={isLoading}
+          loadingText={loadingText}
+        />
+
+        {/* Recording indicator */}
+        {isRecording && (
+          <div className="absolute bottom-24 left-1/2 -translate-x-1/2 z-10">
+            <div className="flex items-center gap-2 px-4 py-2 bg-error/20 backdrop-blur-sm rounded-full border border-error/30 text-error">
+              <span className="w-2 h-2 rounded-full bg-error animate-pulse" />
+              <span className="text-sm font-medium">Listening...</span>
             </div>
-          )}
+          </div>
+        )}
 
-          <div ref={messagesEndRef} />
-        </div>
-      </main>
+        {/* Input */}
+        <UnifiedInput
+          value={input}
+          onChange={setInput}
+          onSend={handleSend}
+          onVoiceToggle={handleVoiceToggle}
+          onFilesAdded={addFiles}
+          files={files}
+          onRemoveFile={removeFile}
+          isRecording={isRecording}
+          isLoading={isLoading}
+          disabled={!connected}
+        />
 
-      <footer className="p-4 border-t border-[#2a2a3a]">
-        <div className="max-w-3xl mx-auto flex gap-2">
-          <button
-            onClick={handleVoiceToggle}
-            disabled={isLoading}
-            className={cn(
-              'p-3 rounded-xl transition-colors',
-              isRecording ? 'bg-red-500 text-white' : 'bg-[#1a1a24] text-[#71717a] hover:text-white'
-            )}
-          >
-            {isRecording ? <MicOff size={20} /> : <Mic size={20} />}
-          </button>
-
-          <input
-            type="text"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && handleSend()}
-            placeholder={isRecording ? 'Listening...' : 'Type a message...'}
-            disabled={isRecording}
-            className="flex-1 px-4 py-3 rounded-xl bg-[#12121a] border border-[#2a2a3a] focus:border-blue-500 focus:outline-none"
-          />
-
-          <button
-            onClick={handleSend}
-            disabled={!input.trim() || !connected || isLoading}
-            className="p-3 rounded-xl bg-blue-500 text-white disabled:opacity-50 hover:bg-blue-600"
-          >
-            <Send size={20} />
-          </button>
-        </div>
-      </footer>
-    </div>
+        {/* Settings Panel */}
+        <SettingsPanel
+          isOpen={showSettings}
+          onClose={() => setShowSettings(false)}
+          currentModel={model}
+          currentProvider={provider}
+          providers={providers}
+          models={models}
+          onSwitchModel={switchModel}
+          onSwitchProvider={switchProvider}
+          voiceSettings={{
+            tts_provider: ttsProvider,
+            tts_voice: currentVoice,
+            stt_provider: sttProvider,
+          }}
+          onSetTTSProvider={handleSetTTSProvider}
+          onSetSTTProvider={handleSetSTTProvider}
+          onSetVoice={handleSetVoice}
+          edgeVoices={voices}
+          elevenVoices={elevenVoices}
+          kokoroVoices={kokoroVoices}
+          wakeWord={wakeWord}
+          wakeWordEnabled={wakeWordEnabled}
+          onSetWakeWord={setWakeWord}
+          onSetWakeWordEnabled={setWakeWordEnabled}
+          systemPrompt={systemPrompt}
+          isDefaultPrompt={isDefaultPrompt}
+          onSetSystemPrompt={handleSetSystemPrompt}
+          onResetSystemPrompt={handleResetSystemPrompt}
+          chutesConfigured={chutesConfigured}
+        />
+      </div>
+    </FileUploadZone>
   )
 }

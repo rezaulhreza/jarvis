@@ -87,7 +87,8 @@ except ImportError:
 # Valid commands for highlighting
 VALID_COMMANDS = {
     "/help", "/init", "/models", "/model", "/provider", "/providers",
-    "/project", "/tools", "/clear", "/cls", "/quit", "/exit", "/q", "/reset"
+    "/project", "/tools", "/context", "/level", "/clear", "/cls", "/quit", "/exit", "/q", "/reset",
+    "/analyze"
 }
 
 
@@ -109,6 +110,9 @@ class TerminalUI:
         # Track current provider/model for status display
         self._current_provider: str = ""
         self._current_model: str = ""
+
+        # Track context stats
+        self._context_stats: dict = {}
 
         # Track operation counts for expandable summaries
         self._op_counts: dict = {}  # {"Read": 2, "Search": 1, ...}
@@ -304,7 +308,7 @@ class TerminalUI:
         self.console.print("[dim]  /help for commands • ESC to stop response • Ctrl+C to clear input[/dim]")
         self.console.print()
 
-    def print_status(self, provider: str = None, model: str = None, project_root: Path = None):
+    def print_status(self, provider: str = None, model: str = None, project_root: Path = None, context_stats: dict = None):
         """Update stored status values."""
         if provider:
             self._current_provider = provider
@@ -312,10 +316,25 @@ class TerminalUI:
             self._current_model = model
         if project_root:
             self.project_root = project_root
+        if context_stats:
+            self._context_stats = context_stats
 
     def _get_toolbar_text(self):
         """Generate toolbar text for display."""
-        return f"? help · ESC stop · {self._current_provider} · {self._current_model}"
+        parts = ["? help", "ESC stop", self._current_provider, self._current_model]
+
+        # Add context stats if available
+        if self._context_stats:
+            pct = self._context_stats.get("percentage", 0)
+            if pct > 0:
+                tokens_k = self._context_stats.get("tokens_used", 0) / 1000
+                max_k = self._context_stats.get("max_tokens", 8000) / 1000
+                if pct > 80:
+                    parts.append(f"⚠ {pct:.0f}% ({tokens_k:.1f}k/{max_k:.0f}k)")
+                elif pct > 50:
+                    parts.append(f"ctx {pct:.0f}%")
+
+        return " · ".join(parts)
 
     def get_input(self, prompt: str = ">", placeholder: str = None) -> str:
         """Get user input with bordered input field."""
@@ -593,6 +612,9 @@ class TerminalUI:
             ("/providers", "List providers"),
             ("/project", "Show project info"),
             ("/tools", "Show recent tool calls (expand details)"),
+            ("/context", "Show context window usage"),
+            ("/level [level]", "Set reasoning level (fast/balanced/deep/auto)"),
+            ("/analyze <query>", "Multi-model AI analysis"),
             ("/clear", "Clear conversation history"),
             ("/cls", "Clear terminal screen"),
             ("/quit", "Exit"),
@@ -744,6 +766,9 @@ class _JarvisCompleter(Completer):
         "/providers",
         "/project",
         "/tools",
+        "/context",
+        "/level",
+        "/analyze",
         "/clear",
         "/cls",
         "/reset",

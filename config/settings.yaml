@@ -40,6 +40,43 @@ agent:
     default: 120
     reasoning: 300
 
+# Intent Classification (smart routing)
+intent:
+  enabled: true                    # Enable intent classification
+  llm_enabled: false               # Use LLM for classification (slow, set true for accuracy)
+  classifier_model: "fast"         # Model type when LLM enabled
+  cache_ttl: 300                   # Cache similar intents for 5 minutes
+  confidence_threshold: 0.7        # LLM confidence threshold
+  # User can override default reasoning levels with regex patterns
+  reasoning_overrides:
+    "explain.*in detail": "deep"
+    "quick.*answer": "fast"
+    "think.*through": "deep"
+    "step by step": "deep"
+    "briefly": "fast"
+
+# Reasoning Levels (model selection by complexity)
+reasoning:
+  # Default reasoning level when not auto-detected
+  default_level: "balanced"
+  levels:
+    fast:
+      model: "fast"                # Maps to provider's fast model (gemma-3-4b)
+      max_tokens: 500
+      timeout: 10
+      description: "Quick responses for simple queries"
+    balanced:
+      model: "default"             # Maps to provider's default model (Qwen3-32B)
+      max_tokens: 2000
+      timeout: 30
+      description: "Standard responses for most queries"
+    deep:
+      model: "deep"                # Maps to provider's deep model (Kimi K2.5)
+      max_tokens: 8000
+      timeout: 180
+      enable_reflection: true      # Chain-of-thought prompting
+      description: "Complex reasoning and detailed analysis"
+
 # Memory Settings
 memory:
   database: "memory/jarvis.db"
@@ -108,9 +145,11 @@ providers:
     models:
       default: "Qwen/Qwen3-32B"
       reasoning: "deepseek-ai/DeepSeek-V3"
+      deep: "moonshotai/Kimi-K2.5-TEE"  # For complex/deep reasoning
       vision: "Qwen/Qwen2.5-VL-72B-Instruct"
       code: "Qwen/Qwen2.5-Coder-32B-Instruct"
       fast: "unsloth/gemma-3-4b-it"
+      balanced: "Qwen/Qwen3-32B"
 
 # Safety Settings
 safety:

@@ -21,6 +21,9 @@ from .skill_creator import (
     create_skill, update_skill, delete_skill,
     list_user_skills, get_skill_code, get_skill_template
 )
+from .multi_model_analysis import (
+    multi_model_analyze, list_analysis_profiles, analyze_parallel
+)
 
 # Built-in skills
 BUILT_IN_SKILLS = {
@@ -207,6 +210,21 @@ BUILT_IN_SKILLS = {
         "function": get_skill_template,
         "description": "Get a template for creating skills",
         "parameters": {"template_type": "string - basic, api_fetch, file_processor, shell_command"}
+    },
+
+    # Multi-Model Analysis
+    "multi_model_analyze": {
+        "function": multi_model_analyze,
+        "description": "Analyze a query using multiple AI models (fast, reasoning, code, thinking) for comprehensive insights",
+        "parameters": {
+            "query": "string - the question or topic to analyze",
+            "profile": "string - analysis profile: comprehensive, quick, technical, reasoning (default: comprehensive)"
+        }
+    },
+    "list_analysis_profiles": {
+        "function": list_analysis_profiles,
+        "description": "List available multi-model analysis profiles",
+        "parameters": {}
     },
 }
 

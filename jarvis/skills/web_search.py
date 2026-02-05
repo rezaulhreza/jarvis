@@ -15,8 +15,13 @@ def web_search(query: str, max_results: int = 5) -> str:
         Formatted search results as string
     """
     try:
+        # Ensure max_results is an integer
+        max_results = int(max_results) if max_results else 5
+
         with DDGS() as ddgs:
-            results = list(ddgs.text(query, max_results=max_results))
+            # ddgs v9 API
+            search_results = ddgs.text(query, max_results=max_results)
+            results = list(search_results) if search_results else []
 
         if not results:
             return "No results found."
@@ -46,7 +51,9 @@ def get_current_news(topic: str) -> str:
     try:
         with DDGS() as ddgs:
             # Search news specifically
-            results = list(ddgs.news(topic, max_results=5))
+            # ddgs v9 API
+            news_results = ddgs.news(topic, max_results=5)
+            results = list(news_results) if news_results else []
 
         if not results:
             # Fallback to regular search with date qualifier

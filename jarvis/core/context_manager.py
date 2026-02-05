@@ -4,7 +4,7 @@ import json
 import sqlite3
 from pathlib import Path
 from datetime import datetime
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Callable
 import tiktoken
 import uuid
 
@@ -37,6 +37,10 @@ class ContextManager:
         self.working_memory: dict = {}
         self.current_task: Optional[str] = None
         self.current_chat_id: Optional[str] = None
+
+        # LLM provider for intelligent summarization (set externally)
+        self._provider = None
+        self._on_compact_callback: Optional[Callable[[int, str], None]] = None
 
         # Token counter (approximate)
         try:
@@ -156,6 +160,48 @@ class ContextManager:
             total += self.count_tokens(msg.get('content', ''))
         return total
 
+    def get_context_stats(self) -> dict:
+        """
+        Get context usage statistics.
+
+        Returns dict with:
+        - tokens_used: Current token count
+        - max_tokens: Maximum allowed tokens
+        - percentage: Usage percentage (0-100)
+        - messages: Number of messages
+        - needs_compact: True if approaching limit
+        """
+        tokens_used = self.get_context_tokens()
+        percentage = (tokens_used / self.max_tokens * 100) if self.max_tokens > 0 else 0
+
+        return {
+            "tokens_used": tokens_used,
+            "max_tokens": self.max_tokens,
+            "percentage": round(percentage, 1),
+            "messages": len(self.messages),
+            "needs_compact": percentage > 80,
+            "tokens_remaining": max(0, self.max_tokens - tokens_used),
+        }
+
+    def set_max_tokens(self, max_tokens: int):
+        """Update max tokens (e.g., when switching models)."""
+        self.max_tokens = max_tokens
+        # Check if compaction needed with new limit
+        if self.get_context_tokens() > self.max_tokens:
+            self._compact()
+
+    def set_provider(self, provider):
+        """Set LLM provider for intelligent summarization."""
+        self._provider = provider
+
+    def set_compact_callback(self, callback: Callable[[int, str], None]):
+        """Set callback for compact notifications.
+
+        Args:
+            callback: Function(messages_compacted: int, summary: str)
+        """
+        self._on_compact_callback = callback
+
     def add_message(self, role: str, content: str, model: str = None):
         """Add a message to the conversation."""
         message = {
@@ -193,13 +239,18 @@ class ContextManager:
         conn.close()
 
     def _compact(self):
-        """Compact conversation history when too long."""
+        """Compact conversation history when too long.
+
+        Uses LLM-based summarization when provider is available,
+        otherwise falls back to simple extraction.
+        """
         if len(self.messages) <= self.keep_recent:
             return
 
         # Keep recent messages
         recent = self.messages[-self.keep_recent:]
         old = self.messages[:-self.keep_recent]
+        num_compacted = len(old)
 
         # Create summary of old messages
         summary = self._summarize(old)
@@ -223,17 +274,77 @@ class ContextManager:
             {"role": "system", "content": f"[Previous conversation summary: {summary}]"}
         ] + recent
 
-        print(f"\n[Context compacted: {len(old)} messages summarized]\n")
+        # Notify via callback or print
+        if self._on_compact_callback:
+            self._on_compact_callback(num_compacted, summary)
+        else:
+            print(f"\n[Context compacted: {num_compacted} messages summarized]\n")
 
     def _summarize(self, messages: list[dict]) -> str:
-        """Create a summary of messages (simple version)."""
-        # In a full implementation, you'd use the LLM to summarize
-        # For now, extract key points
+        """Create a summary of messages using LLM or fallback extraction.
+
+        When an LLM provider is available, uses it for intelligent summarization.
+        Otherwise, falls back to simple key point extraction.
+        """
+        # Try LLM-based summarization if provider is available
+        if self._provider:
+            try:
+                return self._summarize_with_llm(messages)
+            except Exception as e:
+                print(f"[Context] LLM summarization failed: {e}, using fallback")
+
+        # Fallback: simple key point extraction
+        return self._summarize_simple(messages)
+
+    def _summarize_with_llm(self, messages: list[dict]) -> str:
+        """Use LLM to create an intelligent summary of messages."""
+        # Build conversation text for summarization
+        conv_text = []
+        for msg in messages:
+            role = msg.get('role', 'unknown')
+            content = msg.get('content', '')[:500]  # Limit each message
+            conv_text.append(f"{role.upper()}: {content}")
+
+        conversation = "\n".join(conv_text[-20:])  # Last 20 messages max
+
+        prompt = f"""Summarize this conversation in 2-3 concise sentences. Focus on:
+1. The main topics discussed
+2. Key decisions or conclusions
+3. Any important context for continuing the conversation
+
+Conversation:
+{conversation}
+
+Summary (2-3 sentences):"""
+
+        try:
+            from ..providers import Message
+            response = self._provider.chat(
+                messages=[Message(role="user", content=prompt)],
+                system="You are a helpful assistant that creates concise conversation summaries.",
+                stream=False
+            )
+
+            # Handle generator response
+            if hasattr(response, '__iter__') and not isinstance(response, str):
+                response = ''.join(response)
+
+            summary = response.strip()
+            # Limit summary length
+            if len(summary) > 500:
+                summary = summary[:497] + "..."
+            return summary
+
+        except Exception as e:
+            raise RuntimeError(f"LLM summarization error: {e}")
+
+    def _summarize_simple(self, messages: list[dict]) -> str:
+        """Simple fallback summarization by extracting key points."""
         summary_parts = []
 
         for msg in messages:
-            role = msg['role']
-            content = msg['content'][:200]  # Truncate
+            role = msg.get('role', '')
+            content = msg.get('content', '')[:200]  # Truncate
             if role == 'user':
                 summary_parts.append(f"User asked about: {content[:100]}")
             elif role == 'assistant':

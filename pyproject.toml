@@ -48,6 +48,8 @@ ui = [
     "uvicorn>=0.23.0",
     "websockets>=11.0",
     "jinja2>=3.0.0",
+    "httpx>=0.24.0",
+    "psutil>=5.9.0",
 ]
 voice = [
     "openai-whisper>=20231117",

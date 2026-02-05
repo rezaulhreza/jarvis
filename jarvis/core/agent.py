@@ -3,6 +3,7 @@ Agentic loop with tool calling.
 
 Supports both native tool calling and prompt-based fallback.
 Integrates RAG for knowledge retrieval.
+Uses LLM-based intent classification for intelligent routing.
 """
 
 import re
@@ -25,6 +26,7 @@ from .tools import (
     # Task management
     task_create, task_update, task_list, task_get,
 )
+from .intent import IntentClassifier, Intent, ReasoningLevel, ClassifiedIntent
 
 class Agent:
     """Agent with tool calling - native or prompt-based."""
@@ -38,6 +40,11 @@ class Agent:
         self.last_streamed = False
         set_project_root(project_root)
         set_ui(ui)  # Pass UI to tools for confirmations
+
+        # Initialize intent classifier
+        self.classifier = IntentClassifier(provider=provider, config=config)
+        self._last_intent: Optional[ClassifiedIntent] = None
+        self._user_reasoning_level: Optional[str] = None  # User override from CLI
 
     def _supports_native_tools(self) -> bool:
         """Check if current model supports native tool calling."""
@@ -64,6 +71,149 @@ class Agent:
         if reasoning_model and reasoning_model in (self.provider.model or ""):
             return reasoning_timeout
         return default_timeout
+
+    def _get_timeout_for_level(self, level: ReasoningLevel) -> int:
+        """Get timeout based on reasoning level."""
+        reasoning_cfg = self.config.get("reasoning", {}).get("levels", {})
+        level_cfg = reasoning_cfg.get(level.value, {})
+        return int(level_cfg.get("timeout", self._get_timeout()))
+
+    def classify_intent(self, message: str, context: List = None) -> ClassifiedIntent:
+        """
+        Classify user message intent using the IntentClassifier.
+
+        This is the primary entry point for intent-based routing.
+        """
+        self._last_intent = self.classifier.classify_sync(message, context)
+        return self._last_intent
+
+    def get_reasoning_level(self, intent: ClassifiedIntent = None, user_override: str = None) -> ReasoningLevel:
+        """
+        Determine reasoning level from intent or user override.
+
+        Args:
+            intent: Classified intent (uses last classified if None)
+            user_override: User-specified level ("fast", "balanced", "deep")
+
+        Returns:
+            ReasoningLevel enum value
+        """
+        # Check user override (explicit parameter or instance-level setting)
+        override = user_override or self._user_reasoning_level
+        if override:
+            try:
+                return ReasoningLevel(override.lower())
+            except ValueError:
+                pass
+
+        intent = intent or self._last_intent
+        if intent:
+            return intent.reasoning_level
+
+        # Default from config
+        default = self.config.get("reasoning", {}).get("default_level", "balanced")
+        try:
+            return ReasoningLevel(default)
+        except ValueError:
+            return ReasoningLevel.BALANCED
+
+    def get_model_for_level(self, level: ReasoningLevel) -> str:
+        """
+        Select appropriate model for reasoning level.
+
+        Maps reasoning levels to configured models.
+        """
+        reasoning_cfg = self.config.get("reasoning", {}).get("levels", {})
+        level_cfg = reasoning_cfg.get(level.value, {})
+        model_type = level_cfg.get("model", "default")
+
+        # Get actual model from provider or config
+        if hasattr(self.provider, "get_model_for_task"):
+            return self.provider.get_model_for_task(model_type)
+
+        # Fallback to models config
+        models = self.config.get("models", {})
+        if model_type in models:
+            return models[model_type]
+
+        return self.provider.model
+
+    def detect_tool_from_intent(self, intent: ClassifiedIntent, message: str) -> Optional[Tuple[str, dict]]:
+        """
+        Detect which tool to run based on classified intent.
+
+        This replaces keyword-based _detect_auto_tool with intent-based routing.
+        """
+        if not intent.requires_tools:
+            return None
+
+        msg = message.strip()
+        msg_lower = msg.lower()
+
+        # Map intents to tool detection
+        if intent.intent == Intent.WEATHER:
+            match = re.search(r'weather\s+(?:in|for)\s+(.+)', msg_lower)
+            if match:
+                city = match.group(1).strip().title()
+                return "get_weather", {"city": city}
+            return None  # Let model ask for location
+
+        elif intent.intent == Intent.TIME_DATE:
+            match = re.search(r'time\s+(?:in|for)\s+(.+)', msg_lower)
+            if match:
+                tz = match.group(1).strip().upper()
+                return "get_current_time", {"timezone": tz}
+            return "get_current_time", {"timezone": "UTC"}
+
+        elif intent.intent == Intent.CALCULATE:
+            # Extract expression
+            math_match = re.search(r'(?:calc(?:ulate)?\s+)?([0-9\.\+\-\*\/\(\)\s]+)', msg_lower)
+            if math_match:
+                expr = math_match.group(1).strip()
+                if expr and re.match(r'^[\d\.\+\-\*\/\(\)\s]+$', expr):
+                    return "calculate", {"expression": expr}
+
+        elif intent.intent == Intent.NEWS:
+            topic = msg_lower.replace("news", "").replace("headlines", "").strip()
+            return "get_current_news", {"topic": topic or msg}
+
+        elif intent.intent == Intent.FINANCE:
+            # Check for gold price with API key
+            if "gold" in msg_lower:
+                import os
+                if os.getenv("GOLDAPI_KEY") or os.getenv("GOLD_API_KEY"):
+                    currency = "USD"
+                    for cur in ["GBP", "EUR", "USD", "AED", "AUD", "CAD", "CHF", "JPY"]:
+                        if cur.lower() in msg_lower:
+                            currency = cur
+                            break
+                    return "get_gold_price", {"currency": currency}
+            # Fallback to web search for other financial queries
+            return "web_search", {"query": msg}
+
+        elif intent.intent == Intent.SEARCH:
+            # Extract search query
+            for prefix in ["search for ", "look up ", "find online ", "google ", "search the web for "]:
+                if msg_lower.startswith(prefix):
+                    topic = msg[len(prefix):].strip()
+                    if topic:
+                        return "web_search", {"query": topic}
+            return "web_search", {"query": msg}
+
+        elif intent.intent == Intent.RECALL:
+            return "recall_memory", {"query": msg}
+
+        # For file_op, git, shell, code - don't auto-run, let the full agent handle
+        return None
+
+    def requires_full_agent_from_intent(self, intent: ClassifiedIntent) -> bool:
+        """
+        Check if intent requires full agent mode (file ops, git, shell).
+
+        This replaces the keyword-based _requires_full_agent method.
+        """
+        full_agent_intents = {Intent.FILE_OP, Intent.GIT, Intent.SHELL, Intent.CODE}
+        return intent.intent in full_agent_intents
 
     def _requires_full_agent(self, user_message: str) -> bool:
         """Check if this query requires full agent capabilities (file ops, git, etc.)."""
@@ -313,6 +463,82 @@ class Agent:
                     return "web_search", {"query": msg}
 
         return None
+
+    def detect_auto_tool(self, message: str, use_intent: bool = True) -> Optional[Tuple[str, dict]]:
+        """
+        Unified tool detection - uses intent classification when enabled.
+
+        This is the preferred entry point for auto-tool detection.
+        Falls back to keyword-based detection if intent classification fails.
+
+        Args:
+            message: User message
+            use_intent: Whether to try intent-based detection first
+
+        Returns:
+            Tuple of (tool_name, args) or None
+        """
+        intent_cfg = self.config.get("intent", {})
+
+        # Try intent-based detection if enabled
+        if use_intent and intent_cfg.get("enabled", True):
+            try:
+                intent = self.classify_intent(message)
+                if intent.confidence >= intent_cfg.get("confidence_threshold", 0.7):
+                    tool = self.detect_tool_from_intent(intent, message)
+                    if tool:
+                        return tool
+            except Exception as e:
+                print(f"[Agent] Intent classification failed: {e}")
+
+        # Fall back to keyword-based detection
+        return self._detect_auto_tool(message)
+
+    def likely_needs_tools(self, message: str, use_intent: bool = True) -> bool:
+        """
+        Check if message likely needs tools - uses intent classification when enabled.
+
+        Args:
+            message: User message
+            use_intent: Whether to use intent-based detection
+
+        Returns:
+            True if tools are likely needed
+        """
+        intent_cfg = self.config.get("intent", {})
+
+        if use_intent and intent_cfg.get("enabled", True):
+            try:
+                intent = self.classify_intent(message)
+                if intent.confidence >= intent_cfg.get("confidence_threshold", 0.7):
+                    return intent.requires_tools
+            except Exception:
+                pass
+
+        return self._likely_needs_tools(message)
+
+    def requires_full_agent(self, message: str, use_intent: bool = True) -> bool:
+        """
+        Check if message requires full agent - uses intent classification when enabled.
+
+        Args:
+            message: User message
+            use_intent: Whether to use intent-based detection
+
+        Returns:
+            True if full agent mode is needed
+        """
+        intent_cfg = self.config.get("intent", {})
+
+        if use_intent and intent_cfg.get("enabled", True):
+            try:
+                intent = self.classify_intent(message)
+                if intent.confidence >= intent_cfg.get("confidence_threshold", 0.7):
+                    return self.requires_full_agent_from_intent(intent)
+            except Exception:
+                pass
+
+        return self._requires_full_agent(message)
 
     def _get_tools_prompt(self) -> str:
         """Get prompt describing available tools for non-native models."""

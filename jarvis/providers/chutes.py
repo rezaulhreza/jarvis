@@ -1,12 +1,34 @@
-"""Chutes AI provider - OpenAI-compatible API with reliable tool calling.
+"""Chutes AI provider - Comprehensive API for LLM, TTS, STT, Image, Video, Music.
 
-Chutes provides access to various models through an OpenAI-compatible API.
-Recommended models by task:
-- default: Qwen/Qwen3-32B (general purpose)
-- reasoning: deepseek-ai/DeepSeek-V3 (complex reasoning)
-- vision: Qwen/Qwen2.5-VL-72B-Instruct (image analysis)
-- code: Qwen/Qwen2.5-Coder-32B-Instruct (code generation)
-- fast: unsloth/gemma-3-4b-it (quick responses)
+Chutes provides access to various AI models through an OpenAI-compatible API:
+
+LLM Models (text generation):
+- Qwen/Qwen3-32B (general purpose, fast)
+- deepseek-ai/DeepSeek-V3 (complex reasoning)
+- Qwen/Qwen2.5-Coder-32B-Instruct (code generation)
+- Qwen/Qwen2.5-VL-72B-Instruct (vision/multimodal)
+- unsloth/gemma-3-4b-it (quick/cheap)
+- deepseek-ai/DeepSeek-R1 (deep reasoning)
+
+TTS Models (text-to-speech):
+- kokoro (high quality, natural)
+- csm-1b (conversational speech model)
+
+STT Models (speech-to-text):
+- whisper-large-v3 (fast & accurate)
+
+Image Generation:
+- FLUX.1-schnell (fast, high quality)
+- FLUX.1-dev (12B params)
+- stable-diffusion-xl-base-1.0
+- hidream (artistic)
+- JuggernautXL (photorealistic)
+
+Video Generation:
+- Wan2.1-14B (text/image to video)
+
+Music Generation:
+- DiffRhythm (text to music)
 """
 
 import os
@@ -24,39 +46,159 @@ class ChutesProvider(BaseProvider):
     supports_vision = True
     supports_tools = True
 
+    # API endpoints
     BASE_URL = "https://llm.chutes.ai/v1"
+    TTS_URL = "https://chutes.ai/api/tts"
+    STT_URL = "https://chutes.ai/api/stt"
+    IMAGE_URL = "https://chutes.ai/api/image"
+    VIDEO_URL = "https://chutes.ai/api/video"
 
-    # Recommended models by task type
-    MODELS = {
+    # Task to model mapping
+    TASK_MODELS = {
         "default": "Qwen/Qwen3-32B",
         "reasoning": "deepseek-ai/DeepSeek-V3",
-        "vision": "Qwen/Qwen2.5-VL-72B-Instruct",
+        "deep": "deepseek-ai/DeepSeek-R1-TEE",
+        "vision": "Qwen/Qwen2.5-VL-72B-Instruct-TEE",
         "code": "Qwen/Qwen2.5-Coder-32B-Instruct",
         "fast": "unsloth/gemma-3-4b-it",
+        "balanced": "Qwen/Qwen3-32B",
+        "chat": "unsloth/gemma-3-4b-it",
+        "thinking": "Qwen/Qwen3-235B-A22B-Thinking-2507",
     }
 
-    # Full list of available models
-    AVAILABLE_MODELS = [
+    # TTS models
+    TTS_MODELS = {
+        "kokoro": "kokoro",           # High quality, natural voices
+        "csm-1b": "csm-1b",           # Conversational speech model
+    }
+
+    # STT models
+    STT_MODELS = {
+        "whisper": "whisper-large-v3",
+        "whisper-fast": "whisper-large-v3-turbo",
+    }
+
+    # Image generation models (sorted by popularity/quality)
+    IMAGE_MODELS = {
+        "flux-schnell": "FLUX.1-schnell",        # Fast, high quality
+        "flux-dev": "black-forest-labs/FLUX.1-dev",
+        "sdxl": "stabilityai/stable-diffusion-xl-base-1.0",
+        "hidream": "hidream",                     # Artistic
+        "juggernaut": "JuggernautXL-Ragnarok",   # Photorealistic
+        "dreamshaper": "Lykon/dreamshaper-xl-1-0",
+        "animij": "Animij",                       # Anime style
+        "qwen-image": "qwen-image",               # Qwen image gen
+        "hunyuan": "hunyuan-image-3",             # Chinese style
+        "chroma": "chroma",                       # Color-focused
+    }
+
+    # Video generation models
+    VIDEO_MODELS = {
+        "wan": "Wan2.1-14B",          # Text/image to video
+    }
+
+    # Music generation models
+    MUSIC_MODELS = {
+        "diffrhythm": "ASLP-lab/DiffRhythm",
+    }
+
+    # Backward compatibility alias
+    MODELS = TASK_MODELS
+
+    # Known LLM models (fallback when API discovery fails)
+    KNOWN_MODELS = [
+        # === TOP PICKS ===
         "Qwen/Qwen3-32B",
-        "Qwen/Qwen3-235B-A22B",
         "deepseek-ai/DeepSeek-V3",
-        "deepseek-ai/DeepSeek-R1",
-        "Qwen/Qwen2.5-VL-72B-Instruct",
         "Qwen/Qwen2.5-Coder-32B-Instruct",
+        "Qwen/Qwen2.5-VL-72B-Instruct-TEE",
         "unsloth/gemma-3-4b-it",
-        "unsloth/Llama-3.3-70B-Instruct",
-        "meta-llama/Llama-3.1-405B-Instruct",
+        # === Qwen Family ===
+        "Qwen/Qwen3-235B-A22B",
+        "Qwen/Qwen3-235B-A22B-Instruct-2507-TEE",
+        "Qwen/Qwen3-235B-A22B-Thinking-2507",
+        "Qwen/Qwen3-30B-A3B",
+        "Qwen/Qwen3-30B-A3B-Instruct-2507",
+        "Qwen/Qwen3-14B",
+        "Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8-TEE",
+        "Qwen/Qwen3-Coder-Next",
+        "Qwen/Qwen3-Next-80B-A3B-Instruct",
+        "Qwen/Qwen3-VL-235B-A22B-Instruct",
+        "Qwen/Qwen2.5-72B-Instruct",
+        "Qwen/Qwen2.5-VL-32B-Instruct",
+        # === DeepSeek ===
+        "deepseek-ai/DeepSeek-V3.2-TEE",
+        "deepseek-ai/DeepSeek-V3.1-TEE",
+        "deepseek-ai/DeepSeek-V3.1-Terminus-TEE",
+        "deepseek-ai/DeepSeek-V3-0324-TEE",
+        "deepseek-ai/DeepSeek-R1-TEE",
+        "deepseek-ai/DeepSeek-R1-0528-TEE",
+        "deepseek-ai/DeepSeek-R1-Distill-Llama-70B",
+        # === Kimi / Moonshot ===
+        "moonshotai/Kimi-K2.5-TEE",
+        "moonshotai/Kimi-K2-Thinking-TEE",
+        "moonshotai/Kimi-K2-Instruct-0905",
+        # === Hermes / Nous ===
+        "NousResearch/Hermes-4-405B-FP8-TEE",
+        "NousResearch/Hermes-4-70B",
+        "NousResearch/Hermes-4.3-36B",
+        "NousResearch/Hermes-4-14B",
+        "NousResearch/DeepHermes-3-Mistral-24B-Preview",
+        # === Mistral ===
+        "mistralai/Devstral-2-123B-Instruct-2512-TEE",
+        "chutesai/Mistral-Small-3.2-24B-Instruct-2506",
+        "chutesai/Mistral-Small-3.1-24B-Instruct-2503",
+        "unsloth/Mistral-Small-24B-Instruct-2501",
+        "unsloth/Mistral-Nemo-Instruct-2407",
+        # === Gemma ===
+        "unsloth/gemma-3-27b-it",
+        "unsloth/gemma-3-12b-it",
+        # === Llama ===
+        "unsloth/Llama-3.2-3B-Instruct",
+        "unsloth/Llama-3.2-1B-Instruct",
+        # === GLM / ZAI ===
+        "zai-org/GLM-4.7-TEE",
+        "zai-org/GLM-4.7-Flash",
+        "zai-org/GLM-4.6-TEE",
+        "zai-org/GLM-4.6V",
+        "zai-org/GLM-4.5-TEE",
+        # === Other Notable ===
+        "OpenGVLab/InternVL3-78B-TEE",
+        "openai/gpt-oss-120b-TEE",
+        "openai/gpt-oss-20b",
+        "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16",
+        "MiniMaxAI/MiniMax-M2.1-TEE",
+        "XiaomiMiMo/MiMo-V2-Flash",
+        "tngtech/DeepSeek-TNG-R1T2-Chimera",
     ]
+
+    # Backward compatibility
+    AVAILABLE_MODELS = KNOWN_MODELS
 
     def __init__(self, model: str = None, api_key: str = None, **kwargs):
         super().__init__(model=model, api_key=api_key, **kwargs)
 
+        # Load API key: param > credentials.json > env
+        if not api_key:
+            try:
+                from jarvis.auth.credentials import get_credential
+                api_key = get_credential("chutes", "api_key")
+            except ImportError:
+                pass
         self.api_key = api_key or os.getenv("CHUTES_API_KEY")
         self.base_url = kwargs.get("base_url") or os.getenv("CHUTES_BASE_URL", self.BASE_URL)
 
+        # Load task models from config if provided
+        config = kwargs.get("config", {})
+        provider_cfg = config.get("providers", {}).get("chutes", {})
+        models_cfg = provider_cfg.get("models", {}) or provider_cfg.get("task_models", {})
+        if models_cfg:
+            self.TASK_MODELS.update(models_cfg)
+            self.MODELS = self.TASK_MODELS
+
         # Use default model if none specified
         if not self.model:
-            self.model = self.MODELS["default"]
+            self.model = self.TASK_MODELS.get("default", "Qwen/Qwen3-32B")
 
         if self.api_key:
             try:
@@ -128,23 +270,31 @@ class ChutesProvider(BaseProvider):
         msg_list.extend([{"role": m.role, "content": m.content} for m in messages])
 
         if stream:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=msg_list,
-                stream=True
-            )
-            for chunk in response:
-                if self._stop_flag:
-                    break
-                if chunk.choices[0].delta.content:
-                    yield chunk.choices[0].delta.content
+            return self._chat_streaming(msg_list)
         else:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=msg_list,
-                stream=False
-            )
-            return response.choices[0].message.content
+            return self._chat_non_streaming(msg_list)
+
+    def _chat_streaming(self, msg_list: List[dict]) -> Generator[str, None, None]:
+        """Streaming chat implementation."""
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=msg_list,
+            stream=True
+        )
+        for chunk in response:
+            if self._stop_flag:
+                break
+            if chunk.choices[0].delta.content:
+                yield chunk.choices[0].delta.content
+
+    def _chat_non_streaming(self, msg_list: List[dict]) -> str:
+        """Non-streaming chat implementation."""
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=msg_list,
+            stream=False
+        )
+        return response.choices[0].message.content
 
     def chat_with_tools(
         self,
@@ -235,8 +385,56 @@ class ChutesProvider(BaseProvider):
 
     def list_models(self) -> List[str]:
         """List available Chutes models."""
-        # Chutes doesn't have a list models endpoint, return known models
-        return self.AVAILABLE_MODELS
+        if self._discovered_models:
+            return [m.id for m in self._discovered_models]
+        return self.KNOWN_MODELS
+
+    async def discover_models(self) -> List:
+        """Discover available models from Chutes API."""
+        from .base import ModelInfo
+
+        if self._discovered_models is not None:
+            return self._discovered_models
+
+        if not self.client:
+            self._discovered_models = [
+                ModelInfo(id=m, name=m.split("/")[-1])
+                for m in self.KNOWN_MODELS
+            ]
+            return self._discovered_models
+
+        try:
+            response = self.client.models.list()
+            self._discovered_models = []
+
+            for model in response.data:
+                capabilities = []
+                model_lower = model.id.lower()
+                if "vl" in model_lower or "vision" in model_lower:
+                    capabilities.append("vision")
+                if "coder" in model_lower or "code" in model_lower:
+                    capabilities.append("code")
+                if "r1" in model_lower or "reasoning" in model_lower or "thinking" in model_lower:
+                    capabilities.append("reasoning")
+
+                self._discovered_models.append(ModelInfo(
+                    id=model.id,
+                    name=model.id.split("/")[-1] if "/" in model.id else model.id,
+                    capabilities=capabilities,
+                    context_length=getattr(model, "context_window", None),
+                    metadata={"owned_by": getattr(model, "owned_by", None)}
+                ))
+
+            print(f"[Chutes] Discovered {len(self._discovered_models)} models")
+            return self._discovered_models
+
+        except Exception as e:
+            print(f"[Chutes] Model discovery failed: {e}, using known models")
+            self._discovered_models = [
+                ModelInfo(id=m, name=m.split("/")[-1])
+                for m in self.KNOWN_MODELS
+            ]
+            return self._discovered_models
 
     def is_configured(self) -> bool:
         """Check if API key is set."""
@@ -247,18 +445,60 @@ class ChutesProvider(BaseProvider):
         return self.MODELS["default"]
 
     def get_model_for_task(self, task: str) -> str:
-        """Get the recommended model for a specific task type.
-
-        Args:
-            task: One of "default", "reasoning", "vision", "code", "fast"
-
-        Returns:
-            Model name for the task
-        """
+        """Get the recommended model for a specific task type."""
         return self.MODELS.get(task, self.MODELS["default"])
 
+    def get_tts_models(self) -> dict:
+        """Get available TTS models."""
+        return self.TTS_MODELS
+
+    def get_stt_models(self) -> dict:
+        """Get available STT models."""
+        return self.STT_MODELS
+
+    def get_image_models(self) -> dict:
+        """Get available image generation models."""
+        return self.IMAGE_MODELS
+
+    def get_video_models(self) -> dict:
+        """Get available video generation models."""
+        return self.VIDEO_MODELS
+
+    def get_music_models(self) -> dict:
+        """Get available music generation models."""
+        return self.MUSIC_MODELS
+
+    def get_all_services(self) -> dict:
+        """Get all available Chutes services and their models."""
+        return {
+            "llm": {
+                "models": self.TASK_MODELS,
+                "endpoint": self.BASE_URL,
+            },
+            "tts": {
+                "models": self.TTS_MODELS,
+                "recommended": "kokoro",
+            },
+            "stt": {
+                "models": self.STT_MODELS,
+                "recommended": "whisper-large-v3",
+            },
+            "image": {
+                "models": self.IMAGE_MODELS,
+                "recommended": "flux-schnell",
+            },
+            "video": {
+                "models": self.VIDEO_MODELS,
+                "recommended": "wan",
+            },
+            "music": {
+                "models": self.MUSIC_MODELS,
+                "recommended": "diffrhythm",
+            },
+        }
+
     def get_config_help(self) -> str:
-        return """Chutes AI
+        return """Chutes AI - Comprehensive AI Platform
 
 1. Get API key: https://chutes.ai
 2. Set environment variable:
@@ -267,9 +507,29 @@ class ChutesProvider(BaseProvider):
 Or add to ~/.jarvis/.env:
    CHUTES_API_KEY=your-api-key
 
-Recommended models:
-- Default: Qwen/Qwen3-32B (general purpose)
-- Reasoning: deepseek-ai/DeepSeek-V3
-- Vision: Qwen/Qwen2.5-VL-72B-Instruct
-- Code: Qwen/Qwen2.5-Coder-32B-Instruct
-- Fast: unsloth/gemma-3-4b-it"""
+=== Available Services ===
+
+LLM (Text Generation):
+- Qwen/Qwen3-32B (general purpose)
+- deepseek-ai/DeepSeek-V3 (reasoning)
+- Qwen/Qwen2.5-Coder-32B-Instruct (code)
+- Qwen/Qwen2.5-VL-72B-Instruct (vision)
+- unsloth/gemma-3-4b-it (fast/cheap)
+
+TTS (Text-to-Speech):
+- kokoro (high quality, natural)
+- csm-1b (conversational)
+
+STT (Speech-to-Text):
+- whisper-large-v3 (fast & accurate)
+
+Image Generation:
+- FLUX.1-schnell (fast, high quality)
+- stable-diffusion-xl-base-1.0
+- JuggernautXL (photorealistic)
+
+Video Generation:
+- Wan2.1-14B (text/image to video)
+
+Music Generation:
+- DiffRhythm (text to music)"""

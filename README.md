@@ -159,6 +159,41 @@ jarvis --voice
 # Requires: pip install jarvis-ai-assistant[voice]
 ```
 
+### Telegram Bot
+
+Full-featured Telegram integration with all capabilities:
+
+```bash
+# Interactive setup wizard
+jarvis telegram setup
+
+# Or manual setup:
+jarvis config set telegram bot_token YOUR_BOT_TOKEN
+jarvis telegram webhook https://your-domain.com  # Set webhook (recommended)
+
+# Now just run your server - Telegram works automatically!
+jarvis --dev
+```
+
+**Telegram Commands:**
+
+| Command | Description |
+|---------|-------------|
+| `/help` | Show all commands |
+| `/model` | Show/switch AI model |
+| `/models` | List available models |
+| `/provider` | Show/switch provider |
+| `/clear` | Clear conversation |
+| `/mode <fast\|balanced\|deep>` | Set reasoning mode |
+| `/search <query>` | Web search |
+| `/knowledge <query>` | Search knowledge base |
+| `/remember <fact>` | Save a fact about you |
+| `/status` | System status |
+| `/weather` | Current weather |
+| `/name <new name>` | Change assistant name |
+
+Plus all regular chat capabilities - web search, tool execution, RAG, etc.
+
 ### Web UI Features
 
 The web UI (`jarvis --dev`) includes:
@@ -543,7 +578,22 @@ You: search the web
 Jarvis: [searches for "Mars mission" using previous context]
 ```
 
-## Personas
+## Customization
+
+### Assistant Name
+
+The assistant name is configurable (not hardcoded as "Jarvis"):
+
+```bash
+# Via Telegram
+/name Aria
+
+# Via settings.yaml
+assistant:
+  name: Aria
+```
+
+### Personas
 
 - **default**: Balanced general assistant
 - **coder**: Pair programming mode

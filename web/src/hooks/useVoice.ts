@@ -3,7 +3,7 @@ import { useState, useRef, useCallback, useEffect } from 'react'
 interface UseVoiceOptions {
   onSpeechEnd?: (transcript: string) => void
   onInterrupt?: () => void
-  sttProvider?: 'browser' | 'whisper'
+  sttProvider?: 'browser' | 'whisper' | 'chutes'
 }
 
 export function useVoice(options: UseVoiceOptions = {}) {
@@ -119,7 +119,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
     }
   }, [])
 
-  // Process audio with Whisper
+  // Process audio with Whisper (local) or Chutes (cloud)
   const processWithWhisper = useCallback(async (audioBlob: Blob) => {
     // Don't process if audio is playing (feedback prevention)
     if (isPlayingRef.current) return
@@ -128,7 +128,10 @@ export function useVoice(options: UseVoiceOptions = {}) {
       const formData = new FormData()
       formData.append('audio', audioBlob, 'recording.webm')
 
-      const res = await fetch('/api/transcribe', {
+      // Use Chutes API if configured, otherwise fall back to local Whisper
+      const endpoint = sttProviderRef.current === 'chutes' ? '/api/stt/chutes' : '/api/transcribe'
+
+      const res = await fetch(endpoint, {
         method: 'POST',
         body: formData,
       })
@@ -139,19 +142,38 @@ export function useVoice(options: UseVoiceOptions = {}) {
         if (text && onSpeechEndRef.current && !isPlayingRef.current) {
           onSpeechEndRef.current(text)
         }
+        // If Chutes/Whisper suggests using browser fallback, log it
+        if (data.use_browser && data.error) {
+          console.warn(`STT fallback suggested: ${data.error}`)
+        }
       }
     } catch (err) {
-      console.error('Whisper transcription failed:', err)
+      console.error('Speech transcription failed:', err)
     }
   }, [])
 
   const startListening = useCallback(async () => {
-    if (isListeningRef.current) return
+    console.log('[Voice] startListening called', {
+      isListening: isListeningRef.current,
+      isPlaying: isPlayingRef.current,
+      sttProvider: sttProviderRef.current,
+      hasRecognition: !!recognition.current
+    })
+
+    if (isListeningRef.current) {
+      console.log('[Voice] Already listening, returning early')
+      return
+    }
     // Don't start listening if audio is playing
-    if (isPlayingRef.current) return
+    if (isPlayingRef.current) {
+      console.log('[Voice] Audio is playing, returning early')
+      return
+    }
 
     try {
+      console.log('[Voice] Requesting microphone access...')
       stream.current = await navigator.mediaDevices.getUserMedia({ audio: true })
+      console.log('[Voice] Microphone access granted')
       audioContext.current = new AudioContext()
       analyser.current = audioContext.current.createAnalyser()
       analyser.current.fftSize = 512
@@ -162,9 +184,16 @@ export function useVoice(options: UseVoiceOptions = {}) {
       transcriptRef.current = ''
 
       if (sttProviderRef.current === 'browser' && recognition.current) {
-        recognition.current.start()
+        console.log('[Voice] Starting browser speech recognition...')
+        try {
+          recognition.current.start()
+          console.log('[Voice] Browser recognition started successfully')
+        } catch (e) {
+          console.error('[Voice] Failed to start recognition:', e)
+        }
       } else {
-        // Whisper mode - set up MediaRecorder
+        console.log('[Voice] Using Whisper/Chutes mode, setting up MediaRecorder')
+        // Whisper/Chutes mode - set up MediaRecorder
         audioChunks.current = []
         mediaRecorder.current = new MediaRecorder(stream.current, {
           mimeType: 'audio/webm;codecs=opus'
@@ -254,6 +283,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
   }, [processWithWhisper])
 
   const stopListening = useCallback(() => {
+    console.log('[Voice] stopListening called')
     setIsListening(false)
     setIsRecording(false)
     setVolume(0)
@@ -400,8 +430,10 @@ export function useVoice(options: UseVoiceOptions = {}) {
     }
   }, [])
 
-  const speak = useCallback(async (text: string, provider: 'browser' | 'edge' | 'elevenlabs' = 'browser') => {
+  const speak = useCallback(async (text: string, provider: 'browser' | 'edge' | 'elevenlabs' | 'kokoro' = 'browser') => {
     if (!text) return
+
+    console.log(`[TTS] speak called with provider: "${provider}", text length: ${text.length}`)
 
     // Stop any current audio first
     stopCurrentAudio()
@@ -521,6 +553,48 @@ export function useVoice(options: UseVoiceOptions = {}) {
         console.error('Edge TTS error:', err)
       }
       onFinished()
+      return
+    }
+
+    // Kokoro TTS (via Chutes)
+    if (provider === 'kokoro') {
+      console.log('[TTS] Using Kokoro provider')
+      try {
+        const res = await fetch('/api/tts/kokoro', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text }),
+        })
+
+        console.log(`[TTS] Kokoro response: status=${res.status}, content-type=${res.headers.get('content-type')}`)
+        const contentType = res.headers.get('content-type') || ''
+        if (res.ok && contentType.includes('audio')) {
+          const blob = await res.blob()
+          const url = URL.createObjectURL(blob)
+          currentAudio.current = new Audio(url)
+          currentAudio.current.crossOrigin = 'anonymous'
+          currentAudio.current.onended = () => {
+            URL.revokeObjectURL(url)
+            onFinished()
+          }
+          currentAudio.current.onerror = () => {
+            URL.revokeObjectURL(url)
+            onFinished()
+          }
+          startPlaybackAnalysis(currentAudio.current)
+          await currentAudio.current.play()
+          return
+        } else {
+          const data = await res.json().catch(() => ({}))
+          console.error('Kokoro TTS error:', data.error || 'Unknown error')
+          onFinished()
+          return
+        }
+      } catch (err) {
+        console.error('Kokoro TTS network error:', err)
+        onFinished()
+        return
+      }
     }
   }, [stopCurrentAudio, pauseRecognition, resumeRecognition, startPlaybackAnalysis, stopPlaybackAnalysis])
 
