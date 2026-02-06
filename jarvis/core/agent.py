@@ -500,15 +500,23 @@ class Agent:
                 prompt = match.group(1).strip() if match else msg
                 return "generate_image", {"prompt": prompt}
 
-        # Video generation
+        # Video generation - expanded patterns
         video_gen_patterns = [
             r'\bcreate\s+(a\s+)?video\b', r'\bgenerate\s+(a\s+)?video\b',
             r'\bmake\s+(a\s+)?video\b', r'\banimate\b', r'\bvideo\s+of\b',
+            r'\bclip\s+of\b', r'\banimation\s+of\b', r'\bshort\s+video\b',
+            r'\bturn\s+(this\s+)?into\s+(a\s+)?video\b',
+            r'\bi\s+want\s+(a\s+)?video\b', r'\bneed\s+(a\s+)?video\b',
         ]
         for pattern in video_gen_patterns:
             if re.search(pattern, msg_lower):
-                match = re.search(r"(?:create|generate|make|animate)\s+(?:a\s+)?(?:video\s+(?:of\s+)?)?(.+)", msg_lower)
+                # Extract the actual content prompt
+                match = re.search(r"(?:create|generate|make|animate|video of|clip of|animation of)\s*(?:a\s+)?(?:video\s+(?:of\s+)?)?(.+)", msg_lower)
                 prompt = match.group(1).strip() if match else msg
+                # Clean up common prefixes
+                prompt = re.sub(r'^(?:a\s+)?(?:video\s+)?(?:of\s+)?', '', prompt).strip()
+                if not prompt:
+                    prompt = msg
                 return "generate_video", {"prompt": prompt}
 
         # Music generation

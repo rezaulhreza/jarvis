@@ -158,7 +158,9 @@ def generate_image(
 def generate_video(
     prompt: str,
     image_path: Optional[str] = None,
-    frames: int = 81,
+    duration: Optional[float] = None,
+    frames: Optional[int] = None,
+    fps: int = 16,
     resolution: str = "480p",
     fast: bool = True
 ) -> dict:
@@ -170,19 +172,71 @@ def generate_video(
     Args:
         prompt: Text description of what should happen in the video
         image_path: Path to source image (optional - will generate if not provided)
-        frames: Number of frames (21-140, default 81 = ~5 seconds at 16fps)
-        resolution: "480p" or "720p" (default "480p")
+        duration: Duration in seconds (default ~5s). Max ~5.8s at 24fps or ~8.7s at 16fps.
+        frames: Number of frames (21-140). If not set, calculated from duration.
+        fps: Frames per second (16-24, default 24 for smooth playback)
+        resolution: "720p" or "480p" (default "720p")
         fast: Use fast mode (default True)
 
     Returns:
         Dict with success status and file path
     """
+    import re as regex
+
     # Auto-cleanup old files
     _auto_cleanup()
 
     api_key = _get_chutes_key()
     if not api_key:
         return {"success": False, "error": "Chutes API key not configured. Set CHUTES_API_KEY."}
+
+    # Parse duration from prompt if not explicitly provided (e.g., "8 seconds", "10 sec", "5s")
+    prompt_lower = prompt.lower()
+    if duration is None:
+        duration_match = regex.search(r'(\d+(?:\.\d+)?)\s*(?:seconds?|secs?|s)\b', prompt_lower)
+        if duration_match:
+            duration = float(duration_match.group(1))
+            print(f"[VideoGen] Detected duration from prompt: {duration}s")
+
+    # Detect resolution from prompt - default 480p, upgrade to 720p if user asks for higher
+    if resolution == "480p":  # Only override if still at default
+        high_res_patterns = [r'\b720p\b', r'\bhd\b', r'\bhigh\s*(quality|res|resolution)\b', r'\bbetter\s*quality\b']
+        for pattern in high_res_patterns:
+            if regex.search(pattern, prompt_lower):
+                resolution = "720p"
+                print(f"[VideoGen] Detected high resolution request: 720p")
+                break
+
+    # Detect fps from prompt - default 16fps, upgrade to 24fps if user asks for smoother
+    if fps == 16:  # Only override if still at default
+        smooth_patterns = [r'\b24\s*fps\b', r'\bsmooth\b', r'\bcinematic\b', r'\bhigh\s*fps\b']
+        for pattern in smooth_patterns:
+            if regex.search(pattern, prompt_lower):
+                fps = 24
+                print(f"[VideoGen] Detected smooth fps request: 24fps")
+                break
+
+    # Clamp fps to valid range
+    fps = min(max(fps, 16), 24)
+
+    # Calculate frames from duration, or use default
+    # API limit: 21-140 frames
+    # At 24fps: max ~5.8s, at 16fps: max ~8.7s
+    if frames is None:
+        if duration is not None:
+            frames = int(duration * fps)
+            # If requested duration exceeds max at current fps, try lower fps
+            if frames > 140 and fps > 16:
+                fps = 16
+                frames = int(duration * fps)
+                print(f"[VideoGen] Lowered fps to 16 to accommodate {duration}s duration")
+        else:
+            frames = 81  # Default ~5s at 16fps or ~3.4s at 24fps
+
+    # Clamp frames to valid range
+    frames = min(max(frames, 21), 140)
+    actual_duration = frames / fps
+    print(f"[VideoGen] Final: {frames} frames at {fps}fps = {actual_duration:.1f}s")
 
     # If no image provided, generate one first (two-step T2V workaround)
     generated_image = False
@@ -228,15 +282,14 @@ def generate_video(
         payload = {
             "prompt": prompt,
             "image": img_data,
-            "frames": min(max(frames, 21), 140),  # Clamp to valid range
-            "resolution": resolution if resolution in ["480p", "720p"] else "480p",
+            "frames": frames,
+            "fps": fps,
+            "resolution": resolution,
             "fast": fast,
-            "guidance_scale": 1,
-            "guidance_scale_2": 1,
-            "negative_prompt": "blurry, low quality, distorted, deformed, static, frozen"
         }
 
-        print(f"[VideoGen] Generating video from image: {img_path.name}, frames={frames}")
+        print(f"[VideoGen] Payload: frames={frames}, fps={fps}, resolution={resolution}, fast={fast}")
+        print(f"[VideoGen] Generating video from image: {img_path.name}, {frames} frames @ {fps}fps, {resolution}")
 
         with httpx.Client(timeout=600.0) as client:  # 10 min timeout for video
             response = client.post(
@@ -267,6 +320,8 @@ def generate_video(
                         "filename": filename,
                         "prompt": prompt,
                         "frames": frames,
+                        "fps": fps,
+                        "duration": round(frames / fps, 1),
                         "resolution": resolution,
                         "source_image": image_path,
                         "image_generated": generated_image
@@ -287,6 +342,8 @@ def generate_video(
                             "filename": filename,
                             "prompt": prompt,
                             "frames": frames,
+                            "fps": fps,
+                            "duration": round(frames / fps, 1),
                             "resolution": resolution,
                             "source_image": image_path,
                             "image_generated": generated_image
