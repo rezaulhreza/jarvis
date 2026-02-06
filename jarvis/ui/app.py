@@ -3505,6 +3505,29 @@ RULES:
                             "done": False
                         })
 
+                    # Check if agent generated media files (video/image/music)
+                    # and send media preview message
+                    import re
+                    media_match = re.search(r'Saved to:\s*(\S+\.(mp4|jpg|jpeg|png|webp|mp3|wav))', response, re.IGNORECASE)
+                    if media_match:
+                        media_path = media_match.group(1)
+                        media_ext = media_match.group(2).lower()
+                        media_filename = os.path.basename(media_path)
+
+                        if media_ext == "mp4":
+                            media_type = "video"
+                        elif media_ext in ["mp3", "wav"]:
+                            media_type = "audio"
+                        else:
+                            media_type = "image"
+
+                        await safe_send_json(websocket, {
+                            "type": "media",
+                            "media_type": media_type,
+                            "path": media_path,
+                            "filename": media_filename
+                        })
+
                     # Check if we already streamed the response
                     # If so, only send the final "done" signal without duplicating content
                     was_streamed = bool(streamed_chunks) and getattr(jarvis.agent, 'last_streamed', False)
