@@ -164,6 +164,17 @@ class Agent:
             return None  # Let model ask for location
 
         elif intent.intent == Intent.TIME_DATE:
+            # Only trigger if explicitly asking about time (not incidental mentions)
+            time_patterns = [
+                r"what\s*(?:'s|is)?\s*(?:the\s+)?time\b",
+                r"current\s+time\b",
+                r"time\s+(?:now|right\s+now)\b",
+                r"time\s+(?:in|for)\s+\w+",
+                r"what\s+time\s+(?:in|is\s+it)",
+                r"tell\s+me\s+(?:the\s+)?time\b",
+            ]
+            if not any(re.search(p, msg_lower) for p in time_patterns):
+                return None  # Not an explicit time request
             match = re.search(r'time\s+(?:in|for)\s+(.+)', msg_lower)
             if match:
                 tz = match.group(1).strip().upper()
@@ -333,8 +344,16 @@ class Agent:
             # Fallback to web search if location not obvious
             return "web_search", {"query": msg}
 
-        # Time
-        if agent_cfg.get("auto_time", True) and re.search(r"\btime\b", msg_lower):
+        # Time - only match explicit time queries, not incidental mentions
+        time_patterns = [
+            r"what\s*(?:'s|is)?\s*(?:the\s+)?time\b",  # what time, what's the time
+            r"current\s+time\b",  # current time
+            r"time\s+(?:now|right\s+now)\b",  # time now
+            r"time\s+(?:in|for)\s+\w+",  # time in <location>
+            r"what\s+time\s+(?:in|is\s+it\s+in)",  # what time in <location>
+            r"tell\s+me\s+(?:the\s+)?time\b",  # tell me the time
+        ]
+        if agent_cfg.get("auto_time", True) and any(re.search(p, msg_lower) for p in time_patterns):
             match = re.search(r"time\s+(?:in|for)\s+(.+)", msg_lower)
             if match:
                 tz = match.group(1).strip().upper()

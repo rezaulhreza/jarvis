@@ -209,7 +209,11 @@ def run_command(command: str) -> str:
     # Commands that need confirmation
     needs_confirm = ['rm ', 'git push', 'git reset', 'drop table', 'delete from']
 
-    if _UI and any(c in command.lower() for c in needs_confirm):
+    # Check if we're in web UI context (has auto-confirm, no blocking input)
+    is_web_ui = _UI and hasattr(_UI, 'confirm') and not hasattr(_UI, 'prompt_session')
+
+    # Only block for confirmation in terminal UI, not web UI
+    if _UI and not is_web_ui and any(c in command.lower() for c in needs_confirm):
         _UI.console.print(f"[yellow]Run command: {command}[/yellow]")
         _UI.console.print("[dim]  y = yes, n = no[/dim]")
         try:
@@ -257,8 +261,12 @@ def write_file(path: str, content: str) -> str:
         if file_path.exists() and resolved not in _READ_FILES:
             return f"Error: You must read_file('{path}') first before writing to it. Read the file to understand its current content."
 
-        # If UI is available, show diff and confirm
-        if _UI:
+        # Check if we're in web UI context (has auto-confirm, no blocking input)
+        # WebUI has confirm() that returns True without blocking
+        is_web_ui = _UI and hasattr(_UI, 'confirm') and not hasattr(_UI, 'prompt_session')
+
+        # If terminal UI is available, show diff and confirm (blocks on input)
+        if _UI and not is_web_ui:
             from ..ui.diff import show_file_change, apply_file_change
 
             approved, action = show_file_change(_UI.console, path, content, _PROJECT_ROOT)
@@ -276,10 +284,10 @@ def write_file(path: str, content: str) -> str:
             else:
                 return f"Error writing {path}"
 
-        # No UI - just write directly
+        # Web UI or no UI - write directly (web UI auto-confirms)
         file_path.parent.mkdir(parents=True, exist_ok=True)
         file_path.write_text(content)
-        return f"Successfully wrote to {path}"
+        return f"✓ Wrote {path}" if is_web_ui else f"Successfully wrote to {path}"
 
     except Exception as e:
         return f"Error writing {path}: {e}"
@@ -361,8 +369,11 @@ def edit_file(path: str, old_string: str, new_string: str, replace_all: bool = F
         else:
             new_content = content.replace(old_string, new_string, 1)
 
-        # Show diff and confirm if UI available
-        if _UI:
+        # Check if we're in web UI context (has auto-confirm, no blocking input)
+        is_web_ui = _UI and hasattr(_UI, 'confirm') and not hasattr(_UI, 'prompt_session')
+
+        # Show diff and confirm if terminal UI available (blocks on input)
+        if _UI and not is_web_ui:
             from ..ui.diff import show_file_change, apply_file_change
 
             approved, action = show_file_change(_UI.console, path, new_content, _PROJECT_ROOT)
@@ -383,9 +394,9 @@ def edit_file(path: str, old_string: str, new_string: str, replace_all: bool = F
             else:
                 return f"Error editing {path}"
 
-        # No UI - just write directly
+        # Web UI or no UI - write directly (web UI auto-confirms)
         file_path.write_text(new_content)
-        msg = f"Successfully edited {path}"
+        msg = f"✓ Edited {path}" if is_web_ui else f"Successfully edited {path}"
         if replace_all and count > 1:
             msg += f" ({count} replacements)"
         return msg
@@ -593,8 +604,11 @@ def git_commit(message: str, files: str = "") -> str:
         if status.returncode == 0:
             return "Error: No changes staged for commit. Use git_add first."
 
-        # Confirm with user if UI available
-        if _UI:
+        # Check if we're in web UI context (has auto-confirm, no blocking input)
+        is_web_ui = _UI and hasattr(_UI, 'confirm') and not hasattr(_UI, 'prompt_session')
+
+        # Confirm with user if terminal UI available (blocks on input)
+        if _UI and not is_web_ui:
             _UI.console.print(f"[yellow]Commit: {message[:60]}{'...' if len(message) > 60 else ''}[/yellow]")
             _UI.console.print("[dim]  y = yes, n = no[/dim]")
             try:

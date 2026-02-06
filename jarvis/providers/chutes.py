@@ -498,6 +498,71 @@ class ChutesProvider(BaseProvider):
             },
         }
 
+    def get_context_length(self, model: str = None) -> int | None:
+        """Get context length for a model.
+
+        Returns context length in tokens, or None if unknown.
+        Sources: HuggingFace model cards, official docs, API documentation
+        """
+        model = model or self.model
+
+        # Check discovered models first
+        if self._discovered_models:
+            for m in self._discovered_models:
+                if m.id == model and m.context_length:
+                    return m.context_length
+
+        # Known context lengths for popular models (verified from official sources)
+        KNOWN_CONTEXT = {
+            # Kimi / Moonshot - https://huggingface.co/moonshotai/Kimi-K2.5
+            "kimi-k2.5": 262144,   # 256k
+            "kimi-k2": 131072,    # 128k
+            "k2.5": 262144,
+            "k2-": 131072,
+            "moonshot": 131072,
+            # Qwen family - https://huggingface.co/Qwen/Qwen3-32B
+            "qwen3-235b": 131072,  # 128k with YaRN
+            "qwen3-32b": 32768,    # 32k native, 128k with YaRN
+            "qwen3-14b": 32768,
+            "qwen3-30b": 32768,
+            "qwen2.5-72b": 131072,
+            "qwen2.5-coder": 131072,
+            "qwen2.5-vl": 32768,
+            "qwen2.5": 32768,
+            "qwen3": 32768,
+            # DeepSeek - https://huggingface.co/deepseek-ai/DeepSeek-V3
+            "deepseek-v3": 128000,  # 128k
+            "deepseek-r1": 128000,  # 128k
+            "deepseek": 128000,
+            # Gemma 3 - https://ai.google.dev/gemma/docs/core (4B/12B/27B = 128k)
+            "gemma-3-27b": 128000,
+            "gemma-3-12b": 128000,
+            "gemma-3-4b": 128000,
+            "gemma-3-1b": 32768,
+            "gemma-3": 128000,
+            # Llama 3 - https://llama.meta.com
+            "llama-3.2": 128000,
+            "llama-3.1": 128000,
+            "llama-3": 8192,
+            # Mistral - https://docs.mistral.ai
+            "mistral-small": 32768,
+            "mistral-nemo": 128000,
+            "mistral": 32768,
+            # GLM
+            "glm-4": 128000,
+            # Hermes
+            "hermes-4": 131072,
+            "hermes-3": 131072,
+        }
+
+        model_lower = model.lower()
+        for name, ctx in KNOWN_CONTEXT.items():
+            if name in model_lower:
+                return ctx
+
+        # Default for unknown models
+        return 32768  # Safe default
+
     def get_config_help(self) -> str:
         return """Chutes AI - Comprehensive AI Platform
 

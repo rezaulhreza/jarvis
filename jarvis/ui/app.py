@@ -2878,6 +2878,24 @@ Analyze queries using multiple AI models simultaneously.
             pass
         return None, tool_turn, tool_name_used, tool_result, explicit_search
 
+    async def safe_send_json(websocket: WebSocket, data: dict) -> bool:
+        """Send JSON to websocket, handling closed connections gracefully.
+
+        Returns True if sent successfully, False if connection was closed.
+        """
+        try:
+            # Check if websocket is still connected
+            from starlette.websockets import WebSocketState
+            if websocket.client_state != WebSocketState.CONNECTED:
+                return False
+            await websocket.send_json(data)
+            return True
+        except Exception as e:
+            # Connection closed or other error
+            if "close message" not in str(e).lower():
+                print(f"[websocket] Send error: {e}")
+            return False
+
     async def process_message(websocket: WebSocket, jarvis, user_input: str, chat_mode: bool = False, reasoning_level: str = None, attachments: list = None):
         """
         Process a message with unified smart routing.
@@ -3302,18 +3320,8 @@ RULES:
                     "rag": rag_info
                 })
 
-                # Minimal context - just last 2 exchanges for speed
-                recent = history[-2:] if len(history) > 2 else history
-                if recent:
-                    # Drop history on topic shift (e.g., gold price -> weather)
-                    last_user_msg = ""
-                    for m in reversed(recent):
-                        if m.role == "user":
-                            last_user_msg = m.content or ""
-                            break
-                    if last_user_msg:
-                        if _topic_bucket(last_user_msg) != _topic_bucket(user_input):
-                            recent = []
+                # Use full conversation history - context manager handles truncation
+                recent = history
                 tool_messages = []
                 tool_prompt, tool_turn, tool_name_used, tool_result, explicit_search = await _run_tool_for_chat_mode(jarvis, user_input, recent, classified_intent)
                 if tool_prompt:
@@ -3435,7 +3443,7 @@ RULES:
                 if clean_response_text.strip():
                     jarvis.context.add_message_to_chat("assistant", clean_response_text.strip())
 
-                # Send response with context stats
+                # Send response with context stats (use safe send in case connection closed)
                 response_msg = {
                     "type": "response",
                     "content": "",  # Empty - already streamed
@@ -3444,7 +3452,7 @@ RULES:
                 context_stats = _get_context_stats(jarvis)
                 if context_stats:
                     response_msg["context"] = context_stats
-                await websocket.send_json(response_msg)
+                await safe_send_json(websocket, response_msg)
 
             else:
                 # AGENT MODE: Use tools for coding tasks
@@ -3453,7 +3461,7 @@ RULES:
 
                 def stream_sender(chunk):
                     streamed_chunks.append(chunk)
-                    loop.create_task(websocket.send_json({
+                    loop.create_task(safe_send_json(websocket, {
                         "type": "stream",
                         "content": _clean_for_web(chunk, streaming=True),
                         "done": False
@@ -3474,14 +3482,14 @@ RULES:
                 if hasattr(jarvis.ui, "get_tool_turn"):
                     tool_turn = jarvis.ui.get_tool_turn()
                 if tool_turn:
-                    await websocket.send_json({
+                    await safe_send_json(websocket, {
                         "type": "tool_timeline",
                         "tools": tool_turn,
                     })
 
                 if response:
                     if "```diff" in response or "wrote:" in response.lower():
-                        await websocket.send_json({
+                        await safe_send_json(websocket, {
                             "type": "diff",
                             "content": response,
                             "done": False
@@ -3508,7 +3516,7 @@ RULES:
                     context_stats = _get_context_stats(jarvis)
                     if context_stats:
                         response_msg["context"] = context_stats
-                    await websocket.send_json(response_msg)
+                    await safe_send_json(websocket, response_msg)
 
                     clean = _clean_for_web(response)
                     if clean.strip():

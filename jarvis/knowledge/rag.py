@@ -632,11 +632,115 @@ class RAGEngine:
         self.rerank_threshold = rerank_threshold
         self.expected_embedding_dim = expected_embedding_dim
         self._embedding_dim_validated = False
+        self._max_embedding_chars: int | None = None  # Cached max chars for embedding
+
+    def _get_max_embedding_chars(self) -> int:
+        """Get max characters for embedding input based on model context length.
+
+        Queries the model's context length and returns ~80% of it in chars
+        (rough estimate: 1 token ≈ 4 chars). Caches the result.
+        """
+        if self._max_embedding_chars is not None:
+            return self._max_embedding_chars
+
+        # Known embedding model context lengths (tokens)
+        # Sources: HuggingFace model cards, Ollama library, official docs
+        KNOWN_CONTEXT_LENGTHS = {
+            # Ollama embedding models (from ollama.com/library)
+            "nomic-embed-text": 8192,      # https://ollama.com/library/nomic-embed-text
+            "mxbai-embed-large": 512,      # https://ollama.com/library/mxbai-embed-large
+            "mxbai-embed": 512,
+            "all-minilm": 256,             # https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2
+            "bge-m3": 8192,                # https://huggingface.co/BAAI/bge-m3
+            "bge-large": 512,
+            "bge-small": 512,
+            "qwen3-embedding": 32768,      # https://ollama.com/library/qwen3-embedding (32k)
+            "embeddinggemma": 2048,        # https://ollama.com/library/embeddinggemma
+            # Snowflake Arctic (512 standard, 8192 with RoPE for v2.0)
+            "snowflake-arctic-embed-l-v2": 8192,
+            "snowflake-arctic-embed-m-v2": 8192,
+            "snowflake-arctic-embed": 512,
+            # Other popular models
+            "gte-large": 8192,
+            "gte-base": 512,
+            "e5-large": 512,
+            "e5-base": 512,
+            "e5-mistral": 4096,
+            "jina-embeddings-v2": 8192,
+            "jina-embeddings": 512,
+            # OpenAI (https://platform.openai.com/docs/guides/embeddings)
+            "text-embedding-ada-002": 8191,
+            "text-embedding-3-small": 8191,
+            "text-embedding-3-large": 8191,
+            # Voyage
+            "voyage-large": 16000,
+            "voyage-code": 16000,
+            "voyage": 4096,
+            # Cohere
+            "embed-english": 512,
+            "embed-multilingual": 512,
+        }
+
+        context_tokens = None
+
+        # Try to get from Ollama client
+        if self.ollama_client and hasattr(self.ollama_client, 'get_context_length'):
+            try:
+                ctx_len = self.ollama_client.get_context_length(self.embedding_model)
+                if ctx_len:
+                    context_tokens = ctx_len
+                    if _get_rag_debug():
+                        logger.debug(f"Got context length from Ollama: {ctx_len}")
+            except Exception:
+                pass
+
+        # Try known models
+        if context_tokens is None:
+            model_lower = self.embedding_model.lower()
+            for name, length in KNOWN_CONTEXT_LENGTHS.items():
+                if name in model_lower:
+                    context_tokens = length
+                    if _get_rag_debug():
+                        logger.debug(f"Using known context length for {name}: {length}")
+                    break
+
+        # Default fallback (conservative)
+        if context_tokens is None:
+            context_tokens = 8192  # Safe default
+            print(f"[RAG] Using default context length: {context_tokens} tokens for model '{self.embedding_model}'")
+
+        # Convert to chars - use conservative ratio of ~3 chars per token
+        # and 50% safety margin to account for tokenizer differences
+        max_chars = int(context_tokens * 3 * 0.5)
+        self._max_embedding_chars = max_chars
+
+        print(f"[RAG] Embedding model: {self.embedding_model}, context: {context_tokens} tokens, max chars: {max_chars}")
+
+        return max_chars
 
     def _get_embedding(self, text: str) -> list[float]:
         """Generate embedding using Ollama with dimension validation."""
+        # Hard cap at 2000 chars to be safe with all embedding models
+        # Most embedding models work best with shorter inputs anyway
+        HARD_MAX_CHARS = 2000
+        original_len = len(text)
+
+        if original_len > HARD_MAX_CHARS:
+            text = text[:HARD_MAX_CHARS]
+            print(f"[RAG] Truncated embedding input: {original_len} -> {HARD_MAX_CHARS} chars")
+
         if self.ollama_client:
-            embedding = self.ollama_client.embed(text, model=self.embedding_model)
+            try:
+                embedding = self.ollama_client.embed(text, model=self.embedding_model)
+            except Exception as e:
+                # If still fails, try with very short truncation (500 chars)
+                print(f"[RAG] Embed failed with {len(text)} chars: {e}")
+                if len(text) > 500:
+                    print(f"[RAG] Retrying with 500 chars...")
+                    text = text[:500]
+                    embedding = self.ollama_client.embed(text, model=self.embedding_model)
+                else:
+                    raise
         else:
             # Fallback to direct Ollama API call
             import requests

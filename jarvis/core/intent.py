@@ -128,7 +128,8 @@ Output JSON only, no explanation:'''
     # Fallback patterns for when LLM classification fails
     FALLBACK_PATTERNS = {
         Intent.WEATHER: [r'\bweather\b', r'\btemperature\b', r'\bforecast\b'],
-        Intent.TIME_DATE: [r'\btime\b', r'\bdate\b', r'\bclock\b', r'\btimezone\b'],
+        Intent.TIME_DATE: [r'what\s*(?:\'s|is)?\s*(?:the\s+)?time\b', r'\bcurrent\s+time\b',
+                          r'\btime\s+(?:now|in|for)\b', r'\bwhat\s+date\b', r'\bclock\b', r'\btimezone\b'],
         Intent.CALCULATE: [r'^[\d\.\+\-\*\/\(\)\s]+$', r'\bcalculate\b', r'\bcompute\b'],
         Intent.FILE_OP: [r'\bread\s+file\b', r'\bopen\s+file\b', r'\bedit\s+file\b', r'\bwrite\s+file\b',
                          r'\.(py|js|ts|go|rs|java|cpp|c|rb|php|yaml|yml|json|md|txt)\b'],
