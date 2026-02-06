@@ -526,9 +526,9 @@ class Agent:
         ]
         for pattern in music_gen_patterns:
             if re.search(pattern, msg_lower):
-                match = re.search(r"(?:create|generate|make|compose)\s+(?:a\s+)?(?:music|song|soundtrack|jingle)\s+(?:for\s+|about\s+)?(.+)", msg_lower)
-                prompt = match.group(1).strip() if match else msg
-                return "generate_music", {"prompt": prompt}
+                from .router import extract_params
+                params = extract_params(msg, "generate_music")
+                return "generate_music", params
 
         return None
 

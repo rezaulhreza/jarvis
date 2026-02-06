@@ -366,15 +366,15 @@ def generate_video(
 
 def generate_music(
     prompt: str,
-    duration: float = 30.0,
+    lyrics: Optional[str] = None,
     model: str = "diffrhythm"
 ) -> dict:
     """
-    Generate music from a text prompt using Chutes AI.
+    Generate music from a text prompt using Chutes AI (DiffRhythm).
 
     Args:
-        prompt: Text description of the music to generate
-        duration: Duration in seconds (default 30)
+        prompt: Style description of the music to generate
+        lyrics: Optional lyrics with timestamps, e.g. "[00:00.00]First line\\n[00:04.00]Second line"
         model: Model to use (diffrhythm)
 
     Returns:
@@ -387,62 +387,69 @@ def generate_music(
     if not api_key:
         return {"success": False, "error": "Chutes API key not configured. Set CHUTES_API_KEY."}
 
-    models = {
-        "diffrhythm": "ASLP-lab/DiffRhythm",
-    }
-    model_id = models.get(model, model)
+    import time
+    start_time = time.time()
+
+    print(f"[MusicGen] Starting music generation")
+    print(f"[MusicGen] Style: {prompt[:100]}{'...' if len(prompt) > 100 else ''}")
+    if lyrics:
+        lyric_lines = lyrics.strip().split("\n")
+        print(f"[MusicGen] Lyrics: {len(lyric_lines)} lines")
+    else:
+        print(f"[MusicGen] Mode: instrumental (no lyrics)")
+    print(f"[MusicGen] Model: {model}")
 
     try:
-        with httpx.Client(timeout=180.0) as client:
+        payload = {"style_prompt": prompt}
+        if lyrics:
+            payload["lyrics"] = lyrics
+
+        with httpx.Client(timeout=300.0) as client:
             response = client.post(
-                "https://api.chutes.ai/v1/audio/generations",
+                "https://chutes-diffrhythm.chutes.ai/generate",
                 headers={
                     "Authorization": f"Bearer {api_key}",
                     "Content-Type": "application/json"
                 },
-                json={
-                    "model": model_id,
-                    "prompt": prompt,
-                    "duration": duration,
-                }
+                json=payload,
             )
 
+            elapsed = time.time() - start_time
+
             if response.status_code == 200:
-                data = response.json()
-                if "data" in data and len(data["data"]) > 0:
-                    audio_data = data["data"][0]
+                content_type = response.headers.get("content-type", "")
+                content_length = len(response.content)
+                print(f"[MusicGen] Response: {response.status_code}, Content-Type: {content_type}, Size: {content_length} bytes, Time: {elapsed:.1f}s")
 
-                    if "url" in audio_data:
-                        audio_response = client.get(audio_data["url"])
-                        audio_bytes = audio_response.content
-                    elif "b64_json" in audio_data:
-                        audio_bytes = base64.b64decode(audio_data["b64_json"])
-                    else:
-                        return {"success": False, "error": "No audio data in response"}
-
-                    # Save to file
+                if content_length > 10000:
                     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    filename = f"music_{timestamp}.mp3"
+                    ext = "wav" if "wav" in content_type else "mp3"
+                    filename = f"music_{timestamp}.{ext}"
                     output_path = _get_output_dir() / filename
-                    output_path.write_bytes(audio_bytes)
+                    output_path.write_bytes(response.content)
+                    print(f"[MusicGen] Saved to: {output_path}")
 
                     return {
                         "success": True,
                         "path": str(output_path),
                         "filename": filename,
                         "prompt": prompt,
-                        "duration": duration,
                         "model": model
                     }
 
-                return {"success": False, "error": "No audio data in response"}
+                print(f"[MusicGen] Error: response too small ({content_length} bytes)")
+                return {"success": False, "error": f"Response too small ({content_length} bytes)"}
             else:
                 error_msg = response.text[:200] if response.text else f"HTTP {response.status_code}"
-                return {"success": False, "error": f"API error: {error_msg}"}
+                print(f"[MusicGen] Error: API {response.status_code} after {elapsed:.1f}s - {error_msg}")
+                return {"success": False, "error": f"API error ({response.status_code}): {error_msg}"}
 
     except httpx.TimeoutException:
+        elapsed = time.time() - start_time
+        print(f"[MusicGen] Error: timed out after {elapsed:.1f}s")
         return {"success": False, "error": "Request timed out (music generation can take a few minutes)"}
     except Exception as e:
+        print(f"[MusicGen] Error: {e}")
         return {"success": False, "error": str(e)}
 
 

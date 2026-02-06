@@ -3237,11 +3237,10 @@ Analyze queries using multiple AI models simultaneously.
                             "content": "Generating music..."
                         })
 
-                        import re
-                        match = re.search(r"(?:create|generate|make|compose)\s+(?:a\s+)?(?:music|song|soundtrack|jingle)\s+(?:for\s+|about\s+)?(.+)", user_input.lower())
-                        prompt = match.group(1).strip() if match else user_input
+                        from jarvis.core.router import extract_params
+                        params = extract_params(user_input, "generate_music")
 
-                        result = generate_music(prompt)
+                        result = generate_music(**params)
                         if result["success"]:
                             response_text = f"Generated music: {result['filename']}\nSaved to: {result['path']}"
                             await websocket.send_json({

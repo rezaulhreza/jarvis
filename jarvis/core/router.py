@@ -161,12 +161,24 @@ def extract_params(user_input: str, tool: str) -> dict:
             params["prompt"] = user_input
 
     elif tool == "generate_music":
-        # Extract music prompt
-        match = re.search(r"(?:create|generate|make|compose)\s+(?:a\s+)?(?:music|song|soundtrack|jingle)\s+(?:for\s+|about\s+)?(.+)", input_lower)
-        if match:
-            params["prompt"] = match.group(1).strip()
+        # Extract lyrics if present (lines starting with [MM:SS.ms])
+        lyrics_match = re.findall(r'\[\d{2}:\d{2}\.\d{2,3}\].+', user_input)
+        if lyrics_match:
+            params["lyrics"] = "\n".join(lyrics_match)
+            # Everything that's not a lyrics line is the style prompt
+            style_lines = [line.strip() for line in user_input.split("\n")
+                          if line.strip() and not re.match(r'\[\d{2}:\d{2}\.\d{2,3}\]', line.strip())]
+            # Strip common prefixes like "style:" or "create a song with"
+            style_text = " ".join(style_lines)
+            style_text = re.sub(r'^(?:style\s*:\s*|create|generate|make|compose)\s*(?:a\s+)?(?:music|song|soundtrack|jingle)?\s*(?:with\s+|for\s+|about\s+)?', '', style_text, flags=re.IGNORECASE).strip()
+            params["prompt"] = style_text if style_text else user_input
         else:
-            params["prompt"] = user_input
+            # No lyrics, just style prompt
+            match = re.search(r"(?:create|generate|make|compose)\s+(?:a\s+)?(?:music|song|soundtrack|jingle)\s+(?:with\s+|for\s+|about\s+)?(.+)", input_lower, re.DOTALL)
+            if match:
+                params["prompt"] = match.group(1).strip()
+            else:
+                params["prompt"] = user_input
 
     elif tool == "analyze_image":
         # Extract image path and prompt
