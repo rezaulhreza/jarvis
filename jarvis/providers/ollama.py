@@ -246,33 +246,55 @@ class OllamaProvider(BaseProvider):
     def get_vision_model(self) -> str | None:
         """Find the best available vision model."""
         available = [m.lower() for m in self.list_models()]
+        print(f"[Ollama] Looking for vision model. Available: {len(available)} models")
         for vision_model in self.VISION_MODELS:
             for avail in available:
                 if vision_model in avail:
                     # Return the actual model name (with tag)
                     for m in self.list_models():
                         if vision_model in m.lower():
+                            print(f"[Ollama] Found vision model: {m}")
                             return m
+        print(f"[Ollama] No vision model found. Install with: ollama pull llava")
         return None
 
-    def vision(self, image_path: str, prompt: str, model: str = None) -> str:
+    def vision(self, image_path: str, prompt: str, model: str = None, timeout: float = None) -> str:
         """Analyze an image using a vision model.
 
         Args:
             image_path: Path to the image file
             prompt: Question or instruction about the image
             model: Vision model to use (auto-detected if None)
+            timeout: Request timeout in seconds (default: 300s for vision)
 
         Returns:
             Text analysis of the image
         """
+        import time
+
         # Auto-detect vision model if not specified
         if not model:
             model = self.get_vision_model()
             if not model:
                 raise ValueError("No vision model available. Install one with: ollama pull llava")
 
-        response = self.client.chat(
+        print(f"[Ollama Vision] Using model: {model}")
+        print(f"[Ollama Vision] Image: {image_path}")
+        print(f"[Ollama Vision] Prompt: {prompt[:100]}{'...' if len(prompt) > 100 else ''}")
+
+        # Create a client with longer timeout for vision (models can be slow)
+        import httpx
+        vision_timeout = timeout or 300.0  # 5 minutes default for vision
+        vision_client = self.ollama.Client(
+            host=self.base_url,
+            timeout=httpx.Timeout(vision_timeout, connect=30.0),
+            headers=self.headers
+        )
+
+        start_time = time.time()
+        print(f"[Ollama Vision] Starting analysis (timeout: {vision_timeout}s)...")
+
+        response = vision_client.chat(
             model=model,
             messages=[{
                 "role": "user",
@@ -281,6 +303,10 @@ class OllamaProvider(BaseProvider):
             }],
             stream=False
         )
+
+        elapsed = time.time() - start_time
+        print(f"[Ollama Vision] Completed in {elapsed:.1f}s")
+
         if hasattr(response, 'message'):
             return getattr(response.message, 'content', '')
         return response['message']['content']

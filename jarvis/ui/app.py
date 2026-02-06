@@ -3096,18 +3096,26 @@ Analyze queries using multiple AI models simultaneously.
                         provider_name = getattr(jarvis.provider, "name", "")
                         vision_provider = "ollama" if provider_name in ["ollama", "ollama_cloud"] else "auto"
 
+                        print(f"[app] Vision request: provider={vision_provider}, image={img_path}")
+                        print(f"[app] Vision prompt: {prompt[:100]}{'...' if len(prompt) > 100 else ''}")
+
                         await websocket.send_json({
                             "type": "status",
-                            "content": f"Analyzing image{' (local)' if vision_provider == 'ollama' else ''}..."
+                            "content": f"Analyzing image{' (local Ollama)' if vision_provider == 'ollama' else ''}... (this may take a minute)"
                         })
 
+                        import time
+                        start_time = time.time()
                         result = analyze_image(img_path, prompt, provider=vision_provider)
+                        elapsed = time.time() - start_time
+
                         if result["success"]:
                             response_text = result["analysis"]
                             # Add model info if available
-                            if result.get("model"):
-                                print(f"[app] Vision analysis using: {result.get('model')}")
+                            model_used = result.get("model", "unknown")
+                            print(f"[app] Vision completed in {elapsed:.1f}s using: {model_used}")
                         else:
+                            print(f"[app] Vision failed after {elapsed:.1f}s: {result['error']}")
                             response_text = f"Image analysis failed: {result['error']}"
 
                         jarvis.context.add_message_to_chat("assistant", response_text)

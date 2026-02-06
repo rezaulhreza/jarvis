@@ -366,9 +366,13 @@ def analyze_image_ollama(image_path: str, prompt: str = "Describe this image in 
     Returns:
         Dict with success status and analysis result
     """
+    import time
+
     img_path = Path(image_path)
     if not img_path.exists():
         return {"success": False, "error": f"Image not found: {image_path}"}
+
+    print(f"[Vision] Starting image analysis: {image_path}")
 
     try:
         from jarvis.providers.ollama import OllamaProvider
@@ -377,10 +381,17 @@ def analyze_image_ollama(image_path: str, prompt: str = "Describe this image in 
         # Check if Ollama is running and has a vision model
         vision_model = provider.get_vision_model()
         if not vision_model:
+            print("[Vision] No Ollama vision model found")
             return {"success": False, "error": "No Ollama vision model found. Install with: ollama pull llava"}
+
+        print(f"[Vision] Using model: {vision_model}")
+        start_time = time.time()
 
         # Analyze the image
         result = provider.vision(str(img_path), prompt, model=vision_model)
+
+        elapsed = time.time() - start_time
+        print(f"[Vision] Analysis complete in {elapsed:.1f}s")
 
         return {
             "success": True,
@@ -392,6 +403,7 @@ def analyze_image_ollama(image_path: str, prompt: str = "Describe this image in 
         }
 
     except Exception as e:
+        print(f"[Vision] Error: {e}")
         return {"success": False, "error": f"Ollama vision error: {e}"}
 
 
