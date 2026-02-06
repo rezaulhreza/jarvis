@@ -163,11 +163,13 @@ def generate_video(
     fast: bool = True
 ) -> dict:
     """
-    Generate a video from an image using Chutes AI (Wan 2.2 I2V).
+    Generate a video from text or image using Chutes AI (Wan 2.2 I2V).
+
+    If no image is provided, generates one first using FLUX.1, then converts to video.
 
     Args:
         prompt: Text description of what should happen in the video
-        image_path: Path to source image (required for I2V)
+        image_path: Path to source image (optional - will generate if not provided)
         frames: Number of frames (21-140, default 81 = ~5 seconds at 16fps)
         resolution: "480p" or "720p" (default "480p")
         fast: Use fast mode (default True)
@@ -182,9 +184,37 @@ def generate_video(
     if not api_key:
         return {"success": False, "error": "Chutes API key not configured. Set CHUTES_API_KEY."}
 
-    # Image is required for I2V
+    # If no image provided, generate one first (two-step T2V workaround)
+    generated_image = False
     if not image_path:
-        return {"success": False, "error": "Image path required for video generation. Upload an image first."}
+        print(f"[VideoGen] No image provided. Generating base image from prompt...")
+
+        # Create an image prompt optimized for video generation
+        image_prompt = f"cinematic still frame, {prompt}, high quality, detailed, suitable for animation"
+
+        # Determine image dimensions based on resolution
+        if resolution == "720p":
+            img_width, img_height = 1280, 720
+        else:
+            img_width, img_height = 854, 480
+
+        image_result = generate_image(
+            prompt=image_prompt,
+            model="FLUX.1-schnell",
+            width=img_width,
+            height=img_height,
+            steps=10
+        )
+
+        if not image_result.get("success"):
+            return {
+                "success": False,
+                "error": f"Failed to generate base image: {image_result.get('error', 'Unknown error')}"
+            }
+
+        image_path = image_result["path"]
+        generated_image = True
+        print(f"[VideoGen] Base image generated: {image_path}")
 
     img_path = Path(image_path)
     if not img_path.exists():
@@ -237,7 +267,9 @@ def generate_video(
                         "filename": filename,
                         "prompt": prompt,
                         "frames": frames,
-                        "resolution": resolution
+                        "resolution": resolution,
+                        "source_image": image_path,
+                        "image_generated": generated_image
                     }
 
                 # Try to parse as JSON (might contain URL or error)
@@ -255,7 +287,9 @@ def generate_video(
                             "filename": filename,
                             "prompt": prompt,
                             "frames": frames,
-                            "resolution": resolution
+                            "resolution": resolution,
+                            "source_image": image_path,
+                            "image_generated": generated_image
                         }
                     elif "error" in data:
                         return {"success": False, "error": data["error"]}
@@ -661,8 +695,10 @@ def list_media_models() -> dict:
         "video_generation": {
             "provider": "chutes",
             "models": {
-                "wan": "Wan2.1 text/image to video"
-            }
+                "wan-i2v": "Wan2.2 Image-to-Video (direct)",
+                "wan-t2v": "Text-to-Video (generates image first, then animates)"
+            },
+            "note": "T2V uses FLUX.1 to generate base image, then Wan I2V to animate"
         },
         "music_generation": {
             "provider": "chutes",

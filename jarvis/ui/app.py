@@ -3179,31 +3179,33 @@ Analyze queries using multiple AI models simultaneously.
                     try:
                         from jarvis.skills.media_gen import generate_video
 
-                        # Video generation requires an image
-                        if not image_attachments:
-                            response_text = "Video generation requires an image. Please upload an image and describe what motion/action you want (e.g., 'make the birds fly', 'animate this scene')."
-                            jarvis.context.add_message_to_chat("assistant", response_text)
+                        # Determine if we have an image or need to generate one
+                        img_path = None
+                        if image_attachments:
+                            img_path = image_attachments[0]["path"]
                             await websocket.send_json({
-                                "type": "response",
-                                "content": response_text,
-                                "done": True
+                                "type": "status",
+                                "content": "Generating video from image (this may take a few minutes)..."
                             })
-                            return
-
-                        await websocket.send_json({
-                            "type": "status",
-                            "content": "Generating video from image (this may take a few minutes)..."
-                        })
+                        else:
+                            # Text-to-video: will generate image first
+                            await websocket.send_json({
+                                "type": "status",
+                                "content": "Generating video from text (creating base image first, then animating - this may take a few minutes)..."
+                            })
 
                         import re
                         match = re.search(r"(?:create|generate|make|animate)\s+(?:a\s+)?(?:video\s+(?:of\s+)?)?(.+)", user_input.lower())
                         prompt = match.group(1).strip() if match else user_input
 
-                        img_path = image_attachments[0]["path"]
                         result = generate_video(prompt, image_path=img_path)
 
                         if result["success"]:
-                            response_text = f"Generated video: {result['filename']}\nSaved to: {result['path']}"
+                            # Include info about how the video was generated
+                            if result.get("image_generated"):
+                                response_text = f"Generated video from text prompt.\nBase image: {result.get('source_image', 'auto-generated')}\nVideo: {result['filename']}\nSaved to: {result['path']}"
+                            else:
+                                response_text = f"Generated video: {result['filename']}\nSaved to: {result['path']}"
                             await websocket.send_json({
                                 "type": "media",
                                 "media_type": "video",
