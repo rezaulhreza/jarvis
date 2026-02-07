@@ -2950,11 +2950,20 @@ Analyze queries using multiple AI models simultaneously.
             # Add to context (creates chat if needed)
             jarvis.context.add_message_to_chat("user", user_input)
 
-            # Build history
+            # Build history (enriched with semantic retrieval when available)
             from jarvis.providers import Message
             history = []
-            for m in jarvis.context.get_messages()[:-1]:
-                history.append(Message(role=m["role"], content=m["content"]))
+            try:
+                enriched = jarvis.context.get_enriched_context(user_input)
+                if enriched:
+                    for m in enriched:
+                        history.append(Message(role=m["role"], content=m["content"]))
+                else:
+                    for m in jarvis.context.get_messages()[:-1]:
+                        history.append(Message(role=m["role"], content=m["content"]))
+            except Exception:
+                for m in jarvis.context.get_messages()[:-1]:
+                    history.append(Message(role=m["role"], content=m["content"]))
 
             # === UNIFIED SMART ROUTING ===
             # Use intent classification to automatically determine mode
@@ -3054,20 +3063,44 @@ Analyze queries using multiple AI models simultaneously.
             # Check for document attachments -> analyze document
             if doc_attachments:
                 try:
-                    from jarvis.skills.media_gen import analyze_document
                     doc_path = doc_attachments[0]["path"]
                     prompt = user_input if user_input else "Summarize this document."
 
                     await websocket.send_json({
                         "type": "status",
-                        "content": "Analyzing document..."
+                        "content": "Processing document..."
                     })
 
-                    result = analyze_document(doc_path, prompt)
-                    if result["success"]:
-                        response_text = result["analysis"]
+                    # Use DocumentProcessor for intelligent chunking
+                    from jarvis.skills.document_processor import DocumentProcessor
+                    processor = DocumentProcessor()
+                    doc_content = await processor.process_for_context(doc_path, query=prompt)
+
+                    if doc_content.startswith("Error"):
+                        response_text = doc_content
                     else:
-                        response_text = f"Document analysis failed: {result['error']}"
+                        # Send to LLM for analysis with full document context
+                        await websocket.send_json({
+                            "type": "status",
+                            "content": "Analyzing document content..."
+                        })
+
+                        llm_prompt = f"{doc_content}\n\n---\n\nUser question: {prompt}"
+                        from jarvis.providers import Message as _Msg
+                        try:
+                            reply = await asyncio.to_thread(
+                                jarvis.provider.chat,
+                                messages=[_Msg(role="user", content=llm_prompt)],
+                                system="You are a document analyst. Answer based on the document content provided.",
+                                stream=False,
+                            )
+                            if hasattr(reply, '__iter__') and not isinstance(reply, str):
+                                reply = ''.join(str(c) for c in reply)
+                            response_text = str(reply).strip()
+                        except Exception as llm_err:
+                            # Fallback: return extracted text directly
+                            print(f"[app] LLM analysis failed, returning raw content: {llm_err}")
+                            response_text = doc_content
 
                     jarvis.context.add_message_to_chat("assistant", response_text)
                     response_msg = {
@@ -3296,32 +3329,42 @@ RULES:
                 if user_facts:
                     chat_system += f"\n\nUser context:\n{user_facts}"
 
-                # RAG: Retrieve relevant context from knowledge base
-                rag_info = {"enabled": False, "chunks": 0, "sources": []}
-                try:
-                    from jarvis.knowledge import get_rag_engine
-                    rag = get_rag_engine(jarvis.config)
-                    count = rag.count()
-                    print(f"[RAG] Knowledge base has {count} chunks")
-                    if count > 0:
-                        rag_info["enabled"] = True
-                        rag_info["total_chunks"] = count
-                        # Get search results with source info
-                        results = rag.search(user_input, n_results=5)
-                        if results:
-                            rag_info["chunks"] = len(results)
-                            rag_info["sources"] = list(set(r.get("source", "unknown") for r in results))
-                            # Use get_context for prompt injection hardening
-                            rag_context = rag.get_context(user_input, n_results=5)
-                            if rag_context:
-                                chat_system += f"\n\n{rag_context}"
-                        else:
-                            print("[RAG] No context found")
-                except Exception as e:
-                    import traceback
-                    print(f"[RAG] Error retrieving context: {e}")
-                    traceback.print_exc()
-                    rag_info["error"] = str(e)
+                # Run RAG search and tool detection concurrently
+                async def _async_rag_search():
+                    """Run RAG search in thread to avoid blocking."""
+                    info = {"enabled": False, "chunks": 0, "sources": []}
+                    rag_ctx = ""
+                    try:
+                        from jarvis.knowledge import get_rag_engine
+                        rag = get_rag_engine(jarvis.config)
+                        count = rag.count()
+                        print(f"[RAG] Knowledge base has {count} chunks")
+                        if count > 0:
+                            info["enabled"] = True
+                            info["total_chunks"] = count
+                            results = await asyncio.to_thread(rag.search, user_input, 5)
+                            if results:
+                                info["chunks"] = len(results)
+                                info["sources"] = list(set(r.get("source", "unknown") for r in results))
+                                rag_ctx = await asyncio.to_thread(rag.get_context, user_input, 5)
+                            else:
+                                print("[RAG] No context found")
+                    except Exception as e:
+                        import traceback
+                        print(f"[RAG] Error retrieving context: {e}")
+                        traceback.print_exc()
+                        info["error"] = str(e)
+                    return info, rag_ctx or ""
+
+                # Run RAG and tool detection concurrently
+                recent = history
+                rag_task = asyncio.create_task(_async_rag_search())
+                tool_prompt, tool_turn, tool_name_used, tool_result, explicit_search = await _run_tool_for_chat_mode(jarvis, user_input, recent, classified_intent)
+
+                # Await RAG result
+                rag_info, rag_context = await rag_task
+                if rag_context:
+                    chat_system += f"\n\n{rag_context}"
 
                 # Send RAG status to frontend
                 await websocket.send_json({
@@ -3329,10 +3372,7 @@ RULES:
                     "rag": rag_info
                 })
 
-                # Use full conversation history - context manager handles truncation
-                recent = history
                 tool_messages = []
-                tool_prompt, tool_turn, tool_name_used, tool_result, explicit_search = await _run_tool_for_chat_mode(jarvis, user_input, recent, classified_intent)
                 if tool_prompt:
                     tool_messages.append(Message(role="user", content=tool_prompt))
                 if tool_turn:
@@ -3464,18 +3504,7 @@ RULES:
                 await safe_send_json(websocket, response_msg)
 
             else:
-                # AGENT MODE: Use tools for coding tasks
-                loop = asyncio.get_running_loop()
-                streamed_chunks = []
-
-                def stream_sender(chunk):
-                    streamed_chunks.append(chunk)
-                    loop.create_task(safe_send_json(websocket, {
-                        "type": "stream",
-                        "content": _clean_for_web(chunk, streaming=True),
-                        "done": False
-                    }))
-
+                # AGENT MODE: Async with progressive streaming + parallel tools
                 # Enable thinking mode for Qwen models when deep reasoning requested
                 agent_input = user_input
                 model_name = (jarvis.provider.model or "").lower()
@@ -3483,13 +3512,112 @@ RULES:
                     if not agent_input.rstrip().endswith("/think"):
                         agent_input = f"{user_input} /think"
 
-                jarvis.ui._stream_sender = stream_sender
-                response = jarvis.agent.run(agent_input, jarvis.system_prompt, history)
-                jarvis.ui._stream_sender = None
+                # Check if multi-agent orchestration would help
+                from jarvis.core.orchestrator import AgentOrchestrator
+                if AgentOrchestrator.should_orchestrate(agent_input):
+                    try:
+                        orchestrator = AgentOrchestrator(
+                            provider=jarvis.provider,
+                            tool_map=jarvis.agent._build_tool_map(),
+                        )
+                        response = ""
+                        async for event in orchestrator.run(agent_input):
+                            if event.type == "decompose":
+                                await safe_send_json(websocket, {
+                                    "type": "status",
+                                    "content": f"Breaking task into {event.total_subtasks} subtask(s)..."
+                                })
+                            elif event.type == "subtask_start":
+                                await safe_send_json(websocket, {
+                                    "type": "tool_status",
+                                    "tools": [{"name": f"subtask_{event.subtask_id}", "display": event.subtask_description, "status": "running"}]
+                                })
+                            elif event.type == "subtask_complete":
+                                await safe_send_json(websocket, {
+                                    "type": "tool_status",
+                                    "tools": [{"name": f"subtask_{event.subtask_id}", "display": event.subtask_description, "status": "complete"}]
+                                })
+                            elif event.type == "merge":
+                                await safe_send_json(websocket, {
+                                    "type": "status",
+                                    "content": "Synthesizing results..."
+                                })
+                            elif event.type == "done":
+                                response = event.result
+
+                        if response:
+                            jarvis.context.add_message_to_chat("assistant", _clean_for_web(response))
+                            response_msg = {
+                                "type": "response",
+                                "content": _clean_for_web(response),
+                                "done": True
+                            }
+                            context_stats = _get_context_stats(jarvis)
+                            if context_stats:
+                                response_msg["context"] = context_stats
+                            await safe_send_json(websocket, response_msg)
+                            return
+                    except Exception as e:
+                        print(f"[app] Orchestrator failed, falling back to single agent: {e}")
 
                 tool_turn = []
-                if hasattr(jarvis.ui, "get_tool_turn"):
-                    tool_turn = jarvis.ui.get_tool_turn()
+                response = ""
+                streamed = False
+                live_tools = {}  # Track live tool statuses
+
+                async for event in jarvis.agent.run_async(agent_input, jarvis.system_prompt, history):
+                    if event.type == "tool_start":
+                        # Send live tool status to frontend
+                        live_tools[event.tool_name] = {
+                            "name": event.tool_name,
+                            "display": event.display,
+                            "status": "running",
+                        }
+                        await safe_send_json(websocket, {
+                            "type": "tool_status",
+                            "tools": list(live_tools.values()),
+                        })
+
+                    elif event.type == "tool_complete":
+                        # Update live status
+                        live_tools[event.tool_name] = {
+                            "name": event.tool_name,
+                            "display": event.display,
+                            "status": "complete" if event.tool_success else "error",
+                            "duration": event.tool_duration,
+                        }
+                        await safe_send_json(websocket, {
+                            "type": "tool_status",
+                            "tools": list(live_tools.values()),
+                        })
+                        # Record for timeline
+                        preview = None
+                        if event.tool_result:
+                            preview = event.tool_result.strip().replace("\n", " ")
+                            if len(preview) > 180:
+                                preview = preview[:177] + "..."
+                        tool_turn.append({
+                            "name": event.tool_name,
+                            "display": event.display,
+                            "duration_s": event.tool_duration,
+                            "id": event.tool_call_id,
+                            "args": event.tool_args,
+                            "result_preview": preview,
+                            "success": event.tool_success,
+                        })
+
+                    elif event.type == "stream":
+                        streamed = True
+                        await safe_send_json(websocket, {
+                            "type": "stream",
+                            "content": _clean_for_web(event.content, streaming=True),
+                            "done": False
+                        })
+
+                    elif event.type == "done":
+                        response = event.content
+
+                # Send tool timeline
                 if tool_turn:
                     await safe_send_json(websocket, {
                         "type": "tool_timeline",
@@ -3504,8 +3632,7 @@ RULES:
                             "done": False
                         })
 
-                    # Check if agent generated media files (video/image/music)
-                    # and send media preview message
+                    # Check if agent generated media files
                     import re
                     media_match = re.search(r'Saved to:\s*(\S+\.(mp4|jpg|jpeg|png|webp|mp3|wav))', response, re.IGNORECASE)
                     if media_match:
@@ -3527,19 +3654,13 @@ RULES:
                             "filename": media_filename
                         })
 
-                    # Check if we already streamed the response
-                    # If so, only send the final "done" signal without duplicating content
-                    was_streamed = bool(streamed_chunks) and getattr(jarvis.agent, 'last_streamed', False)
-
-                    if was_streamed:
-                        # Already streamed - just signal completion
+                    if streamed:
                         response_msg = {
                             "type": "response",
-                            "content": "",  # Empty - content was already streamed
+                            "content": "",
                             "done": True
                         }
                     else:
-                        # Not streamed - send full response
                         response_msg = {
                             "type": "response",
                             "content": _clean_for_web(response),
