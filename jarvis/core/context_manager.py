@@ -1,4 +1,4 @@
-"""Context management with auto-compaction and chat history"""
+"""Context management with auto-compaction, chat history, and semantic retrieval"""
 
 import json
 import sqlite3
@@ -7,6 +7,44 @@ from datetime import datetime
 from typing import Optional, List, Dict, Callable
 import tiktoken
 import uuid
+
+
+class ContextBudget:
+    """Token budget allocation for different context components.
+
+    Adapts proportionally to the model's actual context window size.
+    No hardcoded assumptions — works with 4K, 32K, 128K, or 1M+ models.
+    """
+
+    def __init__(self, total_tokens: int = 8192):
+        self.total = total_tokens
+        # Proportional allocation: scales with any context window size
+        self.system_prompt = max(500, total_tokens // 40)       # ~2.5%
+        self.tools = max(500, total_tokens // 20)               # ~5%
+        self.rag_context = max(500, total_tokens // 20)         # ~5%
+        self.relevant_history = max(500, total_tokens // 10)    # ~10%
+        self.recent_messages = max(1000, total_tokens // 5)     # ~20%
+        self.response = self.total - (
+            self.system_prompt + self.tools + self.rag_context +
+            self.relevant_history + self.recent_messages
+        )
+
+    def allocate(self, intent: str = "", num_tools: int = 0) -> Dict[str, int]:
+        """Allocate budget dynamically based on intent."""
+        budget = {
+            "system_prompt": self.system_prompt,
+            "tools": min(num_tools * 300 + 500, self.tools) if num_tools else self.tools,
+            "rag_context": self.rag_context,
+            "relevant_history": self.relevant_history,
+            "recent_messages": self.recent_messages,
+            "response": self.response,
+        }
+
+        # Redistribute unused tokens
+        used = sum(budget.values()) - budget["response"]
+        budget["response"] = self.total - used
+
+        return budget
 
 
 class ContextManager:
@@ -191,8 +229,23 @@ class ContextManager:
             self._compact()
 
     def set_provider(self, provider):
-        """Set LLM provider for intelligent summarization."""
+        """Set LLM provider for intelligent summarization.
+
+        Also queries the provider for its context window size and updates
+        max_tokens accordingly, so the context budget adapts to the actual model.
+        """
         self._provider = provider
+
+        # Dynamically update max_tokens from provider's actual context length
+        try:
+            ctx_len = provider.get_context_length()
+            if ctx_len and ctx_len > 0:
+                # Use ~60% of context for history (rest for system prompt, tools, response)
+                self.max_tokens = int(ctx_len * 0.6)
+                self._model_context_length = ctx_len
+                print(f"[Context] Model context: {ctx_len:,} tokens, history budget: {self.max_tokens:,}")
+        except Exception:
+            pass  # Keep default max_tokens
 
     def set_compact_callback(self, callback: Callable[[int, str], None]):
         """Set callback for compact notifications.
@@ -583,6 +636,12 @@ Summary (2-3 sentences):"""
         # Also save to legacy table for backward compatibility
         self._save_message({"role": role, "content": content, "timestamp": now, "model": model})
 
+        # Embed for semantic retrieval (non-blocking, best-effort)
+        try:
+            self.embed_message(role, content, message_id=f"msg_{message_id}")
+        except Exception:
+            pass  # Don't fail message saving if embedding fails
+
         return message_id
 
     def get_current_chat_id(self) -> Optional[str]:
@@ -629,3 +688,154 @@ Summary (2-3 sentences):"""
         # Return conversation snippet for LLM to generate title
         snippet = "\n".join([f"{m[0]}: {m[1][:200]}" for m in messages])
         return snippet
+
+    # ============== Semantic History Retrieval ==============
+
+    def _get_history_collection(self):
+        """Get or create ChromaDB collection for semantic history."""
+        if not hasattr(self, '_history_collection'):
+            try:
+                import chromadb
+                client = chromadb.Client()
+                self._history_collection = client.get_or_create_collection(
+                    name="conversation_history",
+                    metadata={"hnsw:space": "cosine"}
+                )
+            except ImportError:
+                self._history_collection = None
+            except Exception as e:
+                print(f"[Context] ChromaDB error: {e}")
+                self._history_collection = None
+        return self._history_collection
+
+    def embed_message(self, role: str, content: str, message_id: str = None):
+        """Embed a message for semantic retrieval."""
+        collection = self._get_history_collection()
+        if not collection:
+            return
+
+        if not content or len(content.strip()) < 10:
+            return
+
+        msg_id = message_id or f"msg_{datetime.now().timestamp()}"
+        try:
+            # Truncate for embedding
+            embed_text = content[:500]
+            collection.add(
+                documents=[embed_text],
+                ids=[msg_id],
+                metadatas=[{"role": role, "timestamp": datetime.now().isoformat()}]
+            )
+        except Exception as e:
+            print(f"[Context] Embed error: {e}")
+
+    def retrieve_relevant_history(self, query: str, n_results: int = 5) -> List[Dict]:
+        """Retrieve semantically relevant past messages.
+
+        Args:
+            query: Current user query
+            n_results: Number of relevant messages to retrieve
+
+        Returns:
+            List of relevant messages with role, content, timestamp
+        """
+        collection = self._get_history_collection()
+        if not collection:
+            return []
+
+        try:
+            count = collection.count()
+            if count == 0:
+                return []
+
+            results = collection.query(
+                query_texts=[query],
+                n_results=min(n_results, count)
+            )
+
+            relevant = []
+            if results and results.get("documents"):
+                docs = results["documents"][0]
+                metas = results["metadatas"][0] if results.get("metadatas") else [{}] * len(docs)
+                distances = results["distances"][0] if results.get("distances") else [0] * len(docs)
+
+                for doc, meta, dist in zip(docs, metas, distances):
+                    # Only include reasonably relevant results (cosine distance < 0.8)
+                    if dist < 0.8:
+                        relevant.append({
+                            "role": meta.get("role", "user"),
+                            "content": doc,
+                            "timestamp": meta.get("timestamp", ""),
+                            "relevance": round(1 - dist, 3),
+                        })
+
+            return relevant
+        except Exception as e:
+            print(f"[Context] Retrieval error: {e}")
+            return []
+
+    def get_enriched_context(
+        self,
+        query: str,
+        recent_n: int = 10,
+        relevant_n: int = 5,
+        max_tokens: int = None,
+    ) -> List[Dict]:
+        """Get context that combines recent messages + semantically relevant history.
+
+        This provides better context than just keeping the last N messages,
+        as it retrieves relevant information from earlier in the conversation.
+
+        Args:
+            query: Current user query for semantic matching
+            recent_n: Number of recent messages to always include
+            relevant_n: Number of semantically relevant messages to retrieve
+            max_tokens: Token budget for context (uses self.max_tokens if None)
+
+        Returns:
+            List of messages: relevant history first, then recent messages
+        """
+        budget = max_tokens or self.max_tokens
+
+        # Get recent messages
+        recent = self.messages[-recent_n:] if len(self.messages) > recent_n else self.messages[:]
+
+        # Get semantically relevant messages (from earlier in conversation)
+        relevant = self.retrieve_relevant_history(query, n_results=relevant_n)
+
+        # Deduplicate: remove relevant messages that are already in recent
+        recent_contents = {m.get("content", "")[:100] for m in recent}
+        unique_relevant = [
+            r for r in relevant
+            if r["content"][:100] not in recent_contents
+        ]
+
+        # Build combined context within token budget
+        context = []
+        token_count = 0
+
+        # Add relevant history first (marked)
+        for msg in unique_relevant:
+            tokens = self.count_tokens(msg["content"])
+            if token_count + tokens > budget * 0.3:  # Use at most 30% for relevant history
+                break
+            context.append({
+                "role": msg["role"],
+                "content": f"[Earlier context] {msg['content']}"
+            })
+            token_count += tokens
+
+        # Add recent messages
+        for msg in recent:
+            tokens = self.count_tokens(msg.get("content", ""))
+            if token_count + tokens > budget * 0.8:  # Use at most 80% total
+                break
+            context.append({"role": msg["role"], "content": msg.get("content", "")})
+            token_count += tokens
+
+        return context
+
+    def get_budget(self, total_tokens: int = None) -> ContextBudget:
+        """Get context budget allocator using the model's actual context length."""
+        tokens = total_tokens or getattr(self, '_model_context_length', None) or self.max_tokens
+        return ContextBudget(tokens)
