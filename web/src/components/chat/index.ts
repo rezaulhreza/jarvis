@@ -1,3 +1,5 @@
 export { MessageList } from './MessageList'
 export { MessageBubble, ToolTimeline } from './MessageBubble'
 export { ThinkingBlock } from './ThinkingBlock'
+export { ToolStatus } from './ToolStatus'
+export type { LiveToolStatus } from './ToolStatus'

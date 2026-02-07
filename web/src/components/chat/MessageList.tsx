@@ -1,6 +1,7 @@
-import { useRef, useEffect } from 'react'
+import { useRef, useEffect, memo } from 'react'
 import { MessageBubble } from './MessageBubble'
 import { ThinkingBlock } from './ThinkingBlock'
+import { ToolStatus, type LiveToolStatus } from './ToolStatus'
 import type { Message } from '../../types'
 import { Loader2 } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
@@ -12,7 +13,11 @@ interface MessageListProps {
   streamingThinking?: string
   isLoading: boolean
   loadingText?: string
+  liveToolStatus?: LiveToolStatus[]
 }
+
+// Memoize completed messages to avoid re-renders during streaming
+const MemoizedMessageBubble = memo(MessageBubble)
 
 export function MessageList({
   messages,
@@ -20,13 +25,14 @@ export function MessageList({
   streamingThinking,
   isLoading,
   loadingText = 'Thinking...',
+  liveToolStatus = [],
 }: MessageListProps) {
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
   // Auto-scroll to bottom on new messages
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages, streaming, streamingThinking])
+  }, [messages, streaming, streamingThinking, liveToolStatus])
 
   return (
     <div className="flex-1 overflow-y-auto p-4 scrollbar-thin">
@@ -51,10 +57,15 @@ export function MessageList({
           </div>
         )}
 
-        {/* Message list */}
+        {/* Message list - use memoized bubbles for completed messages */}
         {messages.map((msg, i) => (
-          <MessageBubble key={i} message={msg} />
+          <MemoizedMessageBubble key={i} message={msg} />
         ))}
+
+        {/* Live tool status - shows during tool execution */}
+        {liveToolStatus.length > 0 && (
+          <ToolStatus tools={liveToolStatus} />
+        )}
 
         {/* Streaming thinking */}
         {streamingThinking && !streaming && (
@@ -90,7 +101,7 @@ export function MessageList({
         )}
 
         {/* Loading indicator */}
-        {isLoading && !streaming && (
+        {isLoading && !streaming && liveToolStatus.length === 0 && (
           <div className="flex items-center gap-3 text-text-muted py-2">
             <div className="relative">
               <Loader2 size={18} className="animate-spin text-cyan-500" />

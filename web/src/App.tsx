@@ -74,6 +74,7 @@ export default function App() {
     provider,
     intentInfo,
     contextStats,
+    liveToolStatus,
     send,
     clear,
     switchModel,
@@ -673,6 +674,7 @@ export default function App() {
           streamingThinking={streamingThinking}
           isLoading={isLoading}
           loadingText={loadingText}
+          liveToolStatus={liveToolStatus}
         />
 
         {/* Recording indicator */}

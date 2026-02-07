@@ -71,6 +71,13 @@ interface ToolEvent {
   success?: boolean
 }
 
+interface LiveToolStatus {
+  name: string
+  display: string
+  status: 'running' | 'complete' | 'error'
+  duration?: number
+}
+
 export function useWebSocket() {
   const ws = useRef<WebSocket | null>(null)
   const [connected, setConnected] = useState(false)
@@ -86,6 +93,7 @@ export function useWebSocket() {
   const [intentInfo, setIntentInfo] = useState<IntentInfo | null>(null)
   const [contextStats, setContextStats] = useState<ContextStats | null>(null)
   // pendingTools is used via setPendingTools callback form, not directly referenced
+  const [liveToolStatus, setLiveToolStatus] = useState<LiveToolStatus[]>([])
   const [, setPendingTools] = useState<ToolEvent[]>([])
   const thinkingStartRef = useRef<number | null>(null)
   const isInsideThinkingRef = useRef(false)  // Track if currently inside <think> block
@@ -300,6 +308,14 @@ export function useWebSocket() {
         }
         break
 
+      case 'tool_status':
+        // Live tool status updates (running/complete/error)
+        if (data.tools) {
+          setLiveToolStatus(data.tools as unknown as LiveToolStatus[])
+        }
+        setIsLoading(false)
+        break
+
       case 'tool_timeline':
         if (data.tools?.length) {
           setToolTimeline(data.tools)
@@ -308,6 +324,7 @@ export function useWebSocket() {
           setToolTimeline([])
           setPendingTools([])
         }
+        setLiveToolStatus([])  // Clear live status when timeline arrives
         break
 
       case 'intent':
@@ -346,6 +363,7 @@ export function useWebSocket() {
         setStreamingThinking('')
         setRagStatus(null)
         setToolTimeline([])
+        setLiveToolStatus([])
         setIntentInfo(null)
         setContextStats(null)
         thinkingStartRef.current = null
@@ -366,6 +384,7 @@ export function useWebSocket() {
     setRagStatus(null)  // Reset RAG status for new query
     setToolTimeline([])
     setPendingTools([])
+    setLiveToolStatus([])
     setIntentInfo(null)  // Reset intent for new query
 
     const message: Record<string, unknown> = {
@@ -413,6 +432,7 @@ export function useWebSocket() {
     project,
     ragStatus,
     toolTimeline,
+    liveToolStatus,
     intentInfo,
     contextStats,
     send,

@@ -1,3 +1,4 @@
+import { memo } from 'react'
 import { cn } from '../../lib/utils'
 import type { Message, ToolEvent } from '../../types'
 import ReactMarkdown from 'react-markdown'
