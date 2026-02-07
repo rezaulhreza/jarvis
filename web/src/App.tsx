@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useWebSocket } from './hooks/useWebSocket'
 import { useVoice } from './hooks/useVoice'
+import { useCamera } from './hooks/useCamera'
 import { useFileUpload } from './hooks/useFileUpload'
 import { useWakeWord } from './hooks/useWakeWord'
 import { cn } from './lib/utils'
@@ -23,6 +24,8 @@ import {
   Mic,
   Keyboard,
   AudioWaveform,
+  Camera,
+  CameraOff,
 } from 'lucide-react'
 
 // Types
@@ -72,10 +75,12 @@ export default function App() {
     project,
     model,
     provider,
+    assistantName: wsAssistantName,
     intentInfo,
     contextStats,
     liveToolStatus,
     send,
+    sendWithVideo,
     clear,
     switchModel,
     switchProvider,
@@ -84,12 +89,27 @@ export default function App() {
   // File upload hook
   const { files, addFiles, removeFile, clearFiles, getAttachmentIds } = useFileUpload()
 
+  // Camera hook for video chat
+  const {
+    videoRef,
+    isActive: isCameraActive,
+    error: cameraError,
+    startCamera,
+    stopCamera,
+    captureFrame,
+  } = useCamera()
+
   // Voice callbacks
   const handleVoiceInput = useCallback((transcript: string) => {
     if (transcript && connected) {
-      send(transcript, true)
+      if (isCameraActive) {
+        const frame = captureFrame()
+        sendWithVideo(transcript, frame)
+      } else {
+        send(transcript, true)
+      }
     }
-  }, [connected, send])
+  }, [connected, send, sendWithVideo, isCameraActive, captureFrame])
 
   const handleInterrupt = useCallback(() => {
     console.log('User interrupted')
@@ -114,10 +134,13 @@ export default function App() {
     sttProvider,
   })
 
-  // Load assistant config from localStorage
+  // Sync assistant name from WebSocket connection
   useEffect(() => {
-    const savedName = localStorage.getItem('jarvis_assistant_name')
-    if (savedName) setAssistantName(savedName)
+    if (wsAssistantName) setAssistantName(wsAssistantName)
+  }, [wsAssistantName])
+
+  // Load wake word from localStorage
+  useEffect(() => {
     const savedWakeWord = localStorage.getItem('jarvis_wake_word')
     if (savedWakeWord) setWakeWord(savedWakeWord)
   }, [])
@@ -238,8 +261,9 @@ export default function App() {
   const exitVoiceMode = useCallback(() => {
     stopListening()
     stopSpeaking()
+    stopCamera()
     setMode('chat')
-  }, [stopListening, stopSpeaking])
+  }, [stopListening, stopSpeaking, stopCamera])
 
   // Handlers
   const handleSend = useCallback(() => {
@@ -250,6 +274,14 @@ export default function App() {
     setInput('')
     clearFiles()
   }, [input, connected, send, reasoningLevel, clearFiles, getAttachmentIds])
+
+  const handleCameraToggle = useCallback(() => {
+    if (isCameraActive) {
+      stopCamera()
+    } else {
+      startCamera()
+    }
+  }, [isCameraActive, startCamera, stopCamera])
 
   const handleVoiceToggle = useCallback(async () => {
     if (isRecording) {
@@ -377,6 +409,21 @@ export default function App() {
             {/* Model info */}
             <span className="text-xs text-white/40 font-mono">{model?.split('/').pop() || 'AI'}</span>
 
+            {/* Camera toggle */}
+            <button
+              onClick={handleCameraToggle}
+              className={cn(
+                'flex items-center gap-2 px-4 py-2 rounded-full border transition-all',
+                isCameraActive
+                  ? 'bg-cyan-500/20 border-cyan-500/40 text-cyan-400'
+                  : 'bg-white/5 hover:bg-white/10 border-white/10 text-white/70 hover:text-white'
+              )}
+              title={isCameraActive ? 'Stop camera' : 'Start camera'}
+            >
+              {isCameraActive ? <CameraOff size={16} /> : <Camera size={16} />}
+              <span className="text-sm">{isCameraActive ? 'Video On' : 'Video'}</span>
+            </button>
+
             {/* Back to chat */}
             <button
               onClick={exitVoiceMode}
@@ -456,8 +503,21 @@ export default function App() {
               </div>
             )}
 
-            {/* Mic control - close to orb */}
-            <div className="flex justify-center mt-6">
+            {/* Mic and camera controls - close to orb */}
+            <div className="flex justify-center items-center gap-4 mt-6">
+              <button
+                onClick={handleCameraToggle}
+                className={cn(
+                  'w-12 h-12 rounded-full flex items-center justify-center transition-all',
+                  isCameraActive
+                    ? 'bg-cyan-500/20 border-2 border-cyan-500 text-cyan-400'
+                    : 'bg-white/5 border border-white/20 text-white/60 hover:bg-white/10 hover:text-white'
+                )}
+                title={isCameraActive ? 'Stop camera' : 'Start camera'}
+              >
+                {isCameraActive ? <CameraOff size={18} /> : <Camera size={18} />}
+              </button>
+
               <button
                 onClick={() => isListening ? stopListening() : startListening()}
                 className={cn(
@@ -472,6 +532,44 @@ export default function App() {
             </div>
           </div>
         </div>
+
+        {/* Camera video preview - floating PiP */}
+        {isCameraActive && (
+          <div className="absolute bottom-32 right-6 z-20">
+            <div className="relative rounded-2xl overflow-hidden border-2 border-cyan-500/40 shadow-lg shadow-cyan-500/20">
+              <video
+                ref={videoRef}
+                autoPlay
+                playsInline
+                muted
+                className="w-[160px] h-[120px] object-cover mirror"
+                style={{ transform: 'scaleX(-1)' }}
+              />
+              <div className="absolute top-2 left-2 flex items-center gap-1 px-2 py-0.5 rounded-full bg-black/60 backdrop-blur-sm">
+                <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse" />
+                <span className="text-[10px] text-cyan-400 font-medium">LIVE</span>
+              </div>
+              <button
+                onClick={stopCamera}
+                className="absolute top-2 right-2 w-6 h-6 rounded-full bg-black/60 backdrop-blur-sm flex items-center justify-center text-white/60 hover:text-white transition-colors"
+              >
+                <CameraOff size={12} />
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Hidden video element for camera (when preview not shown) */}
+        {!isCameraActive && (
+          <video ref={videoRef} className="hidden" autoPlay playsInline muted />
+        )}
+
+        {/* Camera error toast */}
+        {cameraError && (
+          <div className="absolute bottom-32 right-6 z-20 px-4 py-2 rounded-xl bg-red-500/20 border border-red-500/30 text-red-400 text-sm backdrop-blur-sm">
+            {cameraError}
+          </div>
+        )}
 
         {/* Last message preview */}
         {messages.length > 0 && (
@@ -491,7 +589,7 @@ export default function App() {
           </div>
         )}
 
-        
+
         {/* Settings Panel */}
         <SettingsPanel
           isOpen={showSettings}

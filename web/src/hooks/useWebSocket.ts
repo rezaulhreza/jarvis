@@ -46,6 +46,7 @@ interface WSMessage {
   model?: string
   provider?: string
   project?: string
+  assistantName?: string
   done?: boolean
   error?: string
   message?: string  // Error message from backend
@@ -88,6 +89,7 @@ export function useWebSocket() {
   const [model, setModel] = useState('')
   const [provider, setProvider] = useState('')
   const [project, setProject] = useState('')
+  const [assistantName, setAssistantName] = useState('Jarvis')
   const [ragStatus, setRagStatus] = useState<RagInfo | null>(null)
   const [toolTimeline, setToolTimeline] = useState<ToolEvent[]>([])
   const [intentInfo, setIntentInfo] = useState<IntentInfo | null>(null)
@@ -146,6 +148,7 @@ export function useWebSocket() {
         setModel(data.model || '')
         setProvider(data.provider || '')
         setProject(data.project || '')
+        if (data.assistantName) setAssistantName(data.assistantName)
         break
 
       case 'thinking':
@@ -416,6 +419,28 @@ export function useWebSocket() {
     ws.current.send(JSON.stringify({ type: 'switch_provider', provider: newProvider }))
   }, [])
 
+  const sendWithVideo = useCallback((transcript: string, frame: string | null) => {
+    if (!ws.current || ws.current.readyState !== WebSocket.OPEN) return
+
+    setMessages((prev) => [...prev, { role: 'user', content: transcript, timestamp: new Date() }])
+    setIsLoading(true)
+    setStreaming('')
+    setStreamingThinking('')
+    thinkingStartRef.current = null
+    isInsideThinkingRef.current = false
+    setRagStatus(null)
+    setToolTimeline([])
+    setPendingTools([])
+    setLiveToolStatus([])
+    setIntentInfo(null)
+
+    ws.current.send(JSON.stringify({
+      type: 'voice_with_video',
+      transcript,
+      frame,
+    }))
+  }, [])
+
   const clear = useCallback(() => {
     if (!ws.current || ws.current.readyState !== WebSocket.OPEN) return
     ws.current.send(JSON.stringify({ type: 'clear' }))
@@ -430,12 +455,14 @@ export function useWebSocket() {
     model,
     provider,
     project,
+    assistantName,
     ragStatus,
     toolTimeline,
     liveToolStatus,
     intentInfo,
     contextStats,
     send,
+    sendWithVideo,
     switchModel,
     switchProvider,
     clear,
