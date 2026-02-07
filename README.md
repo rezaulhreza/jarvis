@@ -19,6 +19,12 @@
 - **Tool Timeline UI**: Visual execution steps showing tool calls, duration, and results
 - **Thinking Blocks**: Collapsible reasoning visualization for thinking models (DeepSeek-R1, QwQ, etc.)
 - **Chat History**: Claude-style conversation sidebar with search, edit, and auto-titles
+- **Parallel Tool Execution**: Async tool executor runs multiple tools concurrently with live progress streaming
+- **Dynamic Tool Selection**: Intent-based scoring sends only 3-8 relevant tools per query instead of all 30+
+- **Multi-Agent Orchestrator**: Decomposes complex tasks into parallel subtasks handled by independent sub-agents
+- **Document Processing**: Intelligent chunking pipeline for PDF, DOCX, XLSX with RAG retrieval for large files
+- **Dynamic Context Budgets**: Proportional token allocation that adapts to any model size (4K to 1M+)
+- **Semantic History**: ChromaDB-backed retrieval of relevant past messages, not just recent ones
 - **Context Management**: Auto-compaction with LLM-powered summarization and context window tracking
 - **Fact Extraction**: Automatically learns facts about you from conversations
 - **Memory System**: Persistent SQLite storage with working memory and auto-compaction
@@ -698,7 +704,10 @@ jarvis/
 │   │   ├── context_manager.py  # Context + auto-compaction + SQLite
 │   │   ├── intent.py        # LLM-based intent classification
 │   │   ├── router.py        # Tool routing (intent + keyword fallback)
-│   │   ├── tools.py         # 35+ tool definitions for LLM
+│   │   ├── tools.py         # 35+ tool definitions + dynamic selection
+│   │   ├── tool_executor.py # Async parallel tool execution engine
+│   │   ├── orchestrator.py  # Multi-agent task decomposition
+│   │   ├── sub_agent.py     # Lightweight sub-agent for subtasks
 │   │   ├── fact_extractor.py  # Learns facts from conversations
 │   │   └── ollama_client.py # Legacy Ollama client
 │   ├── providers/           # LLM provider abstractions
@@ -718,6 +727,7 @@ jarvis/
 │   │   ├── notes.py         # Quick notes
 │   │   ├── telegram.py      # Telegram messaging
 │   │   ├── media_gen.py     # Image/video/music generation
+│   │   ├── document_processor.py  # PDF/DOCX/XLSX chunking + RAG
 │   │   ├── multi_model_analysis.py  # Multi-model parallel queries
 │   │   └── skill_creator.py # Dynamic skill creation
 │   ├── knowledge/           # RAG system
@@ -738,7 +748,7 @@ jarvis/
 │   ├── src/
 │   │   ├── App.tsx          # Main app (modes, settings, voice)
 │   │   ├── components/
-│   │   │   ├── chat/        # MessageBubble, MessageList, ThinkingBlock
+│   │   │   ├── chat/        # MessageBubble, MessageList, ThinkingBlock, ToolStatus
 │   │   │   ├── input/       # UnifiedInput, FileUpload, FilePreview
 │   │   │   ├── settings/    # SettingsPanel, SystemInstructions
 │   │   │   ├── orb/         # Animated orb (idle/listening/thinking)

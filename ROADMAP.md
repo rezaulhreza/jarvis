@@ -136,11 +136,50 @@ Transform Jarvis into a fully autonomous AI life management platform with:
 - [x] Push-to-talk mode in web UI
 - [x] Voice control widget in dashboard
 
+### Phase 4: Performance & Architecture Overhaul (2026-02-07)
+
+#### Async Parallel Tool Execution
+- [x] `AsyncToolExecutor` with `asyncio.gather()` and semaphore-based concurrency
+- [x] Wraps synchronous tools via `asyncio.to_thread()` for non-blocking execution
+- [x] `run_async()` async generator on Agent yielding progressive `AgentEvent` objects
+- [x] Live tool status streaming to frontend via WebSocket (`tool_start`, `tool_complete`)
+
+#### Dynamic Tool Selection
+- [x] `TOOL_REGISTRY` mapping tools to categories, intents, and keywords
+- [x] `select_tools()` sends 3-8 relevant tools per query instead of all 30+
+- [x] Intent-based scoring (3.0 for intent match, 1.0 per keyword) with category sibling inclusion
+
+#### Smart Context Management
+- [x] `ContextBudget` with proportional allocation (scales to any model: 4K to 1M+)
+- [x] Dynamic context length detection via `get_context_length()` on providers
+- [x] Ollama provider queries actual model metadata (`{arch}.context_length`)
+- [x] `embed_message()` auto-embeds all messages into ChromaDB
+- [x] `get_enriched_context()` combines recent + semantically relevant past messages
+- [x] Concurrent RAG search alongside tool detection
+
+#### Multi-Agent Orchestrator
+- [x] `AgentOrchestrator` decomposes complex tasks via LLM into parallel subtasks
+- [x] `SubAgent` - lightweight agent with limited tools and own context
+- [x] Dependency-aware execution (respects `depends_on` between subtasks)
+- [x] Orchestrator events forwarded to WebSocket for real-time progress
+- [x] Auto-detection via `should_orchestrate()` with complexity pattern matching
+
+#### Document Processing Pipeline
+- [x] `DocumentProcessor` for PDF, DOCX, XLSX, CSV, JSON, TXT
+- [x] Paragraph-boundary-aware chunking with configurable overlap
+- [x] Small docs (<15KB): direct context injection; large docs: chunk→embed→retrieve
+- [x] Replaces naive 15KB truncation in `analyze_document()`
+
+#### Frontend Performance
+- [x] `ToolStatus` component with live spinners, completion checkmarks, durations
+- [x] `React.memo()` on `MessageBubble` to prevent unnecessary re-renders
+- [x] WebSocket hook handles `tool_status` events and clears on completion
+
 ---
 
 ## In Progress
 
-### Phase 4: Polish & Stability
+### Phase 5: Polish & Stability
 
 #### UI Improvements
 - [ ] Chat history sidebar with search, edit, and auto-titles
@@ -153,7 +192,6 @@ Transform Jarvis into a fully autonomous AI life management platform with:
 - [ ] Anthropic provider implementation
 - [ ] OpenAI provider implementation
 - [ ] Gemini provider implementation
-- [ ] Streaming for Chutes TTS/STT
 - [ ] Better error recovery and retry logic
 - [ ] Connection health monitoring
 
@@ -167,7 +205,7 @@ Transform Jarvis into a fully autonomous AI life management platform with:
 
 ## Planned
 
-### Phase 5: Multi-User Support
+### Phase 6: Multi-User Support
 
 #### Authentication
 - [ ] User registration/login
@@ -188,7 +226,7 @@ Transform Jarvis into a fully autonomous AI life management platform with:
 - [ ] Input sanitization
 - [ ] HTTPS enforcement
 
-### Phase 6: Real Integrations
+### Phase 7: Real Integrations
 
 #### Calendar
 - [ ] Google Calendar API
@@ -217,7 +255,7 @@ Transform Jarvis into a fully autonomous AI life management platform with:
 - [ ] Workout tracking
 - [ ] Health metrics dashboard
 
-### Phase 7: Advanced AI Features
+### Phase 8: Advanced AI Features
 
 #### Model Orchestration
 - [ ] Task classification for optimal model selection
@@ -263,6 +301,18 @@ Transform Jarvis into a fully autonomous AI life management platform with:
 ---
 
 ## Progress Log
+
+### 2026-02-07
+- Added async parallel tool executor with concurrent execution
+- Added dynamic tool selection (intent-based, 3-8 tools per query)
+- Added async agent loop with progressive streaming
+- Added multi-agent orchestrator for complex task decomposition
+- Added document processing pipeline (PDF/DOCX/XLSX chunking + RAG)
+- Added dynamic context length detection from model metadata
+- Added semantic history retrieval via ChromaDB embeddings
+- Added proportional context budget (adapts to any model size)
+- Added live tool status UI with spinners and durations
+- Added React.memo optimization for message rendering
 
 ### 2026-02-05
 - Fixed ThinkingBlock rendering (content appeared as plain text)
