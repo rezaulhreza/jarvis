@@ -101,6 +101,14 @@ class BaseProvider(ABC):
         """Get help text for configuring this provider."""
         return f"{self.name} provider"
 
+    def get_context_length(self, model: str = None) -> int:
+        """Get the context window size for the current model in tokens.
+
+        Subclasses should override this to query the actual model.
+        Returns a safe default of 8192 if unknown.
+        """
+        return 8192
+
     # === Dynamic Model Discovery ===
 
     async def discover_models(self) -> List[ModelInfo]:

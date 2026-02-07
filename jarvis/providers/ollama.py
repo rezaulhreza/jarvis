@@ -104,6 +104,58 @@ class OllamaProvider(BaseProvider):
 
         return "unknown"
 
+    def get_context_length(self, model: str = None) -> int:
+        """Get the context window size by querying Ollama's model info."""
+        target = model or self.model
+        if not target or target == "pending":
+            return 8192
+
+        try:
+            response = self.client.show(target)
+
+            # Check modelinfo (Ollama uses 'modelinfo' not 'model_info')
+            # Keys are like 'qwen3.context_length', 'llama.context_length', etc.
+            modelinfo = getattr(response, 'modelinfo', None) or getattr(response, 'model_info', None)
+            if modelinfo and isinstance(modelinfo, dict):
+                for key, val in modelinfo.items():
+                    if 'context_length' in key.lower():
+                        return int(val)
+
+            # Check parameters string for user-set num_ctx override
+            params = getattr(response, 'parameters', None)
+            if params and isinstance(params, str):
+                for line in params.split('\n'):
+                    if 'num_ctx' in line:
+                        try:
+                            return int(line.split()[-1])
+                        except (ValueError, IndexError):
+                            pass
+
+            # Check modelfile for PARAMETER num_ctx
+            modelfile = getattr(response, 'modelfile', None)
+            if modelfile and isinstance(modelfile, str):
+                for line in modelfile.split('\n'):
+                    if 'num_ctx' in line.lower():
+                        parts = line.split()
+                        for i, part in enumerate(parts):
+                            if part.lower() == 'num_ctx' and i + 1 < len(parts):
+                                try:
+                                    return int(parts[i + 1])
+                                except (ValueError, IndexError):
+                                    pass
+
+            # Dict access fallback (older Ollama versions)
+            if isinstance(response, dict):
+                for info_key in ('modelinfo', 'model_info'):
+                    if info_key in response:
+                        for key, val in response[info_key].items():
+                            if 'context_length' in key.lower():
+                                return int(val)
+        except Exception:
+            pass
+
+        return 8192  # Safe default
+
     def _convert_tools_to_ollama(self, tools: List[Callable]) -> List[dict]:
         """Convert Python functions to Ollama tool format."""
         ollama_tools = []
