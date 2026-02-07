@@ -1,12 +1,14 @@
 import { useState, useEffect } from 'react'
 import { cn } from '../../lib/utils'
 import { SystemInstructions } from './SystemInstructions'
+import { MemoryPanel } from './MemoryPanel'
 import {
   X,
   Settings,
   Mic,
   Volume2,
   Brain,
+  BookOpen,
   Check,
   Link2,
   MessageCircle,
@@ -20,7 +22,7 @@ import type {
   ProviderInfo,
 } from '../../types'
 
-type SettingsTab = 'general' | 'voice' | 'stt' | 'integrations' | 'system'
+type SettingsTab = 'general' | 'voice' | 'stt' | 'integrations' | 'system' | 'memory'
 
 interface SettingsPanelProps {
   isOpen: boolean
@@ -89,6 +91,7 @@ export function SettingsPanel({
     { id: 'voice', label: 'TTS', icon: <Volume2 size={18} /> },
     { id: 'stt', label: 'STT', icon: <Mic size={18} /> },
     { id: 'integrations', label: 'Connect', icon: <Link2 size={18} /> },
+    { id: 'memory', label: 'Memory', icon: <BookOpen size={18} /> },
     { id: 'system', label: 'System', icon: <Settings size={18} /> },
   ]
 
@@ -179,6 +182,10 @@ export function SettingsPanel({
 
           {activeTab === 'integrations' && (
             <IntegrationsTab />
+          )}
+
+          {activeTab === 'memory' && (
+            <MemoryPanel />
           )}
 
           {activeTab === 'system' && (
