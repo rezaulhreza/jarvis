@@ -175,11 +175,54 @@ Transform Jarvis into a fully autonomous AI life management platform with:
 - [x] `React.memo()` on `MessageBubble` to prevent unnecessary re-renders
 - [x] WebSocket hook handles `tool_status` events and clears on completion
 
+### Phase 5: Developer Experience & Personalization (2026-02-07)
+
+#### Customizable Assistant Identity
+- [x] YAML frontmatter parsing in JARVIS.md for per-project assistant name
+- [x] Priority chain: project JARVIS.md > user config > default "Jarvis"
+- [x] System prompt dynamically uses configured name
+- [x] Frontend receives assistant name via WebSocket connection message
+- [x] `/init` command generates JARVIS.md template with name frontmatter
+
+#### Model Switch Context Preservation
+- [x] `context.set_provider()` called on model switch to update token budget
+- [x] `context.set_provider()` called on provider switch
+- [x] System prompt rebuilt after model/provider changes
+- [x] Context stats included in model/provider change WebSocket responses
+
+#### Auto-Memory (Fact Extraction)
+- [x] Async fact extraction in web UI via `asyncio.create_task()`
+- [x] Throttled to every 5 messages per session for efficiency
+- [x] Runs in background thread via `asyncio.to_thread()` (non-blocking)
+- [x] Integrated in all 3 response paths: fast chat, orchestrator, agent mode
+
+#### Memory Management UI
+- [x] REST API: GET/POST/PUT/DELETE `/api/memories` with facts.md parsing
+- [x] `MemoryPanel.tsx` with full CRUD, search, inline editing
+- [x] Category-colored badges (Job, Tech, Preference, Location, etc.)
+- [x] Memory tab added to SettingsPanel
+
+#### Agent Coding Skills (5 new tools)
+- [x] `apply_patch` - Apply unified diff patches to files
+- [x] `find_definition` - Find function/class definitions (Python, JS, TS, Rust, Go)
+- [x] `find_references` - Find all symbol usages with word-boundary matching
+- [x] `run_tests` - Auto-detect and run pytest, jest, vitest, cargo, go test
+- [x] `get_project_overview` - Rich project overview with tech stack and git history
+- [x] New `code` category group in TOOL_REGISTRY for code intelligence
+- [x] All tools registered in agent tool maps and validation schemas
+
+#### Voice + Video Chat
+- [x] `useCamera` hook for browser camera access and frame capture (320x240 JPEG)
+- [x] `sendWithVideo` WebSocket method for voice+video messages
+- [x] Camera toggle and picture-in-picture video preview in voice mode
+- [x] Backend `voice_with_video` handler: decode frame → vision analysis → respond
+- [x] Falls back to text-only if vision fails; auto-cleanup of temp frames
+
 ---
 
 ## In Progress
 
-### Phase 5: Polish & Stability
+### Phase 6: Polish & Stability
 
 #### UI Improvements
 - [ ] Chat history sidebar with search, edit, and auto-titles
@@ -205,7 +248,7 @@ Transform Jarvis into a fully autonomous AI life management platform with:
 
 ## Planned
 
-### Phase 6: Multi-User Support
+### Phase 7: Multi-User Support
 
 #### Authentication
 - [ ] User registration/login
@@ -226,7 +269,7 @@ Transform Jarvis into a fully autonomous AI life management platform with:
 - [ ] Input sanitization
 - [ ] HTTPS enforcement
 
-### Phase 7: Real Integrations
+### Phase 8: Real Integrations
 
 #### Calendar
 - [ ] Google Calendar API
@@ -255,7 +298,7 @@ Transform Jarvis into a fully autonomous AI life management platform with:
 - [ ] Workout tracking
 - [ ] Health metrics dashboard
 
-### Phase 8: Advanced AI Features
+### Phase 9: Advanced AI Features
 
 #### Model Orchestration
 - [ ] Task classification for optimal model selection
@@ -313,6 +356,12 @@ Transform Jarvis into a fully autonomous AI life management platform with:
 - Added proportional context budget (adapts to any model size)
 - Added live tool status UI with spinners and durations
 - Added React.memo optimization for message rendering
+- Added customizable assistant name via JARVIS.md frontmatter
+- Added model/provider switch context preservation
+- Added auto-memory fact extraction in web UI (throttled, async)
+- Added memory management UI panel with CRUD API
+- Added 5 agent coding skills (apply_patch, find_definition, find_references, run_tests, get_project_overview)
+- Added voice+video chat with camera frame capture and vision analysis
 
 ### 2026-02-05
 - Fixed ThinkingBlock rendering (content appeared as plain text)
