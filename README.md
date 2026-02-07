@@ -4,21 +4,31 @@
 
 <p align="center">
   A local-first personal AI assistant powered by Ollama.<br>
-  Features multiple providers, 29+ tools, persistent memory, switchable personas, web UI, and voice input.
+  Multi-provider support, 35+ tools, multimodal generation, intent-based routing, persistent memory, RAG, and voice I/O.
 </p>
 
 ## Features
 
-- **Multi-Provider Support**: Ollama (local), Claude, OpenAI, Gemini, and Ollama Cloud (remote)
-- **29+ Built-in Tools**: Web search, git operations, file ops, weather, gold prices, task management, and more
-- **Smart Auto-Tools**: Automatically searches the web for current events, prices, news, and real-time data
-- **Knowledge Base (RAG)**: Feed your own documents (PDF, TXT, MD) for personalized answers
+- **Multi-Provider Support**: Ollama (local), Ollama Cloud (remote), Chutes AI (comprehensive cloud platform)
+- **35+ Built-in Tools**: Web search, git operations, file ops, weather, gold prices, task management, multi-model analysis, and more
+- **Intent Classification**: LLM-based smart routing with heuristic fallback - automatically detects what you need
+- **Reasoning Levels**: Fast / Balanced / Deep - auto-detected per query or user-controlled
+- **Multimodal Generation**: Generate images (FLUX.1), videos (Wan2.1), and music (DiffRhythm) via Chutes AI
+- **Vision Analysis**: Analyze images using local Ollama vision models or Chutes cloud
+- **Knowledge Base (RAG)**: Feed your own documents (PDF, TXT, MD) with cross-encoder reranking for accurate retrieval
 - **Tool Timeline UI**: Visual execution steps showing tool calls, duration, and results
+- **Thinking Blocks**: Collapsible reasoning visualization for thinking models (DeepSeek-R1, QwQ, etc.)
 - **Chat History**: Claude-style conversation sidebar with search, edit, and auto-titles
-- **Memory System**: Conversation history with auto-compaction and persistent storage
-- **Personas**: Switch between different assistant modes (coder, researcher, creative, planner)
-- **Web UI**: Modern browser-based interface with `jarvis --dev`
-- **Voice Input**: Speech-to-text with Whisper and TTS with Edge/ElevenLabs
+- **Context Management**: Auto-compaction with LLM-powered summarization and context window tracking
+- **Fact Extraction**: Automatically learns facts about you from conversations
+- **Memory System**: Persistent SQLite storage with working memory and auto-compaction
+- **Personas**: Switch between assistant modes (default, coder, researcher, creative, planner)
+- **Dynamic Skills**: Create new tools at runtime - Jarvis can build its own skills
+- **Multi-Model Analysis**: Run queries through multiple AI models simultaneously and combine insights
+- **Web UI**: Modern React-based browser interface with real-time WebSocket communication
+- **Voice Input/Output**: Speech-to-text (Whisper/Chutes), text-to-speech (Browser/Edge/ElevenLabs/Kokoro)
+- **Telegram Bot**: Full-featured Telegram integration with 20+ commands
+- **Project Context**: Auto-detects project type and loads JARVIS.md/CLAUDE.md instructions
 
 ## Requirements
 
@@ -116,9 +126,10 @@ ollama pull qwen3:4b          # General purpose
 ollama pull nomic-embed-text  # Text embeddings
 
 # Optional
-ollama pull deepseek-r1:8b    # Deep reasoning
+ollama pull deepseek-r1:8b    # Deep reasoning (thinking model)
 ollama pull qwen2.5-coder:7b  # Code generation
-ollama pull llava             # Image understanding
+ollama pull llava             # Image understanding (vision)
+ollama pull llama3.2-vision   # Better vision model
 ```
 
 ### Web UI Setup (Additional Steps)
@@ -142,7 +153,10 @@ jarvis --dev
 ### CLI Mode (Default)
 
 ```bash
-jarvis
+jarvis                 # Interactive mode
+jarvis --fast          # Use fast reasoning level
+jarvis --deep          # Use deep reasoning level
+jarvis --level balanced  # Explicit reasoning level
 ```
 
 ### Web UI
@@ -157,6 +171,14 @@ jarvis --dev
 ```bash
 jarvis --voice
 # Requires: pip install jarvis-ai-assistant[voice]
+```
+
+### Single Query
+
+```bash
+jarvis chat "What's the weather in London?"
+jarvis chat "Explain recursion" --deep
+jarvis chat "What time is it?" --fast
 ```
 
 ### Telegram Bot
@@ -194,21 +216,6 @@ jarvis --dev
 
 Plus all regular chat capabilities - web search, tool execution, RAG, etc.
 
-### Web UI Features
-
-The web UI (`jarvis --dev`) includes:
-- **Chat/Agent toggle**: Fast chat mode or full agent mode with tools
-- **Tool Timeline**: Expandable panel showing each tool call, arguments, duration, and results
-- **Provider switching**: Change LLM provider on the fly
-- **Voice input/output**: Push-to-talk and auto-speak responses
-- **TTS options**: Browser, Edge TTS, or ElevenLabs voices
-
-### Single Query
-
-```bash
-jarvis chat "What's the weather in London?"
-```
-
 ### Other Commands
 
 ```bash
@@ -216,7 +223,25 @@ jarvis --help      # Show all options
 jarvis setup       # Run setup wizard
 jarvis models      # List Ollama models
 jarvis personas    # List personas
+jarvis --daemon    # Run as background daemon
 ```
+
+## Web UI Features
+
+The web UI (`jarvis --dev`) includes:
+
+- **Unified Smart Mode**: Auto-detects when to use fast chat vs full agent mode based on intent classification
+- **Reasoning Level Selector**: Fast (Zap) / Auto (Scale) / Deep (Brain) controls
+- **Tool Timeline**: Expandable panel showing each tool call, arguments, duration, and results
+- **Thinking Blocks**: Collapsible purple blocks showing model reasoning (for thinking models)
+- **Context Window Tracker**: Color-coded bar (blue < 60%, yellow 60-80%, red > 80%) showing token usage
+- **Media Generation**: Generate and preview images, videos, and audio inline
+- **File Attachments**: Drag-and-drop upload for vision analysis
+- **Provider Switching**: Change LLM provider and model on the fly
+- **Voice Input/Output**: Push-to-talk with multiple TTS/STT providers
+- **Dashboard Widgets**: Weather, time, system status, quick commands, voice control
+- **Settings Panel**: Provider configuration, voice settings, system instructions editor
+- **Animated Orb**: Visual feedback for idle/listening/speaking/thinking states
 
 ## CLI Commands
 
@@ -227,125 +252,81 @@ Inside the interactive CLI:
 | `/help` | Show help |
 | `/models` | List available models |
 | `/model <name>` | Switch to a different model |
-| `/provider <name>` | Switch provider (ollama, anthropic, openai, gemini) |
+| `/provider <name>` | Switch provider (ollama, ollama_cloud, chutes) |
 | `/persona <name>` | Switch persona |
 | `/personas` | List personas |
 | `/tools` | List available tools |
 | `/facts` | Show stored facts |
 | `/memory` | Show working memory |
+| `/context` | Show context window stats |
+| `/level` | Show/set reasoning level |
 | `/clear` | Clear conversation |
 | `/cls` | Clear screen |
 | `/init` | Create JARVIS.md project config |
 | `/history` | Show recent history |
 | `/quit` | Exit |
 
-## Troubleshooting
+## Architecture
 
-### `ResolutionImpossible` or dependency conflicts
+### Intent Classification System
 
-This usually means your Python version is too new (3.13+). Install Python 3.12:
-
-```bash
-# macOS
-brew install python@3.12
-
-# Recreate venv with correct Python
-cd ~/.jarvis/src
-/opt/homebrew/bin/python3.12 -m venv ../venv --clear
-source ../venv/bin/activate
-pip install -e ".[ui]"
-pip install python-multipart
-```
-
-### `vite: command not found`
-
-Node.js and frontend dependencies are missing:
-
-```bash
-brew install node
-cd ~/.jarvis/web
-npm install
-```
-
-### `python-multipart` error
-
-Install the missing dependency:
-
-```bash
-source ~/.jarvis/venv/bin/activate
-pip install python-multipart
-```
-
-### `jarvis: command not found`
-
-Either activate the virtual environment or add an alias:
-
-```bash
-# Option 1: Activate venv first
-source ~/.jarvis/venv/bin/activate
-jarvis
-
-# Option 2: Add alias to ~/.zshrc or ~/.bashrc
-echo 'alias jarvis="~/.jarvis/venv/bin/jarvis"' >> ~/.zshrc
-source ~/.zshrc
-```
-
-### Backend starts but frontend doesn't load
-
-Make sure both ports are accessible:
-- Backend: http://localhost:7777
-- Frontend: http://localhost:3000
-
-Check that `npm install` completed successfully in `~/.jarvis/web`.
-
-## Configuration
-
-Configuration is stored in `~/.jarvis/`:
+Jarvis uses an LLM-based intent classifier that replaces hardcoded keyword matching:
 
 ```
-~/.jarvis/
-├── config/
-│   ├── settings.yaml     # Main config
-│   ├── rules.md          # Safety rules
-│   └── personas/         # Persona definitions
-├── memory/
-│   ├── facts.md          # User facts
-│   └── jarvis.db         # SQLite history
-└── knowledge/
-    └── notes/            # Quick notes
+User Message → Intent Classifier → Route to appropriate handler
+                    │
+                    ├── Intent: CHAT, SEARCH, WEATHER, CODE, GIT, SHELL, ...
+                    ├── Confidence: 0.0 - 1.0
+                    ├── Reasoning Level: fast / balanced / deep
+                    └── Suggested Tools: [web_search, get_weather, ...]
 ```
 
-### Environment Variables
+**17 Intent Types**: CHAT, SEARCH, WEATHER, TIME_DATE, FILE_OP, CODE, GIT, SHELL, CALCULATE, RECALL, CONTROL, VISION, IMAGE_GEN, VIDEO_GEN, MUSIC_GEN, NEWS, FINANCE
 
-Create `~/.jarvis/.env`:
+### Smart Auto-Tools
 
-```bash
-# LLM Providers (optional - for cloud models)
-ANTHROPIC_API_KEY=your_key      # Claude
-OPENAI_API_KEY=your_key         # OpenAI
+Jarvis automatically detects when to use tools without being asked:
 
-# Web Search (highly recommended)
-BRAVE_API_KEY=your_key          # Brave Search - primary search provider
-                                 # Get free key at: https://brave.com/search/api/
+- **Current events**: "Who is the president?" → auto web search
+- **Prices**: "What's the gold price?" → auto GoldAPI lookup
+- **Weather**: "Weather in London" → auto weather lookup
+- **News**: "Latest tech news" → auto news search
+- **Time**: "What time is it in Tokyo?" → auto time lookup
+- **Images**: "Draw a sunset" → auto image generation
+- **Vision**: Attach an image → auto vision analysis
 
-# APIs (optional)
-GOLD_API_KEY=your_key           # GoldAPI.io - live gold/silver prices
-OPENWEATHER_API_KEY=your_key    # Weather data
-GITHUB_TOKEN=your_token         # GitHub integration
-
-# Voice (optional)
-ELEVEN_LABS_API_KEY=your_key    # ElevenLabs TTS
-
-# Telegram (optional)
-TELEGRAM_BOT_TOKEN=your_token
+Context-aware commands also work:
+```
+You: Tell me about the Mars mission
+Jarvis: [answers from knowledge]
+You: search the web
+Jarvis: [searches for "Mars mission" using previous context]
 ```
 
-## Available Tools (29+)
+### Provider System
+
+```
+┌─────────────────────────────────────────────────┐
+│               BaseProvider (ABC)                  │
+│  chat(), stream(), chat_with_tools(), vision()   │
+│  discover_models(), get_model_for_task()         │
+└──────────────┬────────────────┬─────────────────┘
+               │                │
+   ┌───────────┴──┐  ┌────────┴─────────┐  ┌───────────────┐
+   │    Ollama     │  │   OllamaCloud    │  │    Chutes      │
+   │  (local LLM)  │  │ (remote Ollama)  │  │ (cloud AI)     │
+   │  Tools: native│  │ Tools: native    │  │ LLM+TTS+STT   │
+   │  Vision: yes  │  │ Vision: yes      │  │ Image+Video    │
+   └──────────────┘  └──────────────────┘  │ Music+Vision   │
+                                            └───────────────┘
+```
+
+## Available Tools (35+)
 
 ### Web & Information
 | Tool | Description |
 |------|-------------|
-| `web_search` | Search with Brave (primary) or DuckDuckGo (fallback) |
+| `web_search` | Search with DuckDuckGo (default) or Brave |
 | `web_fetch` | Fetch and extract content from URLs |
 | `get_current_news` | Get latest news on a topic |
 | `get_weather` | Current weather (wttr.in or OpenWeatherMap) |
@@ -375,6 +356,15 @@ TELEGRAM_BOT_TOKEN=your_token
 | `git_branch` | List/create/switch branches |
 | `git_stash` | Stash changes |
 
+### Multimodal Generation
+| Tool | Description |
+|------|-------------|
+| `generate_image` | Generate images from text (FLUX.1-schnell via Chutes) |
+| `generate_video` | Generate videos from text/image (Wan2.1 via Chutes) |
+| `generate_music` | Generate music with optional lyrics (DiffRhythm via Chutes) |
+| `analyze_image` | Analyze images (Ollama vision or Chutes) |
+| `analyze_document` | Analyze document content |
+
 ### Task Management
 | Tool | Description |
 |------|-------------|
@@ -382,6 +372,12 @@ TELEGRAM_BOT_TOKEN=your_token
 | `task_update` | Update task status |
 | `task_list` | List all tasks |
 | `task_get` | Get task details |
+
+### Multi-Model Analysis
+| Tool | Description |
+|------|-------------|
+| `multi_model_analyze` | Run query through multiple AI models simultaneously |
+| `analyze_parallel` | Parallel analysis with different model types |
 
 ### Utilities
 | Tool | Description |
@@ -391,6 +387,7 @@ TELEGRAM_BOT_TOKEN=your_token
 | `save_memory` | Save information to memory |
 | `recall_memory` | Search saved memories |
 | `github_search` | Search GitHub repos/code |
+| `create_skill` | Dynamically create new skills |
 
 ## Knowledge Base (RAG)
 
@@ -399,8 +396,13 @@ Jarvis includes a RAG (Retrieval Augmented Generation) system that lets you feed
 ### How It Works
 
 ```
-Your Question → Search Knowledge Base → Find Relevant Chunks → Inject into Prompt → AI Answers
+Your Question → Embed Query → Vector Search (20 candidates) → Cross-Encoder Rerank → Top 5 → Inject into Prompt → AI Answers
 ```
+
+### Two-Stage Retrieval
+
+1. **Stage 1 - Fast Retrieval**: Bi-encoder embeddings search ChromaDB/Qdrant for top 20 candidates
+2. **Stage 2 - Accurate Reranking**: Cross-encoder (`ms-marco-MiniLM-L-6-v2`) scores each query-document pair for precise relevance
 
 ### Quick Start
 
@@ -432,55 +434,15 @@ jarvis knowledge sync --personal
 | `jarvis knowledge sync --personal` | Also sync ~/.jarvis/knowledge/personal/ |
 | `jarvis knowledge sync --projects` | Also sync project READMEs from ~/Developer/ |
 
-### Examples
-
-**Add your resume and ask about your skills:**
-```bash
-jarvis knowledge add ~/Desktop/resume.pdf
-# Added resume.pdf: 3 chunks
-
-jarvis
-> What are my skills?
-# Jarvis now answers using YOUR actual resume!
-```
-
-**Add project documentation:**
-```bash
-jarvis knowledge add ./docs/ --recursive
-# Added 5 documents
-
-jarvis
-> How does authentication work in this project?
-# Answers based on your actual docs
-```
-
-**Search your knowledge base:**
-```bash
-jarvis knowledge search "deployment process"
-# [1] deploy.md (distance: 0.3421)
-#     To deploy, run ./scripts/deploy.sh...
-```
-
 ### Personal Knowledge (Private)
 
 Store personal information outside of git:
 
 ```bash
-# Create personal knowledge directory
 mkdir -p ~/.jarvis/knowledge/personal
-
-# Add personal documents
 cp ~/Documents/notes.md ~/.jarvis/knowledge/personal/
-cp ~/Documents/cv.pdf ~/.jarvis/knowledge/personal/
-
-# Sync personal knowledge
 jarvis knowledge sync --personal
 ```
-
-Files in `~/.jarvis/knowledge/personal/` are:
-- Automatically indexed when you run `sync --personal`
-- Never committed to git
-- Perfect for personal info, credentials notes, private docs
 
 ### Supported File Types
 
@@ -490,42 +452,20 @@ Files in `~/.jarvis/knowledge/personal/` are:
 | Markdown | `.md` | Documentation, notes |
 | PDF | `.pdf` | Resumes, reports, books |
 
-### RAG in the Web UI
-
-When using the web UI (`jarvis --dev`), you'll see a RAG indicator during responses:
-
-- 🟢 **Green**: Knowledge found - shows sources used
-- 🟡 **Yellow**: Knowledge base exists but no relevant match
-- ⚫ **Gray**: No knowledge base configured
-- 🔴 **Red**: Error retrieving knowledge
-
 ### Configuration
 
 In `~/.jarvis/config/settings.yaml`:
 
 ```yaml
-models:
-  embeddings: nomic-embed-text  # Embedding model
-
 memory:
-  vector_store: knowledge/chroma_db  # ChromaDB storage path
-```
+  vector_store: knowledge/chroma_db
+  rerank: true
+  rerank_model: "cross-encoder/ms-marco-MiniLM-L-6-v2"
+  relevance_threshold: 0.5
+  embedding_dim: 768
 
-### How RAG Improves Answers
-
-**Without RAG:**
-```
-Q: What projects have I worked on?
-A: I don't have information about your projects.
-```
-
-**With RAG (after adding your resume):**
-```
-Q: What projects have I worked on?
-A: Based on your resume, you've worked on:
-   - E-commerce platform using Laravel and Vue.js
-   - CSV Importer handling million-row imports
-   - Flash-toast library for Livewire/Alpine
+models:
+  embeddings: nomic-embed-text
 ```
 
 ## Multi-Provider Support
@@ -540,42 +480,75 @@ provider: ollama
 providers:
   ollama:
     model: llama3.2
-  anthropic:
-    api_key: ${ANTHROPIC_API_KEY}
-    model: claude-sonnet-4-20250514
-  openai:
-    api_key: ${OPENAI_API_KEY}
-    model: gpt-4o
-  gemini:
-    api_key: ${GEMINI_API_KEY}
-    model: gemini-2.0-flash
   ollama_cloud:
     base_url: https://your-ollama-server.com
-    api_key: your_key  # if auth required
+    api_key: your_key
+  chutes:
+    api_key: ${CHUTES_API_KEY}
+    models:
+      default: "Qwen/Qwen3-32B"
+      reasoning: "deepseek-ai/DeepSeek-V3"
+      deep: "moonshotai/Kimi-K2.5-TEE"
+      vision: "Qwen/Qwen2.5-VL-72B-Instruct"
+      code: "Qwen/Qwen2.5-Coder-32B-Instruct"
+      fast: "unsloth/gemma-3-4b-it"
 ```
 
 Switch providers at runtime:
 ```bash
-/provider anthropic
 /provider ollama
+/provider chutes
+/provider ollama_cloud
 ```
 
-## Smart Auto-Tools
+## Configuration
 
-Jarvis automatically detects when to use tools without being asked:
+Configuration is stored in `~/.jarvis/`:
 
-- **Current events**: "Who is the president?" → auto web search
-- **Prices**: "What's the gold price?" → auto GoldAPI lookup
-- **Weather**: "Weather in London" → auto weather lookup
-- **News**: "Latest tech news" → auto news search
-- **Time**: "What time is it in Tokyo?" → auto time lookup
-
-Context-aware commands also work:
 ```
-You: Tell me about the Mars mission
-Jarvis: [answers from knowledge]
-You: search the web
-Jarvis: [searches for "Mars mission" using previous context]
+~/.jarvis/
+├── config/
+│   ├── settings.yaml     # Main config (models, providers, integrations)
+│   ├── rules.md          # Safety rules
+│   └── personas/         # Persona definitions
+├── memory/
+│   ├── facts.md          # Learned facts about user
+│   ├── entities.json     # Tracked entities
+│   └── jarvis.db         # SQLite conversation history
+├── knowledge/
+│   ├── personal/         # Personal docs (outside git)
+│   └── notes/            # Quick notes
+├── skills/               # User-created custom skills
+├── generated/            # Generated media files (auto-cleanup)
+└── logs/                 # Application logs
+```
+
+### Environment Variables
+
+Create `~/.jarvis/.env`:
+
+```bash
+# LLM Providers (optional - for cloud models)
+CHUTES_API_KEY=your_key        # Chutes AI (recommended for multimodal)
+
+# Web Search (highly recommended)
+BRAVE_API_KEY=your_key          # Brave Search - primary search provider
+                                 # Get free key at: https://brave.com/search/api/
+
+# APIs (optional)
+GOLD_API_KEY=your_key           # GoldAPI.io - live gold/silver prices
+OPENWEATHER_API_KEY=your_key    # Weather data
+GITHUB_TOKEN=your_token         # GitHub integration
+
+# Voice (optional)
+ELEVEN_LABS_API_KEY=your_key    # ElevenLabs TTS
+
+# Telegram (optional)
+TELEGRAM_BOT_TOKEN=your_token
+
+# Vector DB (optional - defaults to ChromaDB local)
+QDRANT_URL=your_url             # Qdrant cloud URL
+QDRANT_API_KEY=your_key         # Qdrant API key
 ```
 
 ## Customization
@@ -603,7 +576,20 @@ assistant:
 
 Switch with `/persona coder` or `jarvis persona coder`.
 
-## Adding Custom Skills
+### Project Context
+
+Jarvis auto-detects your project type and loads project-specific instructions:
+
+```bash
+# Create a JARVIS.md in any project root
+echo "Always use TypeScript. Prefer functional components." > JARVIS.md
+
+# Also supports: .jarvis/soul.md, .jarvis/instructions.md, CLAUDE.md
+```
+
+Detected project types: Python, Node.js, PHP/Laravel, Rust, Go
+
+### Adding Custom Skills
 
 Create `~/.jarvis/skills/my_skill.py`:
 
@@ -613,19 +599,63 @@ def my_function(param: str) -> dict:
     return {"success": True, "result": "..."}
 ```
 
-## Adding Custom Personas
-
-Create `~/.jarvis/config/personas/my_persona.md`:
-
-```markdown
-# My Persona
-
-You are Jarvis in custom mode.
-
-## Traits
-- Custom trait 1
-- Custom trait 2
+Or let Jarvis create them dynamically:
 ```
+You: Create a skill that fetches stock prices
+Jarvis: [creates ~/.jarvis/skills/fetch_stock_price.py]
+```
+
+## Troubleshooting
+
+### `ResolutionImpossible` or dependency conflicts
+
+This usually means your Python version is too new (3.13+). Install Python 3.12:
+
+```bash
+brew install python@3.12
+cd ~/.jarvis/src
+/opt/homebrew/bin/python3.12 -m venv ../venv --clear
+source ../venv/bin/activate
+pip install -e ".[ui]"
+pip install python-multipart
+```
+
+### `vite: command not found`
+
+Node.js and frontend dependencies are missing:
+
+```bash
+brew install node
+cd ~/.jarvis/web
+npm install
+```
+
+### `python-multipart` error
+
+```bash
+source ~/.jarvis/venv/bin/activate
+pip install python-multipart
+```
+
+### `jarvis: command not found`
+
+```bash
+# Option 1: Activate venv first
+source ~/.jarvis/venv/bin/activate
+jarvis
+
+# Option 2: Add alias
+echo 'alias jarvis="~/.jarvis/venv/bin/jarvis"' >> ~/.zshrc
+source ~/.zshrc
+```
+
+### Backend starts but frontend doesn't load
+
+Make sure both ports are accessible:
+- Backend: http://localhost:7777
+- Frontend: http://localhost:3000
+
+Check that `npm install` completed successfully in `~/.jarvis/web`.
 
 ## Development
 
@@ -650,43 +680,78 @@ cd ..
 ### Running in Dev Mode
 
 ```bash
-# Full dev environment (backend + frontend with hot reload)
 jarvis --dev
-
-# This starts:
-# - Backend at http://localhost:7777
-# - Frontend at http://localhost:3000 (with hot reload)
-```
-
-### Building for Production
-
-```bash
-# Build React frontend
-cd web && npm run build && cd ..
-
-# Run production server
-jarvis --dev
+# Backend at http://localhost:7777
+# Frontend at http://localhost:3000 (with hot reload)
 ```
 
 ### Project Structure
 
 ```
 jarvis/
-├── jarvis/              # Python backend
-│   ├── core/            # Agent, context, tools (29+ tools)
-│   ├── knowledge/       # RAG system (ChromaDB/Qdrant)
-│   ├── providers/       # LLM providers (Ollama, Claude, OpenAI, Gemini)
-│   ├── skills/          # Additional skills
-│   ├── auth/            # Provider auth helpers
-│   └── ui/              # FastAPI server + terminal UI
-├── web/                 # React frontend (Vite + TypeScript)
+├── jarvis/                  # Python backend (~6,000 lines)
+│   ├── __init__.py          # Package init, version, data dirs
+│   ├── assistant.py         # Main Jarvis class, ProjectContext
+│   ├── cli.py               # Click CLI entry point
+│   ├── core/                # Core engine
+│   │   ├── agent.py         # Agentic loop with tool calling
+│   │   ├── context_manager.py  # Context + auto-compaction + SQLite
+│   │   ├── intent.py        # LLM-based intent classification
+│   │   ├── router.py        # Tool routing (intent + keyword fallback)
+│   │   ├── tools.py         # 35+ tool definitions for LLM
+│   │   ├── fact_extractor.py  # Learns facts from conversations
+│   │   └── ollama_client.py # Legacy Ollama client
+│   ├── providers/           # LLM provider abstractions
+│   │   ├── base.py          # BaseProvider, Message, ModelInfo
+│   │   ├── ollama.py        # Local Ollama (tools, vision)
+│   │   ├── ollama_cloud.py  # Remote Ollama server
+│   │   └── chutes.py        # Chutes AI (LLM/TTS/STT/Image/Video/Music)
+│   ├── skills/              # Tool implementations
+│   │   ├── web_search.py    # DuckDuckGo/Brave search
+│   │   ├── file_ops.py      # File operations
+│   │   ├── shell.py         # Shell command execution
+│   │   ├── weather.py       # Weather (wttr.in/OpenWeather)
+│   │   ├── calculator.py    # Math calculations
+│   │   ├── datetime_ops.py  # Time/date operations
+│   │   ├── memory_ops.py    # Fact saving/retrieval
+│   │   ├── github_ops.py    # GitHub integration
+│   │   ├── notes.py         # Quick notes
+│   │   ├── telegram.py      # Telegram messaging
+│   │   ├── media_gen.py     # Image/video/music generation
+│   │   ├── multi_model_analysis.py  # Multi-model parallel queries
+│   │   └── skill_creator.py # Dynamic skill creation
+│   ├── knowledge/           # RAG system
+│   │   └── rag.py           # RAG engine (ChromaDB/Qdrant + reranking)
+│   ├── integrations/        # External integrations
+│   │   └── telegram_bot.py  # Full Telegram bot
+│   ├── auth/                # Auth helpers
+│   │   ├── credentials.py   # Credential management
+│   │   ├── claude.py        # Claude auth
+│   │   └── codex.py         # Codex auth
+│   ├── ui/                  # User interfaces
+│   │   ├── app.py           # FastAPI WebSocket server
+│   │   ├── terminal.py      # Rich terminal UI
+│   │   └── diff.py          # Diff view
+│   └── voice/               # Voice I/O
+│       └── voice_mode.py    # Whisper STT + system TTS
+├── web/                     # React frontend (~3,500 lines)
 │   ├── src/
-│   │   ├── components/  # React components
-│   │   └── hooks/       # WebSocket, voice hooks
-│   └── dist/            # Production build
-├── config/              # Default configuration templates
-├── docs/                # Documentation (synced to RAG)
-└── knowledge/           # Vector DB storage
+│   │   ├── App.tsx          # Main app (modes, settings, voice)
+│   │   ├── components/
+│   │   │   ├── chat/        # MessageBubble, MessageList, ThinkingBlock
+│   │   │   ├── input/       # UnifiedInput, FileUpload, FilePreview
+│   │   │   ├── settings/    # SettingsPanel, SystemInstructions
+│   │   │   ├── orb/         # Animated orb (idle/listening/thinking)
+│   │   │   ├── dashboard/   # DashboardView, WidgetCard
+│   │   │   └── widgets/     # Weather, Time, Status, Voice, Commands
+│   │   ├── hooks/           # useWebSocket, useVoice, useFileUpload, useWakeWord
+│   │   └── types/           # TypeScript interfaces
+│   └── dist/                # Production build
+├── config/                  # Default configuration templates
+│   ├── settings.yaml        # Default settings
+│   ├── rules.md             # Safety rules
+│   └── personas/            # Persona definitions
+└── docs/                    # Documentation
 ```
 
 ## License
