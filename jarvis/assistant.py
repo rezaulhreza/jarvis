@@ -89,6 +89,7 @@ class ProjectContext:
         self.project_name = self.project_root.name
         self.project_type = None
         self.git_branch = None
+        self.assistant_name = None  # Per-project assistant name from JARVIS.md
 
         self._load_project_config()
 
@@ -120,7 +121,22 @@ class ProjectContext:
         for path in soul_paths:
             if path.exists():
                 try:
-                    self.soul = path.read_text()[:5000]  # Limit size
+                    content = path.read_text()[:5000]
+                    self.soul = content
+
+                    # Parse YAML frontmatter for assistant name/config
+                    if content.startswith("---"):
+                        parts = content.split("---", 2)
+                        if len(parts) >= 3:
+                            try:
+                                frontmatter = yaml.safe_load(parts[1])
+                                if isinstance(frontmatter, dict):
+                                    if frontmatter.get("name"):
+                                        self.assistant_name = frontmatter["name"]
+                                    # Remove frontmatter from soul content
+                                    self.soul = parts[2].strip()
+                            except yaml.YAMLError:
+                                pass
                     break
                 except:
                     pass
@@ -292,9 +308,16 @@ class Jarvis:
         user_name = user_config.get("name", "")
         user_nickname = user_config.get("nickname", user_name or "")
 
+        # Determine assistant name (project override > config > default)
+        assistant_name = (
+            self.project.assistant_name
+            or self.config.get("assistant", {}).get("name")
+            or "Jarvis"
+        )
+
         # Build identity - direct and helpful assistant
         lines = [
-            "You are Jarvis - an intelligent AI coding assistant.",
+            f"You are {assistant_name} - an intelligent AI coding assistant.",
             "You're efficient, helpful, and your mission is to help your human write great code.",
             f"Currently working on '{self.project.project_name}'.",
         ]
@@ -545,6 +568,8 @@ personalize responses but keep it internal.
             self.config["provider"] = name
             self.config.setdefault("models", {})[name] = model
             save_config(self.config)
+            # Update context manager with new provider's context length
+            self.context.set_provider(new_provider)
             self.ui.print_success(f"Switched to {name} ({model})")
             return True
         except Exception as e:
@@ -556,6 +581,8 @@ personalize responses but keep it internal.
             self.provider.model = model
             self.config.setdefault("models", {})[self.provider.name] = model
             save_config(self.config)
+            # Update context manager with new model's context length
+            self.context.set_provider(self.provider)
             self.ui.print_success(f"Model: {model}")
             return True
         except Exception as e:
@@ -651,9 +678,14 @@ personalize responses but keep it internal.
                 if has_git:
                     git_info = f"\n- Git repository: Yes (branch: {self.project.git_branch or 'main'})"
 
-                jarvis_md_path.write_text(f"""# JARVIS.md
+                jarvis_md_path.write_text(f"""---
+name: Jarvis
+---
 
-This file provides instructions for Jarvis when working with this codebase.
+# JARVIS.md
+
+This file provides instructions for the assistant when working with this codebase.
+Change the 'name' field above to customize your assistant's name (e.g., Atlas, Friday, Nova).
 
 ## Project Overview
 
