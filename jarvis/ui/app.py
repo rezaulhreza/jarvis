@@ -818,6 +818,157 @@ RULES:
 
         return {"content": _get_default_system_prompt(), "isDefault": True}
 
+    # ============== Memories API ==============
+
+    def _parse_facts_file() -> list[dict]:
+        """Parse facts.md into structured memory items."""
+        from jarvis import get_data_dir
+        import re
+        facts_path = get_data_dir() / "memory" / "facts.md"
+        if not facts_path.exists():
+            return []
+
+        content = facts_path.read_text()
+        memories = []
+        current_category = "Other"
+        idx = 0
+
+        for line in content.split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+            # Section headers define categories
+            if line.startswith("## "):
+                current_category = line[3:].strip()
+                continue
+            if line.startswith("# "):
+                continue  # Skip top-level title
+
+            # Fact lines
+            if line.startswith("- ") or line.startswith("* "):
+                fact_text = line[2:].strip()
+
+                # Try to extract date from end like (2026-02-04)
+                date_match = re.search(r'\((\d{4}-\d{2}-\d{2})\)\s*$', fact_text)
+                learned_date = None
+                if date_match:
+                    learned_date = date_match.group(1)
+                    fact_text = fact_text[:date_match.start()].strip()
+
+                # Try to extract inline category like "Category: fact text"
+                category = current_category
+                if ":" in fact_text:
+                    parts = fact_text.split(":", 1)
+                    potential_cat = parts[0].strip()
+                    # Only treat as category if it's a short label
+                    if len(potential_cat) <= 25 and not potential_cat.startswith("http"):
+                        category = potential_cat
+                        fact_text = parts[1].strip()
+
+                memories.append({
+                    "id": idx,
+                    "category": category,
+                    "fact": fact_text,
+                    "date": learned_date,
+                    "section": current_category,
+                })
+                idx += 1
+
+        return memories
+
+    def _rebuild_facts_file(memories: list[dict]):
+        """Rebuild facts.md from structured memory items."""
+        from jarvis import get_data_dir
+        facts_path = get_data_dir() / "memory" / "facts.md"
+        facts_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Group by section
+        sections: dict[str, list[dict]] = {}
+        for mem in memories:
+            section = mem.get("section", mem.get("category", "Other"))
+            if section not in sections:
+                sections[section] = []
+            sections[section].append(mem)
+
+        lines = ["# Facts About User\n"]
+        for section, items in sections.items():
+            lines.append(f"\n## {section}")
+            for item in items:
+                date_str = f" ({item['date']})" if item.get("date") else ""
+                cat = item.get("category", "")
+                section_name = item.get("section", "")
+                # Include inline category if it differs from section
+                if cat and cat != section_name:
+                    lines.append(f"- {cat}: {item['fact']}{date_str}")
+                else:
+                    lines.append(f"- {item['fact']}{date_str}")
+        lines.append("")  # trailing newline
+
+        facts_path.write_text("\n".join(lines))
+
+    @app.get("/api/memories")
+    async def get_memories():
+        """Get all memories/facts."""
+        try:
+            memories = _parse_facts_file()
+            return {"memories": memories}
+        except Exception as e:
+            return JSONResponse(status_code=500, content={"error": str(e)})
+
+    @app.post("/api/memories")
+    async def add_memory(data: dict):
+        """Add a new memory."""
+        category = data.get("category", "Other")
+        fact = data.get("fact", "").strip()
+        if not fact:
+            return JSONResponse(status_code=400, content={"error": "Fact text is required"})
+
+        from datetime import datetime
+        memories = _parse_facts_file()
+        new_id = max((m["id"] for m in memories), default=-1) + 1
+        today = datetime.now().strftime("%Y-%m-%d")
+
+        # Map category to section
+        section = "Learned"
+        memories.append({
+            "id": new_id,
+            "category": category,
+            "fact": fact,
+            "date": today,
+            "section": section,
+        })
+
+        _rebuild_facts_file(memories)
+        return {"success": True, "memory": memories[-1]}
+
+    @app.put("/api/memories/{memory_id}")
+    async def update_memory(memory_id: int, data: dict):
+        """Update an existing memory."""
+        memories = _parse_facts_file()
+        for mem in memories:
+            if mem["id"] == memory_id:
+                if "category" in data:
+                    mem["category"] = data["category"]
+                if "fact" in data:
+                    mem["fact"] = data["fact"].strip()
+                _rebuild_facts_file(memories)
+                return {"success": True, "memory": mem}
+        return JSONResponse(status_code=404, content={"error": "Memory not found"})
+
+    @app.delete("/api/memories/{memory_id}")
+    async def delete_memory(memory_id: int):
+        """Delete a memory."""
+        memories = _parse_facts_file()
+        original_len = len(memories)
+        memories = [m for m in memories if m["id"] != memory_id]
+        if len(memories) == original_len:
+            return JSONResponse(status_code=404, content={"error": "Memory not found"})
+        # Re-index
+        for i, mem in enumerate(memories):
+            mem["id"] = i
+        _rebuild_facts_file(memories)
+        return {"success": True}
+
     # ============== Chat History API ==============
 
     @app.get("/api/chats")
@@ -1934,8 +2085,12 @@ RULES:
                     payload["parse_mode"] = parse_mode
                 await client.post(f"https://api.telegram.org/bot{token}/sendMessage", json=payload)
 
-    def get_assistant_name() -> str:
-        """Get configurable assistant name from settings."""
+    def get_assistant_name(jarvis_instance=None) -> str:
+        """Get configurable assistant name (project JARVIS.md > config > default)."""
+        # Check project-level override first
+        if jarvis_instance and hasattr(jarvis_instance, 'project'):
+            if jarvis_instance.project.assistant_name:
+                return jarvis_instance.project.assistant_name
         from jarvis.assistant import load_config
         config = load_config()
         return config.get("assistant", {}).get("name", "Jarvis")
@@ -2455,6 +2610,7 @@ Analyze queries using multiple AI models simultaneously.
                 "model": jarvis.provider.model,
                 "project": jarvis.project.project_name,
                 "projectRoot": str(jarvis.project.project_root),
+                "assistantName": get_assistant_name(jarvis),
             })
 
         except Exception as e:
@@ -2483,25 +2639,96 @@ Analyze queries using multiple AI models simultaneously.
                     model = data.get("model")
                     if model and jarvis:
                         jarvis.switch_model(model)
+                        # Rebuild system prompt (may change based on model capabilities)
+                        jarvis._build_system_prompt()
                         await websocket.send_json({
                             "type": "model_changed",
-                            "model": model
+                            "model": model,
+                            "context": _get_context_stats(jarvis),
                         })
 
                 elif msg_type == "switch_provider":
                     provider = data.get("provider")
                     if provider and jarvis:
                         jarvis.switch_provider(provider)
+                        # Rebuild system prompt for new provider
+                        jarvis._build_system_prompt()
                         await websocket.send_json({
                             "type": "provider_changed",
                             "provider": provider,
-                            "model": jarvis.provider.model
+                            "model": jarvis.provider.model,
+                            "context": _get_context_stats(jarvis),
                         })
 
                 elif msg_type == "clear":
                     if jarvis:
                         jarvis.context.clear()
                     await websocket.send_json({"type": "cleared"})
+
+                elif msg_type == "voice_with_video":
+                    transcript = data.get("transcript", "").strip()
+                    frame_b64 = data.get("frame")  # Base64 encoded JPEG frame
+
+                    if frame_b64 and jarvis:
+                        # Save frame temporarily
+                        from jarvis import get_data_dir
+                        frame_data = base64.b64decode(frame_b64)
+                        media_dir = get_data_dir() / "media"
+                        media_dir.mkdir(parents=True, exist_ok=True)
+                        frame_path = tempfile.NamedTemporaryFile(
+                            suffix='.jpg', delete=False, dir=str(media_dir)
+                        ).name
+                        with open(frame_path, 'wb') as f:
+                            f.write(frame_data)
+
+                        # Build prompt with visual context
+                        vision_prompt = (
+                            f"The user said: '{transcript}'. "
+                            "They are showing you their camera. "
+                            "Describe what you see and respond to what they said. "
+                            "Be conversational and brief."
+                        ) if transcript else (
+                            "The user is showing you their camera. "
+                            "Describe what you see briefly and conversationally."
+                        )
+
+                        # Use vision analysis
+                        try:
+                            from jarvis.skills.media_gen import analyze_image
+                            analysis = analyze_image(frame_path, vision_prompt)
+
+                            if analysis.get("success"):
+                                response_text = analysis.get("analysis", analysis.get("result", "I can see your camera feed but couldn't analyze the image."))
+                            else:
+                                response_text = analysis.get("error", "Vision analysis failed.")
+
+                            await websocket.send_json({
+                                "type": "stream",
+                                "content": response_text,
+                            })
+                            await websocket.send_json({
+                                "type": "response",
+                                "content": response_text,
+                                "done": True,
+                                "context": _get_context_stats(jarvis) if jarvis else None,
+                            })
+                        except Exception as e:
+                            # Fallback to text-only response if vision fails
+                            if transcript:
+                                await process_message(websocket, jarvis, transcript, True)
+                            else:
+                                await websocket.send_json({
+                                    "type": "error",
+                                    "message": f"Vision analysis failed: {str(e)}"
+                                })
+                        finally:
+                            try:
+                                os.unlink(frame_path)
+                            except Exception:
+                                pass
+                    elif transcript:
+                        # No frame, just process the transcript as a regular message
+                        await process_message(websocket, jarvis, transcript, True)
 
                 elif msg_type == "set_working_dir":
                     # Reinitialize with new working directory
@@ -2527,6 +2754,28 @@ Analyze queries using multiple AI models simultaneously.
         finally:
             connections.pop(session_id, None)
             instances.pop(session_id, None)
+
+    # Message counter for throttled fact extraction
+    _fact_extraction_counter: dict = {}
+
+    async def _extract_facts_async(jarvis, user_input: str, assistant_response: str):
+        """Extract facts from conversation in background (throttled to every 5 messages)."""
+        try:
+            session_id = id(jarvis)
+            _fact_extraction_counter[session_id] = _fact_extraction_counter.get(session_id, 0) + 1
+            if _fact_extraction_counter[session_id] % 5 != 0:
+                return
+
+            from jarvis.core.fact_extractor import get_fact_extractor
+            extractor = get_fact_extractor()
+            messages = [
+                {"role": "user", "content": user_input},
+                {"role": "assistant", "content": assistant_response}
+            ]
+            # Run in thread to avoid blocking event loop
+            await asyncio.to_thread(extractor.process_conversation, messages, jarvis.provider)
+        except Exception as e:
+            print(f"[app] Fact extraction error: {e}")
 
     def _get_context_stats(jarvis) -> dict:
         """Get context usage stats from jarvis instance."""
@@ -3492,6 +3741,9 @@ RULES:
                 if clean_response_text.strip():
                     jarvis.context.add_message_to_chat("assistant", clean_response_text.strip())
 
+                    # Auto-extract facts from conversation (async, non-blocking)
+                    asyncio.create_task(_extract_facts_async(jarvis, user_input, clean_response_text.strip()))
+
                 # Send response with context stats (use safe send in case connection closed)
                 response_msg = {
                     "type": "response",
@@ -3546,10 +3798,12 @@ RULES:
                                 response = event.result
 
                         if response:
-                            jarvis.context.add_message_to_chat("assistant", _clean_for_web(response))
+                            clean_orch = _clean_for_web(response)
+                            jarvis.context.add_message_to_chat("assistant", clean_orch)
+                            asyncio.create_task(_extract_facts_async(jarvis, user_input, clean_orch))
                             response_msg = {
                                 "type": "response",
-                                "content": _clean_for_web(response),
+                                "content": clean_orch,
                                 "done": True
                             }
                             context_stats = _get_context_stats(jarvis)
@@ -3674,6 +3928,9 @@ RULES:
                     clean = _clean_for_web(response)
                     if clean.strip():
                         jarvis.context.add_message_to_chat("assistant", clean.strip())
+
+                        # Auto-extract facts from conversation (async, non-blocking)
+                        asyncio.create_task(_extract_facts_async(jarvis, user_input, clean.strip()))
 
         except Exception as e:
             import traceback
