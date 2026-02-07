@@ -1590,6 +1590,524 @@ def recall_memory(query: str = "") -> str:
 # GITHUB
 # =============================================================================
 
+def apply_patch(file_path: str, patch: str) -> str:
+    """Apply a unified diff patch to a file. Use for multi-line code changes.
+
+    Args:
+        file_path: File path relative to project root, or absolute path
+        patch: Unified diff patch content to apply
+
+    Returns:
+        Success or error message
+    """
+    global _PROJECT_ROOT, _READ_FILES
+
+    try:
+        import tempfile
+
+        if file_path.startswith('/'):
+            target = Path(file_path)
+        else:
+            target = _PROJECT_ROOT / file_path
+
+        if not target.exists():
+            return f"Error: File not found: {file_path}"
+
+        # Require the file was read first
+        resolved = str(target.resolve())
+        if resolved not in _READ_FILES:
+            return f"Error: You must read_file('{file_path}') first before patching it."
+
+        # Write patch to a temp file
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.patch', delete=False) as tmp:
+            tmp.write(patch)
+            patch_file = tmp.name
+
+        try:
+            # Try to apply with patch command
+            result = subprocess.run(
+                ["patch", "--no-backup-if-mismatch", "-p0", str(target)],
+                input=patch,
+                capture_output=True,
+                text=True,
+                cwd=_PROJECT_ROOT,
+                timeout=30
+            )
+
+            if result.returncode == 0:
+                return f"Successfully applied patch to {file_path}"
+            else:
+                # Try with -p1 (strip leading path component)
+                result2 = subprocess.run(
+                    ["patch", "--no-backup-if-mismatch", "-p1", str(target)],
+                    input=patch,
+                    capture_output=True,
+                    text=True,
+                    cwd=_PROJECT_ROOT,
+                    timeout=30
+                )
+                if result2.returncode == 0:
+                    return f"Successfully applied patch to {file_path}"
+
+                error = result.stderr.strip() or result.stdout.strip()
+                return f"Error applying patch: {error}"
+        finally:
+            os.unlink(patch_file)
+
+    except FileNotFoundError:
+        return "Error: 'patch' command not found. Install it or use edit_file instead."
+    except subprocess.TimeoutExpired:
+        return "Error: Patch command timed out"
+    except Exception as e:
+        return f"Error applying patch: {e}"
+
+
+def find_definition(symbol: str, file_path: str = None) -> str:
+    """Find where a function, class, or variable is defined in the project.
+
+    Args:
+        symbol: The name of the function, class, or variable to find
+        file_path: Optional specific file to search in (relative or absolute)
+
+    Returns:
+        File paths and line numbers where the symbol is defined
+    """
+    global _PROJECT_ROOT
+
+    if not symbol or not symbol.strip():
+        return "Error: No symbol name provided"
+
+    symbol = symbol.strip()
+
+    try:
+        # Build search patterns for common definition forms
+        patterns = [
+            f"def {symbol}\\b",            # Python function
+            f"class {symbol}\\b",           # Python/JS/TS class
+            f"async def {symbol}\\b",       # Python async function
+            f"function {symbol}\\b",        # JavaScript function
+            f"const {symbol}\\s*=",         # JS/TS const
+            f"let {symbol}\\s*=",           # JS/TS let
+            f"var {symbol}\\s*=",           # JS/TS var
+            f"export\\s+(default\\s+)?function {symbol}\\b",  # JS export function
+            f"export\\s+(default\\s+)?class {symbol}\\b",     # JS export class
+            f"export\\s+const {symbol}\\b",                    # JS export const
+            f"fn {symbol}\\b",              # Rust function
+            f"struct {symbol}\\b",          # Rust/Go/C struct
+            f"func {symbol}\\b",            # Go function
+            f"type {symbol}\\b",            # Go/TS type
+            f"interface {symbol}\\b",       # TS/Java interface
+            f"enum {symbol}\\b",            # Enum definition
+            f"{symbol}\\s*=\\s*",           # Generic variable assignment (Python top-level)
+        ]
+
+        combined_pattern = "|".join(patterns)
+
+        # Determine search path
+        if file_path:
+            if file_path.startswith('/'):
+                search_path = file_path
+            else:
+                search_path = str(_PROJECT_ROOT / file_path)
+        else:
+            search_path = str(_PROJECT_ROOT)
+
+        cmd = ["grep", "-rn", "-E", combined_pattern]
+
+        # Exclude common non-code directories
+        for exclude in ['node_modules', '.git', '__pycache__', 'venv', '.venv', 'dist', 'build', '.next', 'site-packages']:
+            cmd.extend(["--exclude-dir", exclude])
+
+        # Exclude binary/non-code files
+        cmd.extend(["--include=*.py", "--include=*.js", "--include=*.ts", "--include=*.tsx",
+                     "--include=*.jsx", "--include=*.go", "--include=*.rs", "--include=*.java",
+                     "--include=*.cpp", "--include=*.c", "--include=*.h", "--include=*.rb",
+                     "--include=*.php", "--include=*.swift", "--include=*.kt"])
+
+        cmd.append(search_path)
+
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+
+        if result.stdout:
+            lines = result.stdout.strip().split('\n')
+            # Format and deduplicate
+            seen = set()
+            formatted = []
+            for line in lines[:30]:
+                if line not in seen:
+                    seen.add(line)
+                    formatted.append(line)
+
+            if formatted:
+                return f"Definitions of '{symbol}':\n" + "\n".join(formatted)
+
+        return f"No definition found for '{symbol}'"
+
+    except subprocess.TimeoutExpired:
+        return "Error: Search timed out"
+    except Exception as e:
+        return f"Error: {e}"
+
+
+def find_references(symbol: str, file_path: str = None) -> str:
+    """Find all references/usages of a symbol across the project.
+
+    Args:
+        symbol: The symbol name to search for
+        file_path: Optional specific file to search in (relative or absolute)
+
+    Returns:
+        File paths, line numbers, and context where the symbol is used (limited to 30 results)
+    """
+    global _PROJECT_ROOT
+
+    if not symbol or not symbol.strip():
+        return "Error: No symbol name provided"
+
+    symbol = symbol.strip()
+
+    try:
+        # Determine search path
+        if file_path:
+            if file_path.startswith('/'):
+                search_path = file_path
+            else:
+                search_path = str(_PROJECT_ROOT / file_path)
+        else:
+            search_path = str(_PROJECT_ROOT)
+
+        # Use word-boundary matching for accurate results
+        cmd = ["grep", "-rn", "-w", symbol]
+
+        # Exclude common non-code directories
+        for exclude in ['node_modules', '.git', '__pycache__', 'venv', '.venv', 'dist', 'build', '.next', 'site-packages']:
+            cmd.extend(["--exclude-dir", exclude])
+
+        # Exclude binary files
+        cmd.append("-I")
+
+        cmd.append(search_path)
+
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+
+        if result.stdout:
+            lines = result.stdout.strip().split('\n')
+
+            # Limit to 30 results
+            total = len(lines)
+            lines = lines[:30]
+
+            output = f"References to '{symbol}' ({total} total):\n"
+            output += "\n".join(lines)
+
+            if total > 30:
+                output += f"\n\n... and {total - 30} more matches"
+
+            return output
+
+        return f"No references found for '{symbol}'"
+
+    except subprocess.TimeoutExpired:
+        return "Error: Search timed out"
+    except Exception as e:
+        return f"Error: {e}"
+
+
+def run_tests(test_path: str = None, framework: str = None) -> str:
+    """Run project tests. Auto-detects framework (pytest, jest, vitest, cargo test, go test).
+
+    Args:
+        test_path: Optional path to specific test file or directory
+        framework: Optional framework override ("pytest", "jest", "vitest", "cargo", "go")
+
+    Returns:
+        Test results output (truncated to 3000 chars)
+    """
+    global _PROJECT_ROOT
+
+    try:
+        cmd = None
+        detected = None
+
+        if framework:
+            framework = framework.lower().strip()
+            if framework == "pytest":
+                cmd = ["python", "-m", "pytest", "-v"]
+            elif framework == "jest":
+                cmd = ["npx", "jest"]
+            elif framework == "vitest":
+                cmd = ["npx", "vitest", "run"]
+            elif framework == "cargo":
+                cmd = ["cargo", "test"]
+            elif framework == "go":
+                cmd = ["go", "test", "./..."]
+            else:
+                return f"Error: Unknown framework '{framework}'. Use: pytest, jest, vitest, cargo, go"
+        else:
+            # Auto-detect test framework
+            # Check for Python (pytest)
+            if ((_PROJECT_ROOT / "pytest.ini").exists() or
+                (_PROJECT_ROOT / "pyproject.toml").exists() or
+                (_PROJECT_ROOT / "setup.cfg").exists() or
+                (_PROJECT_ROOT / "setup.py").exists() or
+                list(_PROJECT_ROOT.glob("tests/**/*.py")) or
+                list(_PROJECT_ROOT.glob("test_*.py"))):
+                cmd = ["python", "-m", "pytest", "-v"]
+                detected = "pytest"
+
+            # Check for Node.js (jest/vitest)
+            elif (_PROJECT_ROOT / "package.json").exists():
+                try:
+                    pkg = json.loads((_PROJECT_ROOT / "package.json").read_text())
+                    scripts = pkg.get("scripts", {})
+                    deps = {**pkg.get("dependencies", {}), **pkg.get("devDependencies", {})}
+
+                    if "vitest" in deps or "vitest" in scripts.get("test", ""):
+                        cmd = ["npx", "vitest", "run"]
+                        detected = "vitest"
+                    elif "jest" in deps or "jest" in scripts.get("test", ""):
+                        cmd = ["npx", "jest"]
+                        detected = "jest"
+                    elif "test" in scripts:
+                        cmd = ["npm", "test"]
+                        detected = "npm test"
+                except (json.JSONDecodeError, Exception):
+                    cmd = ["npm", "test"]
+                    detected = "npm test"
+
+            # Check for Rust (cargo)
+            elif (_PROJECT_ROOT / "Cargo.toml").exists():
+                cmd = ["cargo", "test"]
+                detected = "cargo test"
+
+            # Check for Go
+            elif (_PROJECT_ROOT / "go.mod").exists():
+                cmd = ["go", "test", "./..."]
+                detected = "go test"
+
+        if not cmd:
+            return "Error: Could not detect test framework. No pytest, package.json, Cargo.toml, or go.mod found. Use framework parameter to specify."
+
+        # Add test path if provided
+        if test_path:
+            if test_path.startswith('/'):
+                cmd.append(test_path)
+            else:
+                cmd.append(str(_PROJECT_ROOT / test_path))
+
+        info = f"Running tests" + (f" ({detected})" if detected else "") + "...\n"
+
+        result = subprocess.run(
+            cmd,
+            cwd=_PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=120  # Tests may take longer
+        )
+
+        output = result.stdout + result.stderr
+        if not output:
+            output = "(no output)"
+
+        # Truncate to 3000 chars
+        if len(output) > 3000:
+            # Keep first 1500 and last 1500 chars
+            output = output[:1500] + "\n\n... [TRUNCATED] ...\n\n" + output[-1500:]
+
+        status = "PASSED" if result.returncode == 0 else "FAILED"
+        return f"{info}Status: {status} (exit code {result.returncode})\n\n{output}"
+
+    except subprocess.TimeoutExpired:
+        return "Error: Tests timed out (120s limit)"
+    except FileNotFoundError as e:
+        return f"Error: Test command not found: {e}"
+    except Exception as e:
+        return f"Error running tests: {e}"
+
+
+def get_project_overview() -> str:
+    """Get project structure overview: directory tree, key files, tech stack detection.
+
+    Returns:
+        Formatted overview with project structure, key files, and detected tech stack
+    """
+    global _PROJECT_ROOT
+
+    try:
+        sections = []
+        excludes = {'.git', 'node_modules', '__pycache__', 'venv', '.venv', '.next',
+                    'dist', 'build', '.idea', '.vscode', 'site-packages', '.mypy_cache',
+                    '.pytest_cache', '.tox', 'coverage', '.coverage', 'htmlcov', 'egg-info'}
+
+        # === Project Name ===
+        sections.append(f"Project: {_PROJECT_ROOT.name}")
+        sections.append(f"Path: {_PROJECT_ROOT}")
+        sections.append("")
+
+        # === Tech Stack Detection ===
+        tech_stack = []
+
+        # Python
+        if (_PROJECT_ROOT / "pyproject.toml").exists() or (_PROJECT_ROOT / "setup.py").exists():
+            tech_stack.append("Python")
+            pyproject = _PROJECT_ROOT / "pyproject.toml"
+            if pyproject.exists():
+                try:
+                    content = pyproject.read_text()
+                    if "fastapi" in content.lower():
+                        tech_stack.append("FastAPI")
+                    if "django" in content.lower():
+                        tech_stack.append("Django")
+                    if "flask" in content.lower():
+                        tech_stack.append("Flask")
+                    if "pytest" in content.lower():
+                        tech_stack.append("pytest")
+                except Exception:
+                    pass
+
+        # Node.js/JavaScript/TypeScript
+        pkg_json = _PROJECT_ROOT / "package.json"
+        if pkg_json.exists():
+            try:
+                pkg = json.loads(pkg_json.read_text())
+                deps = {**pkg.get("dependencies", {}), **pkg.get("devDependencies", {})}
+                if "react" in deps:
+                    tech_stack.append("React")
+                if "vue" in deps:
+                    tech_stack.append("Vue")
+                if "next" in deps:
+                    tech_stack.append("Next.js")
+                if "typescript" in deps:
+                    tech_stack.append("TypeScript")
+                elif list(_PROJECT_ROOT.rglob("*.ts"))[:1]:
+                    tech_stack.append("TypeScript")
+                if "tailwindcss" in deps:
+                    tech_stack.append("Tailwind CSS")
+                if "vite" in deps:
+                    tech_stack.append("Vite")
+                if "jest" in deps:
+                    tech_stack.append("Jest")
+                if "vitest" in deps:
+                    tech_stack.append("Vitest")
+            except Exception:
+                tech_stack.append("Node.js")
+
+        # Rust
+        if (_PROJECT_ROOT / "Cargo.toml").exists():
+            tech_stack.append("Rust")
+
+        # Go
+        if (_PROJECT_ROOT / "go.mod").exists():
+            tech_stack.append("Go")
+
+        # Docker
+        if (_PROJECT_ROOT / "Dockerfile").exists() or (_PROJECT_ROOT / "docker-compose.yml").exists():
+            tech_stack.append("Docker")
+
+        if tech_stack:
+            sections.append(f"Tech Stack: {', '.join(tech_stack)}")
+            sections.append("")
+
+        # === Key Files ===
+        key_files = []
+        key_file_names = [
+            "README.md", "README.rst", "README.txt",
+            "package.json", "pyproject.toml", "setup.py", "setup.cfg",
+            "Cargo.toml", "go.mod", "Makefile", "CMakeLists.txt",
+            "Dockerfile", "docker-compose.yml", "docker-compose.yaml",
+            ".env.example", ".gitignore",
+            "tsconfig.json", "vite.config.ts", "vite.config.js",
+            "webpack.config.js", "next.config.js", "next.config.mjs",
+            "tailwind.config.js", "tailwind.config.ts",
+            "requirements.txt", "Pipfile", "poetry.lock",
+        ]
+        for name in key_file_names:
+            if (_PROJECT_ROOT / name).exists():
+                size = (_PROJECT_ROOT / name).stat().st_size
+                if size > 1024 * 1024:
+                    size_str = f"{size / (1024*1024):.1f}MB"
+                elif size > 1024:
+                    size_str = f"{size / 1024:.1f}KB"
+                else:
+                    size_str = f"{size}B"
+                key_files.append(f"  {name} ({size_str})")
+
+        if key_files:
+            sections.append("Key Files:")
+            sections.extend(key_files)
+            sections.append("")
+
+        # === Directory Tree (depth 3) ===
+        sections.append("Directory Structure:")
+
+        def add_tree(path: Path, prefix: str = "  ", depth: int = 0):
+            if depth > 3:
+                return
+
+            try:
+                items = sorted(path.iterdir())
+            except PermissionError:
+                return
+
+            dirs = [i for i in items if i.is_dir() and not i.name.startswith('.') and i.name not in excludes]
+            files = [i for i in items if i.is_file() and not i.name.startswith('.')]
+
+            # Show files at this level (limit per directory)
+            for f in files[:8]:
+                sections.append(f"{prefix}{f.name}")
+            if len(files) > 8:
+                sections.append(f"{prefix}... and {len(files) - 8} more files")
+
+            # Recurse into directories
+            for d in dirs[:8]:
+                child_count = sum(1 for _ in d.iterdir()) if d.exists() else 0
+                sections.append(f"{prefix}{d.name}/ ({child_count} items)")
+                add_tree(d, prefix + "  ", depth + 1)
+            if len(dirs) > 8:
+                sections.append(f"{prefix}... and {len(dirs) - 8} more directories")
+
+        add_tree(_PROJECT_ROOT)
+
+        # === Git Info ===
+        try:
+            branch_result = subprocess.run(
+                ["git", "branch", "--show-current"],
+                cwd=_PROJECT_ROOT,
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            if branch_result.returncode == 0:
+                branch = branch_result.stdout.strip()
+                sections.append("")
+                sections.append(f"Git Branch: {branch}")
+
+                # Recent commits
+                log_result = subprocess.run(
+                    ["git", "log", "-5", "--oneline"],
+                    cwd=_PROJECT_ROOT,
+                    capture_output=True,
+                    text=True,
+                    timeout=10
+                )
+                if log_result.returncode == 0 and log_result.stdout.strip():
+                    sections.append("Recent Commits:")
+                    for line in log_result.stdout.strip().split('\n')[:5]:
+                        sections.append(f"  {line}")
+        except Exception:
+            pass
+
+        # Limit total output
+        output = "\n".join(sections)
+        if len(output) > 5000:
+            output = output[:5000] + "\n\n... [TRUNCATED]"
+
+        return output
+
+    except Exception as e:
+        return f"Error getting project overview: {e}"
+
+
 def github_search(query: str, search_type: str = "repos") -> str:
     """Search GitHub for repositories, code, issues, or users.
 
@@ -1633,6 +2151,12 @@ ALL_TOOLS = [
     get_project_structure,
     glob_files,
     grep,
+    # Code intelligence
+    apply_patch,
+    find_definition,
+    find_references,
+    run_tests,
+    get_project_overview,
     # Git operations
     git_status,
     git_diff,
@@ -1681,6 +2205,11 @@ _TOOL_FUNC_TO_NAME = {
     get_project_structure: "get_project_structure",
     glob_files: "glob_files",
     grep: "grep",
+    apply_patch: "apply_patch",
+    find_definition: "find_definition",
+    find_references: "find_references",
+    run_tests: "run_tests",
+    get_project_overview: "get_project_overview",
     git_status: "git_status",
     git_diff: "git_diff",
     git_log: "git_log",
@@ -1715,6 +2244,12 @@ TOOL_REGISTRY = {
     "get_project_structure": {"category": "file", "intents": ["file_op", "code"], "keywords": ["structure", "tree", "project", "overview"]},
     "glob_files":       {"category": "file", "intents": ["file_op", "code"],     "keywords": ["glob", "find", "pattern", "files"]},
     "grep":             {"category": "file", "intents": ["file_op", "code"],     "keywords": ["grep", "search", "regex", "pattern"]},
+    # Code intelligence
+    "apply_patch":      {"category": "code", "intents": ["code", "file_op"],     "keywords": ["patch", "diff", "apply", "unified"]},
+    "find_definition":  {"category": "code", "intents": ["code"],               "keywords": ["define", "definition", "where", "find", "declaration", "declared"]},
+    "find_references":  {"category": "code", "intents": ["code"],               "keywords": ["reference", "usage", "used", "import", "call", "caller"]},
+    "run_tests":        {"category": "code", "intents": ["code", "shell"],       "keywords": ["test", "tests", "pytest", "jest", "spec", "vitest"]},
+    "get_project_overview": {"category": "code", "intents": ["code", "file_op"], "keywords": ["overview", "structure", "project", "codebase", "tech stack"]},
     # Git operations
     "git_status":       {"category": "git",  "intents": ["git"],                 "keywords": ["status", "git", "changes"]},
     "git_diff":         {"category": "git",  "intents": ["git"],                 "keywords": ["diff", "changes", "modified"]},
@@ -1754,6 +2289,7 @@ _ALWAYS_INCLUDE = {"web_search", "calculate"}
 # Category groups - when one tool from a category is relevant, include related ones
 _CATEGORY_GROUPS = {
     "file": ["read_file", "list_files", "search_files", "write_file", "edit_file", "glob_files", "grep", "get_project_structure"],
+    "code": ["read_file", "write_file", "edit_file", "apply_patch", "find_definition", "find_references", "run_tests", "get_project_overview", "grep", "glob_files"],
     "git": ["git_status", "git_diff", "git_log", "git_commit", "git_add", "git_branch", "git_stash"],
     "web": ["web_search", "web_fetch", "get_current_news"],
     "task": ["task_create", "task_update", "task_list", "task_get"],

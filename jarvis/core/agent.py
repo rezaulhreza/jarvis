@@ -19,6 +19,8 @@ from .tools import (
     clear_read_files, ALL_TOOLS, select_tools,
     # File operations
     glob_files, grep,
+    # Code intelligence
+    apply_patch, find_definition, find_references, run_tests, get_project_overview,
     # Git operations
     git_status, git_diff, git_log, git_commit, git_add, git_branch, git_stash,
     # Web
@@ -662,6 +664,13 @@ FILES:
   edit_file       - {"tool": "edit_file", "path": "file", "old_string": "find", "new_string": "replace"}
   get_project_structure - {"tool": "get_project_structure"}
 
+CODE INTELLIGENCE:
+  apply_patch     - {"tool": "apply_patch", "file_path": "file", "patch": "unified diff content"}
+  find_definition - {"tool": "find_definition", "symbol": "function_name"}
+  find_references - {"tool": "find_references", "symbol": "class_name"}
+  run_tests       - {"tool": "run_tests", "test_path": "tests/", "framework": "pytest"}
+  get_project_overview - {"tool": "get_project_overview"}
+
 GIT:
   git_status      - {"tool": "git_status"}
   git_diff        - {"tool": "git_diff", "staged": false}
@@ -830,6 +839,35 @@ RULES:
             stype = args.get("search_type", "repos")
             return f"GitHub: {stype} '{query}'"
 
+        # Code intelligence
+        elif tool_name == "apply_patch":
+            path = args.get("file_path", "file")
+            return f"Apply patch to {path}"
+
+        elif tool_name == "find_definition":
+            symbol = args.get("symbol", "")
+            file = args.get("file_path", "")
+            if file:
+                return f"Find definition: '{symbol}' in {file}"
+            return f"Find definition: '{symbol}'"
+
+        elif tool_name == "find_references":
+            symbol = args.get("symbol", "")
+            file = args.get("file_path", "")
+            if file:
+                return f"Find references: '{symbol}' in {file}"
+            return f"Find references: '{symbol}'"
+
+        elif tool_name == "run_tests":
+            path = args.get("test_path", "")
+            framework = args.get("framework", "")
+            if path:
+                return f"Run tests: {path}" + (f" ({framework})" if framework else "")
+            return f"Run tests" + (f" ({framework})" if framework else "")
+
+        elif tool_name == "get_project_overview":
+            return "Get project overview"
+
         # Git operations
         elif tool_name == "git_status":
             return "Git status"
@@ -930,6 +968,11 @@ RULES:
             "task_update": {"required": ["task_id"], "types": {"task_id": str}},
             "task_get": {"required": ["task_id"], "types": {"task_id": str}},
             "github_search": {"required": ["query"], "types": {"query": str}},
+            "apply_patch": {"required": ["file_path", "patch"], "types": {"file_path": str, "patch": str}},
+            "find_definition": {"required": ["symbol"], "types": {"symbol": str}},
+            "find_references": {"required": ["symbol"], "types": {"symbol": str}},
+            "run_tests": {"required": [], "types": {"test_path": str, "framework": str}},
+            "get_project_overview": {"required": [], "types": {}},
         }
 
         schema = tool_schemas.get(tool_name)
@@ -975,6 +1018,12 @@ RULES:
             "get_project_structure": get_project_structure,
             "glob_files": glob_files,
             "grep": grep,
+            # Code intelligence
+            "apply_patch": apply_patch,
+            "find_definition": find_definition,
+            "find_references": find_references,
+            "run_tests": run_tests,
+            "get_project_overview": get_project_overview,
             # Git operations
             "git_status": git_status,
             "git_diff": git_diff,
@@ -1505,6 +1554,11 @@ RULES:
             "get_project_structure": get_project_structure,
             "glob_files": glob_files,
             "grep": grep,
+            "apply_patch": apply_patch,
+            "find_definition": find_definition,
+            "find_references": find_references,
+            "run_tests": run_tests,
+            "get_project_overview": get_project_overview,
             "git_status": git_status,
             "git_diff": git_diff,
             "git_log": git_log,
