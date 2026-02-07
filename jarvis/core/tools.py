@@ -1665,3 +1665,160 @@ ALL_TOOLS = [
     # GitHub
     github_search,
 ]
+
+
+# =============================================================================
+# TOOL REGISTRY - Metadata for dynamic tool selection (Phase 2)
+# =============================================================================
+
+# Map tool functions to their names for reverse lookup
+_TOOL_FUNC_TO_NAME = {
+    read_file: "read_file",
+    list_files: "list_files",
+    search_files: "search_files",
+    write_file: "write_file",
+    edit_file: "edit_file",
+    get_project_structure: "get_project_structure",
+    glob_files: "glob_files",
+    grep: "grep",
+    git_status: "git_status",
+    git_diff: "git_diff",
+    git_log: "git_log",
+    git_commit: "git_commit",
+    git_add: "git_add",
+    git_branch: "git_branch",
+    git_stash: "git_stash",
+    run_command: "run_command",
+    web_search: "web_search",
+    web_fetch: "web_fetch",
+    get_current_news: "get_current_news",
+    get_gold_price: "get_gold_price",
+    get_weather: "get_weather",
+    get_current_time: "get_current_time",
+    calculate: "calculate",
+    save_memory: "save_memory",
+    recall_memory: "recall_memory",
+    task_create: "task_create",
+    task_update: "task_update",
+    task_list: "task_list",
+    task_get: "task_get",
+    github_search: "github_search",
+}
+
+TOOL_REGISTRY = {
+    # File operations
+    "read_file":        {"category": "file", "intents": ["file_op", "code"],     "keywords": ["read", "open", "show", "cat", "file", "content"]},
+    "list_files":       {"category": "file", "intents": ["file_op"],             "keywords": ["list", "ls", "directory", "folder"]},
+    "search_files":     {"category": "file", "intents": ["file_op", "code"],     "keywords": ["search", "find", "grep", "locate"]},
+    "write_file":       {"category": "file", "intents": ["file_op", "code"],     "keywords": ["write", "create", "save"]},
+    "edit_file":        {"category": "file", "intents": ["file_op", "code"],     "keywords": ["edit", "modify", "change", "replace", "update"]},
+    "get_project_structure": {"category": "file", "intents": ["file_op", "code"], "keywords": ["structure", "tree", "project", "overview"]},
+    "glob_files":       {"category": "file", "intents": ["file_op", "code"],     "keywords": ["glob", "find", "pattern", "files"]},
+    "grep":             {"category": "file", "intents": ["file_op", "code"],     "keywords": ["grep", "search", "regex", "pattern"]},
+    # Git operations
+    "git_status":       {"category": "git",  "intents": ["git"],                 "keywords": ["status", "git", "changes"]},
+    "git_diff":         {"category": "git",  "intents": ["git"],                 "keywords": ["diff", "changes", "modified"]},
+    "git_log":          {"category": "git",  "intents": ["git"],                 "keywords": ["log", "history", "commits"]},
+    "git_commit":       {"category": "git",  "intents": ["git"],                 "keywords": ["commit", "save"]},
+    "git_add":          {"category": "git",  "intents": ["git"],                 "keywords": ["add", "stage"]},
+    "git_branch":       {"category": "git",  "intents": ["git"],                 "keywords": ["branch", "checkout", "switch"]},
+    "git_stash":        {"category": "git",  "intents": ["git"],                 "keywords": ["stash", "save", "restore"]},
+    # Shell
+    "run_command":      {"category": "shell","intents": ["shell", "code"],       "keywords": ["run", "execute", "command", "npm", "pip", "python"]},
+    # Web
+    "web_search":       {"category": "web",  "intents": ["search", "news", "finance"], "keywords": ["search", "find", "look up", "google"]},
+    "web_fetch":        {"category": "web",  "intents": ["search"],              "keywords": ["fetch", "url", "webpage", "browse"]},
+    "get_current_news": {"category": "web",  "intents": ["news"],               "keywords": ["news", "headlines", "breaking"]},
+    "get_gold_price":   {"category": "web",  "intents": ["finance"],             "keywords": ["gold", "price", "metal"]},
+    # Weather
+    "get_weather":      {"category": "info", "intents": ["weather"],             "keywords": ["weather", "forecast", "temperature"]},
+    # Time
+    "get_current_time": {"category": "info", "intents": ["time_date"],           "keywords": ["time", "date", "clock"]},
+    # Math
+    "calculate":        {"category": "util", "intents": ["calculate"],           "keywords": ["calculate", "math", "compute"]},
+    # Memory
+    "save_memory":      {"category": "memory","intents": ["recall"],             "keywords": ["remember", "save", "note"]},
+    "recall_memory":    {"category": "memory","intents": ["recall"],             "keywords": ["recall", "remember", "memory"]},
+    # Tasks
+    "task_create":      {"category": "task", "intents": ["code", "shell"],       "keywords": ["task", "todo", "create"]},
+    "task_update":      {"category": "task", "intents": ["code", "shell"],       "keywords": ["task", "update", "complete"]},
+    "task_list":        {"category": "task", "intents": ["code", "shell"],       "keywords": ["task", "list", "todos"]},
+    "task_get":         {"category": "task", "intents": ["code", "shell"],       "keywords": ["task", "get", "detail"]},
+    # GitHub
+    "github_search":    {"category": "web",  "intents": ["search", "code"],      "keywords": ["github", "repo", "repository"]},
+}
+
+# Always include these tools as fallback
+_ALWAYS_INCLUDE = {"web_search", "calculate"}
+
+# Category groups - when one tool from a category is relevant, include related ones
+_CATEGORY_GROUPS = {
+    "file": ["read_file", "list_files", "search_files", "write_file", "edit_file", "glob_files", "grep", "get_project_structure"],
+    "git": ["git_status", "git_diff", "git_log", "git_commit", "git_add", "git_branch", "git_stash"],
+    "web": ["web_search", "web_fetch", "get_current_news"],
+    "task": ["task_create", "task_update", "task_list", "task_get"],
+}
+
+
+def select_tools(intent_str: str, message: str, max_tools: int = 8) -> list:
+    """
+    Select relevant tools based on intent and message content.
+
+    Returns a filtered list of tool functions (subset of ALL_TOOLS)
+    instead of sending all 32 tools to the LLM.
+
+    Args:
+        intent_str: Intent string from classifier (e.g., "search", "file_op")
+        message: User message for keyword matching
+        max_tools: Maximum number of tools to return
+
+    Returns:
+        List of tool functions
+    """
+    msg_lower = message.lower()
+    scores: dict[str, float] = {}
+
+    for tool_name, meta in TOOL_REGISTRY.items():
+        score = 0.0
+
+        # Intent match (strongest signal)
+        if intent_str in meta["intents"]:
+            score += 3.0
+
+        # Keyword match
+        for kw in meta["keywords"]:
+            if kw in msg_lower:
+                score += 1.0
+
+        # Always-include tools get a base score
+        if tool_name in _ALWAYS_INCLUDE:
+            score = max(score, 0.5)
+
+        if score > 0:
+            scores[tool_name] = score
+
+    # If we have high-scoring tools, include their category siblings
+    top_categories = set()
+    for tool_name, score in scores.items():
+        if score >= 3.0:
+            meta = TOOL_REGISTRY.get(tool_name, {})
+            top_categories.add(meta.get("category", ""))
+
+    for cat in top_categories:
+        for sibling in _CATEGORY_GROUPS.get(cat, []):
+            if sibling not in scores:
+                scores[sibling] = 1.0
+
+    # Sort by score and take top N
+    sorted_tools = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+    selected_names = [name for name, _ in sorted_tools[:max_tools]]
+
+    # Map names back to functions
+    name_to_func = {name: func for func, name in _TOOL_FUNC_TO_NAME.items()}
+    selected_funcs = [name_to_func[name] for name in selected_names if name in name_to_func]
+
+    # Fallback: if nothing selected, return all tools
+    if not selected_funcs:
+        return ALL_TOOLS
+
+    return selected_funcs
