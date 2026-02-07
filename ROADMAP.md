@@ -284,14 +284,17 @@ Transform Jarvis into a fully autonomous AI life management platform with:
 - [ ] Draft/send via chat
 
 #### Messaging
-- [ ] WhatsApp Business API
+- [ ] WhatsApp
+- [ ] Telegram
 - [ ] Slack integration
 - [ ] Discord bot
+- [ ] iMessage
 
 #### IoT / Smart Home
 - [ ] Home Assistant integration
 - [ ] MQTT broker support
 - [ ] Device control via chat
+- [ ] NVR integration
 
 #### Health & Fitness
 - [ ] Apple Health integration (via Shortcuts)
