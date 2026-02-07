@@ -8,13 +8,15 @@ Uses LLM-based intent classification for intelligent routing.
 
 import re
 import json
-from typing import List, Optional, Tuple
+import asyncio
+from typing import List, Optional, Tuple, AsyncGenerator
+from dataclasses import dataclass
 from pathlib import Path
 
 from .tools import (
     read_file, list_files, search_files, run_command,
     write_file, edit_file, get_project_structure, set_project_root, set_ui,
-    clear_read_files, ALL_TOOLS,
+    clear_read_files, ALL_TOOLS, select_tools,
     # File operations
     glob_files, grep,
     # Git operations
@@ -32,6 +34,26 @@ def _get_media_tools():
     from jarvis.skills.media_gen import generate_image, generate_video, generate_music, analyze_image
     return generate_image, generate_video, generate_music, analyze_image
 from .intent import IntentClassifier, Intent, ReasoningLevel, ClassifiedIntent
+from .tool_executor import AsyncToolExecutor, ToolResult
+
+
+@dataclass
+class AgentEvent:
+    """Event emitted by the async agent loop."""
+    type: str  # 'tool_start', 'tool_complete', 'stream', 'done'
+    tool_name: str = ""
+    tool_args: dict = None
+    tool_result: str = ""
+    tool_duration: float = 0.0
+    tool_success: bool = True
+    tool_call_id: str = ""
+    display: str = ""
+    content: str = ""
+
+    def __post_init__(self):
+        if self.tool_args is None:
+            self.tool_args = {}
+
 
 class Agent:
     """Agent with tool calling - native or prompt-based."""
@@ -1277,7 +1299,14 @@ RULES:
                         # Fall back to tool-capable path
                         pass
 
-                tools = ALL_TOOLS if use_native else None
+                # Dynamic tool selection: only send relevant tools
+                if use_native:
+                    intent_str = ""
+                    if self._last_intent:
+                        intent_str = self._last_intent.intent.value
+                    tools = select_tools(intent_str, user_message)
+                else:
+                    tools = None
 
                 # Call model with timeout (interruptible)
                 if self.ui:
@@ -1464,6 +1493,437 @@ RULES:
 
         response = final_response if final_response else "[dim]No response[/dim]"
         return response + stats
+
+    def _build_tool_map(self) -> dict:
+        """Build tool name -> function mapping for async executor."""
+        tool_map = {
+            "read_file": read_file,
+            "list_files": list_files,
+            "search_files": search_files,
+            "write_file": write_file,
+            "edit_file": edit_file,
+            "get_project_structure": get_project_structure,
+            "glob_files": glob_files,
+            "grep": grep,
+            "git_status": git_status,
+            "git_diff": git_diff,
+            "git_log": git_log,
+            "git_commit": git_commit,
+            "git_add": git_add,
+            "git_branch": git_branch,
+            "git_stash": git_stash,
+            "run_command": run_command,
+            "web_search": web_search,
+            "web_fetch": web_fetch,
+            "get_current_news": get_current_news,
+            "get_gold_price": get_gold_price,
+            "get_weather": get_weather,
+            "get_current_time": get_current_time,
+            "calculate": calculate,
+            "save_memory": save_memory,
+            "recall_memory": recall_memory,
+            "task_create": task_create,
+            "task_update": task_update,
+            "task_list": task_list,
+            "task_get": task_get,
+            "github_search": github_search,
+        }
+        return tool_map
+
+    async def run_async(
+        self,
+        user_message: str,
+        system_prompt: str,
+        history: List = None,
+        selected_tools: List = None,
+    ) -> AsyncGenerator[AgentEvent, None]:
+        """
+        Async agent loop that yields events progressively.
+
+        Events:
+            tool_start: A tool is about to execute
+            tool_complete: A tool finished executing
+            stream: A chunk of streaming text
+            done: Final response complete
+
+        Args:
+            user_message: The user's message
+            system_prompt: System prompt
+            history: Conversation history
+            selected_tools: Optional filtered tool list (Phase 2)
+        """
+        import time
+        start_time = time.time()
+        tool_count = 0
+        self.last_streamed = False
+
+        use_native = self._supports_native_tools()
+        auto_tool_done = False
+        agent_cfg = self.config.get("agent", {})
+
+        if not use_native:
+            system_prompt = system_prompt + "\n\n" + self._get_tools_prompt()
+
+        # Build messages
+        messages = []
+        if history:
+            for msg in history:
+                if hasattr(msg, 'role'):
+                    messages.append({"role": msg.role, "content": msg.content})
+                else:
+                    messages.append(msg)
+        messages.append({"role": "user", "content": user_message})
+
+        # Set up async tool executor
+        tool_map = self._build_tool_map()
+        # Add media tools if needed
+        msg_lower = user_message.lower()
+        if any(kw in msg_lower for kw in ["draw", "paint", "sketch", "image", "video", "music", "compose", "animate"]):
+            try:
+                gen_img, gen_vid, gen_mus, analyze_img = _get_media_tools()
+                tool_map.update({
+                    "generate_image": gen_img,
+                    "generate_video": gen_vid,
+                    "generate_music": gen_mus,
+                    "analyze_image": analyze_img,
+                })
+            except Exception:
+                pass
+
+        executor = AsyncToolExecutor(tool_map)
+        executor.set_display_formatter(self._format_tool_display)
+
+        iteration = 0
+        final_response = ""
+
+        while iteration < self.max_iterations:
+            iteration += 1
+
+            if self.ui and self.ui.stop_requested:
+                yield AgentEvent(type="done", content="[dim]Stopped[/dim]")
+                return
+
+            try:
+                # Auto-run tools for current info, time, weather, etc.
+                if not auto_tool_done:
+                    auto_tool = self._detect_auto_tool(user_message)
+                    if auto_tool:
+                        tool_name, args = auto_tool
+                        yield AgentEvent(
+                            type="tool_start",
+                            tool_name=tool_name,
+                            tool_args=args,
+                            display=self._format_tool_display(tool_name, args),
+                        )
+                        result = await executor.execute_single(tool_name, args)
+                        tool_count += 1
+                        auto_tool_done = True
+
+                        yield AgentEvent(
+                            type="tool_complete",
+                            tool_name=tool_name,
+                            tool_args=args,
+                            tool_result=result.result,
+                            tool_duration=result.duration,
+                            tool_success=result.success,
+                            display=self._format_tool_display(tool_name, args, result.result),
+                        )
+
+                        messages.append({
+                            "role": "user",
+                            "content": (
+                                f"Tool result:\n{result.result}\n\n"
+                                "Instructions:\n"
+                                "1. If the result contains search results, synthesize a helpful answer.\n"
+                                "2. If the result starts with 'Error:', acknowledge the error briefly.\n"
+                                "3. Include 1-2 source URLs when available.\n"
+                                "4. Answer the original question directly and concisely."
+                            )
+                        })
+
+                        if tool_name == "web_search" and result.result and (
+                            result.result.startswith("Search failed") or
+                            result.result.startswith("Error")
+                        ):
+                            yield AgentEvent(type="done", content=result.result)
+                            return
+
+                # Synthesis after auto-tool
+                if auto_tool_done:
+                    try:
+                        from jarvis.providers import Message
+                        synth_messages = [Message(role=m["role"], content=m["content"]) for m in messages]
+                        synth_system = system_prompt + "\n\nAnswer the user's question based on the tool result above. Do NOT call any tools."
+                        reply = self.provider.chat(
+                            messages=synth_messages,
+                            system=synth_system,
+                            stream=True
+                        )
+                        content_parts = []
+                        if hasattr(reply, "__iter__") and not isinstance(reply, (str, dict)):
+                            for chunk in reply:
+                                if self.ui and self.ui.stop_requested:
+                                    break
+                                content_parts.append(chunk)
+                                yield AgentEvent(type="stream", content=chunk)
+                            self.last_streamed = True
+                        else:
+                            content_parts = [str(reply) if isinstance(reply, str) else ""]
+                        final_response = self._clean_content("".join(content_parts))
+                        break
+                    except Exception:
+                        pass
+
+                # Fast path when tools are unlikely
+                if agent_cfg.get("fast_no_tools", True) and not self._likely_needs_tools(user_message):
+                    try:
+                        from jarvis.providers import Message
+                        fast_messages = [Message(role=m["role"], content=m["content"]) for m in messages]
+                        reply = self.provider.chat(
+                            messages=fast_messages,
+                            system=system_prompt,
+                            stream=True
+                        )
+                        content_parts = []
+                        if hasattr(reply, "__iter__") and not isinstance(reply, (str, dict)):
+                            for chunk in reply:
+                                if self.ui and self.ui.stop_requested:
+                                    break
+                                content_parts.append(chunk)
+                                yield AgentEvent(type="stream", content=chunk)
+                            self.last_streamed = True
+                        else:
+                            content_parts = [str(reply) if isinstance(reply, str) else ""]
+                        final_response = self._clean_content("".join(content_parts))
+                        break
+                    except Exception:
+                        pass
+
+                # Full tool calling path
+                # Dynamic tool selection
+                if use_native:
+                    if selected_tools:
+                        tools = selected_tools
+                    else:
+                        intent_str = self._last_intent.intent.value if self._last_intent else ""
+                        tools = select_tools(intent_str, user_message)
+                else:
+                    tools = None
+                timeout = self._get_timeout()
+                response = await asyncio.to_thread(
+                    self._call_model_with_timeout, messages, system_prompt, tools, timeout
+                )
+
+                if response is None:
+                    yield AgentEvent(type="done", content="[dim]Stopped[/dim]")
+                    return
+
+                if self.ui and self.ui.stop_requested:
+                    yield AgentEvent(type="done", content="[dim]Stopped[/dim]")
+                    return
+
+                # Parse response
+                msg = response.message if hasattr(response, 'message') else response.get('message', {})
+                content = msg.content if hasattr(msg, 'content') else msg.get('content', '') or ''
+                tool_calls = msg.tool_calls if hasattr(msg, 'tool_calls') else msg.get('tool_calls')
+
+                # Native tool calling with parallel execution
+                if use_native and tool_calls:
+                    messages.append({"role": "assistant", "content": content, "tool_calls": tool_calls})
+
+                    # Parse all tool calls
+                    parsed_calls = []
+                    for call in tool_calls:
+                        if hasattr(call, 'function'):
+                            t_name = call.function.name
+                            t_args = call.function.arguments or {}
+                            t_id = getattr(call, "id", None)
+                        else:
+                            func = call.get('function', {})
+                            t_name = func.get('name', '')
+                            t_args = func.get('arguments', {})
+                            t_id = call.get("id")
+                        if isinstance(t_args, str):
+                            try:
+                                t_args = json.loads(t_args)
+                            except json.JSONDecodeError:
+                                t_args = {}
+
+                        # Validate
+                        valid, error = self._validate_tool_call(t_name, t_args)
+                        if not valid:
+                            parsed_calls.append({
+                                "tool_name": t_name,
+                                "args": t_args,
+                                "tool_call_id": t_id,
+                                "_skip": True,
+                                "_error": error,
+                            })
+                        else:
+                            parsed_calls.append({
+                                "tool_name": t_name,
+                                "args": t_args,
+                                "tool_call_id": t_id,
+                            })
+
+                    # Emit start events for all tools
+                    for pc in parsed_calls:
+                        if not pc.get("_skip"):
+                            yield AgentEvent(
+                                type="tool_start",
+                                tool_name=pc["tool_name"],
+                                tool_args=pc["args"],
+                                tool_call_id=pc.get("tool_call_id", ""),
+                                display=self._format_tool_display(pc["tool_name"], pc["args"]),
+                            )
+
+                    # Execute all tools in parallel
+                    valid_calls = [pc for pc in parsed_calls if not pc.get("_skip")]
+                    results = await executor.execute_parallel(valid_calls)
+
+                    # Merge results with skipped calls
+                    result_idx = 0
+                    for pc in parsed_calls:
+                        if pc.get("_skip"):
+                            tool_result = ToolResult(
+                                tool_name=pc["tool_name"],
+                                args=pc["args"],
+                                result=f"Error: {pc['_error']}",
+                                duration=0,
+                                success=False,
+                                tool_call_id=pc.get("tool_call_id"),
+                            )
+                        else:
+                            tool_result = results[result_idx]
+                            result_idx += 1
+
+                        tool_count += 1
+
+                        yield AgentEvent(
+                            type="tool_complete",
+                            tool_name=tool_result.tool_name,
+                            tool_args=tool_result.args,
+                            tool_result=tool_result.result,
+                            tool_duration=tool_result.duration,
+                            tool_success=tool_result.success,
+                            tool_call_id=tool_result.tool_call_id or "",
+                            display=self._format_tool_display(
+                                tool_result.tool_name, tool_result.args, tool_result.result
+                            ),
+                        )
+
+                        tool_msg = {"role": "tool", "content": tool_result.result}
+                        if tool_result.tool_call_id:
+                            tool_msg["tool_call_id"] = tool_result.tool_call_id
+                        messages.append(tool_msg)
+
+                    # Stream synthesis response
+                    try:
+                        from jarvis.providers import Message
+                        followup_system = system_prompt + "\n\nAnswer the user now. Do not call tools."
+                        stream_messages = [Message(role=m["role"], content=m["content"]) for m in messages]
+                        stream = self.provider.chat(
+                            messages=stream_messages,
+                            system=followup_system,
+                            stream=True
+                        )
+                        parts = []
+
+                        def _stream_producer():
+                            """Run streaming in thread."""
+                            result_parts = []
+                            if hasattr(stream, '__iter__') and not isinstance(stream, (str, dict)):
+                                for chunk in stream:
+                                    if self.ui and self.ui.stop_requested:
+                                        break
+                                    result_parts.append(chunk)
+                            return result_parts
+
+                        parts = await asyncio.to_thread(_stream_producer)
+                        for chunk in parts:
+                            yield AgentEvent(type="stream", content=chunk)
+                        self.last_streamed = True
+                        final_response = self._clean_content("".join(parts))
+                        break
+                    except Exception:
+                        pass
+
+                # Prompt-based fallback (text contains JSON tool call)
+                elif content and ('"name"' in content or '"tool"' in content):
+                    tool_name, args = self._parse_tool_call_from_text(content)
+                    if tool_name:
+                        yield AgentEvent(
+                            type="tool_start",
+                            tool_name=tool_name,
+                            tool_args=args or {},
+                            display=self._format_tool_display(tool_name, args or {}),
+                        )
+                        result = await executor.execute_single(tool_name, args or {})
+                        tool_count += 1
+
+                        yield AgentEvent(
+                            type="tool_complete",
+                            tool_name=tool_name,
+                            tool_args=args or {},
+                            tool_result=result.result,
+                            tool_duration=result.duration,
+                            tool_success=result.success,
+                            display=self._format_tool_display(tool_name, args or {}, result.result),
+                        )
+
+                        messages.append({"role": "assistant", "content": content})
+                        messages.append({
+                            "role": "user",
+                            "content": (
+                                f"Tool result:\n{result.result}\n\n"
+                                "Answer the original question directly and concisely."
+                            )
+                        })
+                    else:
+                        clean = content
+                        start = content.find('{')
+                        if start != -1:
+                            depth = 0
+                            end = start
+                            for i, char in enumerate(content[start:], start):
+                                if char == '{': depth += 1
+                                elif char == '}':
+                                    depth -= 1
+                                    if depth == 0:
+                                        end = i + 1
+                                        break
+                            clean = (content[:start] + content[end:]).strip()
+                        final_response = clean or "[dim]Model output malformed tool call.[/dim]"
+                        break
+
+                elif content:
+                    final_response = self._clean_content(content)
+                    break
+                else:
+                    break
+
+            except Exception as e:
+                yield AgentEvent(type="done", content=f"[red]Error: {e}[/red]")
+                return
+
+        if iteration >= self.max_iterations:
+            final_response += "\n[dim](max iterations)[/dim]"
+
+        elapsed = time.time() - start_time
+        if elapsed < 60:
+            time_str = f"{elapsed:.1f}s"
+        else:
+            mins = int(elapsed // 60)
+            secs = elapsed % 60
+            time_str = f"{mins}m {secs:.0f}s"
+
+        stats = f"\n[dim]({time_str}"
+        if tool_count > 0:
+            stats += f" · {tool_count} tool{'s' if tool_count > 1 else ''}"
+        stats += ")[/dim]"
+
+        response = final_response if final_response else "[dim]No response[/dim]"
+        yield AgentEvent(type="done", content=response + stats)
 
     def _clean_content(self, text: str) -> str:
         """Remove thinking tags and clean response."""
