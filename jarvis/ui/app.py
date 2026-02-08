@@ -805,23 +805,6 @@ RULES:
     # Create table on startup
     _init_settings_db()
 
-    # One-time migration: move soul.md content to SQLite if it exists
-    def _migrate_soul_to_db():
-        from jarvis import get_data_dir
-        soul_path = get_data_dir() / "config" / "soul.md"
-        if soul_path.exists():
-            content = soul_path.read_text().strip()
-            if content and not _get_user_instructions():
-                _set_user_instructions(content)
-                print(f"[settings] Migrated soul.md to SQLite user_settings")
-            # Rename to avoid re-migration
-            try:
-                soul_path.rename(soul_path.with_suffix(".md.bak"))
-            except Exception:
-                pass
-
-    _migrate_soul_to_db()
-
     def _get_user_instructions() -> str:
         """Read user-editable instructions from SQLite."""
         import sqlite3
@@ -861,6 +844,23 @@ RULES:
         conn.execute("DELETE FROM user_settings WHERE key = 'system_instructions'")
         conn.commit()
         conn.close()
+
+    # One-time migration: move soul.md content to SQLite if it exists
+    def _migrate_soul_to_db():
+        from jarvis import get_data_dir
+        soul_path = get_data_dir() / "config" / "soul.md"
+        if soul_path.exists():
+            content = soul_path.read_text().strip()
+            if content and not _get_user_instructions():
+                _set_user_instructions(content)
+                print(f"[settings] Migrated soul.md to SQLite user_settings")
+            # Rename to avoid re-migration
+            try:
+                soul_path.rename(soul_path.with_suffix(".md.bak"))
+            except Exception:
+                pass
+
+    _migrate_soul_to_db()
 
     def _build_full_system_prompt(name: str = None, user_instructions: str = None) -> str:
         """Build the complete system prompt: soul + user instructions.
