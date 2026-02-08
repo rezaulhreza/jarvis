@@ -63,7 +63,7 @@ export function SystemInstructions({
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <FileText size={18} className="text-cyan-400" />
-          <h3 className="text-sm font-medium text-text">System Instructions</h3>
+          <h3 className="text-sm font-medium text-text">Custom Instructions</h3>
           {isDefault && (
             <span className="px-2 py-0.5 text-xs rounded-full bg-cyan-500/20 text-cyan-400">
               Default
@@ -107,8 +107,8 @@ export function SystemInstructions({
 
       {/* Description */}
       <p className="text-xs text-text-muted">
-        Customize how Jarvis behaves. These instructions are sent with every message.
-        You can also edit <code className="px-1 py-0.5 bg-surface-2 rounded">~/.jarvis/soul.md</code> directly.
+        Customize tone, style, and response preferences. These are appended to every message
+        but <strong className="text-text">cannot override the core identity</strong> (name, creator, rules).
       </p>
 
       {/* Textarea */}
@@ -116,7 +116,7 @@ export function SystemInstructions({
         <textarea
           value={localValue}
           onChange={(e) => handleChange(e.target.value)}
-          placeholder="Enter custom instructions for Jarvis..."
+          placeholder="e.g. Always respond in bullet points. Use a casual tone. Prefer Python examples..."
           rows={12}
           className={cn(
             'w-full p-4 rounded-xl resize-none',
@@ -163,9 +163,9 @@ export function SystemInstructions({
       {/* Tips */}
       <div className="p-3 rounded-lg bg-surface/30 border border-border/20">
         <p className="text-xs text-text-muted leading-relaxed">
-          <strong className="text-text">Tips:</strong> Be specific about tone, format preferences,
-          and areas of expertise. You can reference previous context with "Based on our conversation..."
-          or set boundaries with "Always/Never...".
+          <strong className="text-text">Tips:</strong> Set tone (casual, formal), format preferences
+          (bullet points, concise), and expertise areas. These customize behavior but the assistant's
+          identity (name, creator) is locked and cannot be changed here.
         </p>
       </div>
     </div>

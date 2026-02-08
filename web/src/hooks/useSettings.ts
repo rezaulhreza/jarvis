@@ -65,12 +65,12 @@ export function useSettings(): UseSettingsReturn {
           })
         }
 
-        // Load system prompt
-        const promptRes = await fetch('/api/system-prompt')
+        // Load user custom instructions (not the soul)
+        const promptRes = await fetch('/api/system-instructions')
         if (promptRes.ok) {
           const data = await promptRes.json()
           setSystemPromptState(data.content || '')
-          setIsDefaultPrompt(data.isDefault ?? true)
+          setIsDefaultPrompt(data.isEmpty ?? true)
         }
 
         // Load providers
@@ -155,22 +155,21 @@ export function useSettings(): UseSettingsReturn {
     []
   )
 
-  // System prompt
+  // User custom instructions (not the soul)
   const setSystemPrompt = useCallback(async (prompt: string) => {
     setSystemPromptState(prompt)
-    setIsDefaultPrompt(false)
-    await fetch('/api/system-prompt', {
-      method: 'POST',
+    setIsDefaultPrompt(!prompt.trim())
+    await fetch('/api/system-instructions', {
+      method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ content: prompt }),
     })
   }, [])
 
   const resetSystemPrompt = useCallback(async () => {
-    const res = await fetch('/api/system-prompt/reset', { method: 'POST' })
+    const res = await fetch('/api/system-instructions', { method: 'DELETE' })
     if (res.ok) {
-      const data = await res.json()
-      setSystemPromptState(data.content || '')
+      setSystemPromptState('')
       setIsDefaultPrompt(true)
     }
   }, [])

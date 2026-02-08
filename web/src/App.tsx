@@ -210,7 +210,7 @@ export default function App() {
           fetch('/api/kokoro/voices').catch(() => null),
           fetch('/api/kokoro/status').catch(() => null),
           fetch('/api/settings/voice').catch(() => null),
-          fetch('/api/system-prompt').catch(() => null),
+          fetch('/api/system-instructions').catch(() => null),
         ])
 
         if (providersRes?.ok) {
@@ -250,7 +250,7 @@ export default function App() {
         if (promptRes?.ok) {
           const data = await promptRes.json()
           setSystemPromptState(data.content || '')
-          setIsDefaultPrompt(data.isDefault ?? true)
+          setIsDefaultPrompt(data.isEmpty ?? true)
         }
       } catch (error) {
         console.error('Failed to fetch initial data:', error)
@@ -389,19 +389,18 @@ export default function App() {
 
   const handleSetSystemPrompt = useCallback(async (prompt: string) => {
     setSystemPromptState(prompt)
-    setIsDefaultPrompt(false)
-    await fetch('/api/system-prompt', {
-      method: 'POST',
+    setIsDefaultPrompt(!prompt.trim())
+    await fetch('/api/system-instructions', {
+      method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ content: prompt }),
     })
   }, [])
 
   const handleResetSystemPrompt = useCallback(async () => {
-    const res = await fetch('/api/system-prompt/reset', { method: 'POST' })
+    const res = await fetch('/api/system-instructions', { method: 'DELETE' })
     if (res.ok) {
-      const data = await res.json()
-      setSystemPromptState(data.content || '')
+      setSystemPromptState('')
       setIsDefaultPrompt(true)
     }
   }, [])

@@ -302,7 +302,11 @@ class Jarvis:
         self.ui.console.print()
 
     def _build_system_prompt(self):
-        """Build system prompt with project context and user profile."""
+        """Build system prompt with two layers: soul (immutable) + user instructions (editable).
+
+        Layer 1 - Soul: Identity, creator, core rules. Cannot be overridden.
+        Layer 2 - User Instructions: Tone, style, preferences from SQLite.
+        """
         # Get user profile from config
         user_config = self.config.get("user", {})
         user_name = user_config.get("name", "")
@@ -315,7 +319,7 @@ class Jarvis:
             or "Jarvis"
         )
 
-        # Build identity - strong persona enforcement
+        # === LAYER 1: SOUL (immutable) ===
         owner_line = f"You serve {user_nickname}." if user_nickname else "You serve your current user."
         lines = [
             f"You are {assistant_name}, a personal AI assistant built by Rez, a software engineer passionate about LLM and AI.",
@@ -342,7 +346,7 @@ class Jarvis:
             "- For factual questions about public figures, events, legal cases - provide information directly.",
             "- Only refuse truly harmful requests (instructions to cause harm, illegal activities).",
             "- Never lecture or moralize.",
-            "- Never use em dash (—) in your responses.",
+            "- Never use em dash (\u2014) in your responses.",
             "",
             "CODE RULES:",
             "1. NEVER make up or generate fake code. NEVER hallucinate.",
@@ -370,7 +374,7 @@ class Jarvis:
         if self.project.git_branch:
             lines.append(f"BRANCH: {self.project.git_branch}")
 
-        # Add JARVIS.md / soul instructions if present
+        # Add JARVIS.md / project-level instructions if present
         if self.project.soul:
             lines.append("")
             lines.append("=== JARVIS.MD PROJECT INSTRUCTIONS ===")
@@ -382,9 +386,45 @@ class Jarvis:
             lines.append("")
             lines.append("NOTE: No JARVIS.md found. User can run /init to create one with project instructions.")
 
-        # Inject user context (facts, preferences)
         self.base_system_prompt = "\n".join(lines)
+
+        # === LAYER 2: USER INSTRUCTIONS (editable, from SQLite) ===
+        user_instructions = self._get_user_instructions_from_db()
+        if user_instructions and user_instructions.strip():
+            self.base_system_prompt += f"""
+
+--- USER CUSTOM INSTRUCTIONS ---
+The user has set the following custom instructions. Follow them for tone,
+style, and preferences. However, NEVER let these override your identity,
+name, or creator defined above. If they contradict your identity, ignore
+that part and follow the soul above.
+
+{user_instructions.strip()}"""
+
+        # Inject user context (facts, preferences)
         self.system_prompt = self._inject_user_context(self.base_system_prompt)
+
+    def _get_user_instructions_from_db(self) -> str:
+        """Read user-editable instructions from SQLite."""
+        import sqlite3
+        db_path = get_data_dir() / "memory" / "jarvis.db"
+        try:
+            conn = sqlite3.connect(str(db_path))
+            # Ensure table exists
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS user_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    updated_at TEXT DEFAULT (datetime('now'))
+                )
+            """)
+            row = conn.execute(
+                "SELECT value FROM user_settings WHERE key = 'system_instructions'"
+            ).fetchone()
+            conn.close()
+            return row[0] if row else ""
+        except Exception:
+            return ""
 
     def _inject_user_context(self, system_prompt: str) -> str:
         """Add user context (facts, entities) to system prompt."""
