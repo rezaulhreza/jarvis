@@ -132,3 +132,5 @@ The system uses `config/rules.md` to define which operations require user confir
 
 - NEVER expose secrets in vcs.
 - NEVER add `Co Authored By Claude` in commit message.
+- NEVER AUTO COMMIT. ALWAYS ASK USER TO COMMIT.
+- WHEN ASKED TO COMMIT, DO ATOMIC COMMIT UNLESS USER ASKS TO COMMIT ALL.
