@@ -305,6 +305,209 @@ def facts():
         click.echo(f"Facts will be saved to: {facts_path}")
 
 
+# ============== User Management Commands ==============
+
+@main.group()
+def user():
+    """Manage user accounts."""
+    pass
+
+
+@user.command("create")
+@click.option("--email", "-e", prompt="Email", help="User email address")
+@click.option("--password", "-p", prompt="Password", hide_input=True, confirmation_prompt=True, help="User password")
+@click.option("--name", "-n", prompt="Name", default="", help="Display name (optional)")
+def user_create(email, password, name):
+    """Create a new user account.
+
+    \b
+    Examples:
+        jarvis user create
+        jarvis user create -e user@example.com -p secret -n "John"
+    """
+    from .auth.db import init_auth_tables, create_user, get_user_by_email
+    from .auth.security import hash_password
+
+    init_auth_tables()
+
+    # Check if user already exists
+    existing = get_user_by_email(email)
+    if existing:
+        click.echo(f"Error: User with email '{email}' already exists.")
+        sys.exit(1)
+
+    # Basic email validation
+    if "@" not in email or "." not in email.split("@")[-1]:
+        click.echo("Error: Invalid email address.")
+        sys.exit(1)
+
+    # Create user with email_verified=True
+    password_hash = hash_password(password)
+    user_data = create_user(
+        email=email,
+        password_hash=password_hash,
+        name=name or None,
+        auth_provider="email",
+        email_verified=True,
+    )
+
+    click.echo(f"\nUser created successfully.")
+    click.echo(f"  Email:    {user_data['email']}")
+    click.echo(f"  Name:     {user_data.get('name') or '(none)'}")
+    click.echo(f"  ID:       {user_data['id']}")
+    click.echo(f"  Verified: Yes")
+
+
+@user.command("list")
+def user_list():
+    """List all user accounts."""
+    from .auth.db import init_auth_tables
+    from .auth.models import SessionLocal, User
+
+    init_auth_tables()
+
+    with SessionLocal() as db:
+        users = db.query(User).order_by(User.created_at).all()
+        if not users:
+            click.echo("No users found.")
+            return
+
+        click.echo(f"{'Email':<35} {'Name':<20} {'Verified':<10} {'Created'}")
+        click.echo("-" * 90)
+        for u in users:
+            verified = "Yes" if u.email_verified else "No"
+            created = u.created_at.strftime("%Y-%m-%d") if u.created_at else "?"
+            click.echo(f"{u.email:<35} {(u.name or ''):<20} {verified:<10} {created}")
+
+
+@user.command("delete")
+@click.argument("email")
+@click.option("--yes", "-y", is_flag=True, help="Skip confirmation")
+def user_delete(email, yes):
+    """Delete a user account by email.
+
+    \b
+    Example:
+        jarvis user delete user@example.com
+    """
+    from .auth.db import init_auth_tables, get_user_by_email
+    from .auth.models import SessionLocal, User
+
+    init_auth_tables()
+
+    user_data = get_user_by_email(email)
+    if not user_data:
+        click.echo(f"Error: No user found with email '{email}'.")
+        sys.exit(1)
+
+    if not yes:
+        if not click.confirm(f"Delete user '{email}'? This cannot be undone."):
+            click.echo("Cancelled.")
+            return
+
+    with SessionLocal() as db:
+        db.query(User).filter(User.email == email).delete()
+        db.commit()
+
+    click.echo(f"User '{email}' deleted.")
+
+
+@user.command("passwd")
+@click.argument("email")
+@click.option("--password", "-p", prompt="New password", hide_input=True, confirmation_prompt=True, help="New password")
+def user_passwd(email, password):
+    """Reset a user's password.
+
+    \b
+    Examples:
+        jarvis user passwd user@example.com
+        jarvis user passwd user@example.com -p newpass
+    """
+    from .auth.db import init_auth_tables, get_user_by_email
+    from .auth.security import hash_password
+    from .auth.models import SessionLocal, User
+
+    init_auth_tables()
+
+    existing = get_user_by_email(email)
+    if not existing:
+        click.echo(f"Error: No user found with email '{email}'.")
+        sys.exit(1)
+
+    hashed = hash_password(password)
+    with SessionLocal() as db:
+        db.query(User).filter(User.email == email).update({"password_hash": hashed})
+        db.commit()
+
+    click.echo(f"Password updated for '{email}'.")
+
+
+@user.command("rename")
+@click.argument("email")
+@click.option("--name", "-n", prompt="New name", help="New display name")
+def user_rename(email, name):
+    """Change a user's display name.
+
+    \b
+    Examples:
+        jarvis user rename user@example.com
+        jarvis user rename user@example.com -n "New Name"
+    """
+    from .auth.db import init_auth_tables, get_user_by_email
+    from .auth.models import SessionLocal, User
+
+    init_auth_tables()
+
+    existing = get_user_by_email(email)
+    if not existing:
+        click.echo(f"Error: No user found with email '{email}'.")
+        sys.exit(1)
+
+    with SessionLocal() as db:
+        db.query(User).filter(User.email == email).update({"name": name})
+        db.commit()
+
+    click.echo(f"Name updated to '{name}' for '{email}'.")
+
+
+@user.command("email")
+@click.argument("old_email")
+@click.option("--new-email", "-e", prompt="New email", help="New email address")
+def user_email(old_email, new_email):
+    """Change a user's email address.
+
+    \b
+    Examples:
+        jarvis user email old@example.com
+        jarvis user email old@example.com -e new@example.com
+    """
+    from .auth.db import init_auth_tables, get_user_by_email
+    from .auth.models import SessionLocal, User
+
+    init_auth_tables()
+
+    existing = get_user_by_email(old_email)
+    if not existing:
+        click.echo(f"Error: No user found with email '{old_email}'.")
+        sys.exit(1)
+
+    # Check new email isn't taken
+    conflict = get_user_by_email(new_email)
+    if conflict:
+        click.echo(f"Error: Email '{new_email}' is already in use.")
+        sys.exit(1)
+
+    if "@" not in new_email or "." not in new_email.split("@")[-1]:
+        click.echo("Error: Invalid email address.")
+        sys.exit(1)
+
+    with SessionLocal() as db:
+        db.query(User).filter(User.email == old_email).update({"email": new_email})
+        db.commit()
+
+    click.echo(f"Email changed from '{old_email}' to '{new_email}'.")
+
+
 def _launch_cli(reasoning_level: str = None):
     """Launch interactive CLI mode."""
     from .assistant import run_cli

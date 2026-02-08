@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { cn } from '../../lib/utils'
+import { cn, apiFetch } from '../../lib/utils'
 import { WidgetCard } from './WidgetCard'
 import {
   TimeWidget,
@@ -121,13 +121,13 @@ export function DashboardView({
   useEffect(() => {
     const fetchCalendar = async () => {
       try {
-        const statusRes = await fetch('/api/calendar/status')
+        const statusRes = await apiFetch('/api/calendar/status')
         if (statusRes.ok) {
           const status = await statusRes.json()
           setCalendarConnected(status.connected)
 
           if (status.connected) {
-            const eventsRes = await fetch('/api/calendar/events?days=7')
+            const eventsRes = await apiFetch('/api/calendar/events?days=7')
             if (eventsRes.ok) {
               const data = await eventsRes.json()
               setCalendarEvents(data.events || [])
@@ -451,13 +451,13 @@ function MobileDashboard({
   useEffect(() => {
     const fetchCalendar = async () => {
       try {
-        const statusRes = await fetch('/api/calendar/status')
+        const statusRes = await apiFetch('/api/calendar/status')
         if (statusRes.ok) {
           const status = await statusRes.json()
           setCalendarConnected(status.connected)
 
           if (status.connected) {
-            const eventsRes = await fetch('/api/calendar/events')
+            const eventsRes = await apiFetch('/api/calendar/events')
             if (eventsRes.ok) {
               const data = await eventsRes.json()
               setCalendarEvents(data.events || [])

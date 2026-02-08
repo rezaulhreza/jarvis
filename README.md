@@ -40,6 +40,7 @@
 - **Voice Input/Output**: Speech-to-text (Whisper/Chutes), text-to-speech (Browser/Edge/ElevenLabs/Kokoro)
 - **Strong Identity System**: Stays in character regardless of underlying model, per-user personalization
 - **Telegram Bot**: Full-featured Telegram integration with 20+ commands
+- **Authentication**: Optional email/password login with session management, CLI user management
 - **Project Context**: Auto-detects project type and loads JARVIS.md/CLAUDE.md instructions
 
 ## Requirements
@@ -236,6 +237,14 @@ jarvis setup       # Run setup wizard
 jarvis models      # List Ollama models
 jarvis personas    # List personas
 jarvis --daemon    # Run as background daemon
+
+# User management (when auth enabled)
+jarvis user create     # Create user account
+jarvis user list       # List users
+jarvis user passwd     # Reset password
+jarvis user rename     # Change display name
+jarvis user email      # Change email
+jarvis user delete     # Delete user
 ```
 
 ## Web UI Features
@@ -545,7 +554,11 @@ Configuration is stored in `~/.jarvis/`:
 
 ### Environment Variables
 
-Create `~/.jarvis/.env`:
+Copy `.env.example` to `.env` and fill in your values:
+
+```bash
+cp .env.example .env
+```
 
 ```bash
 # LLM Providers (optional - for cloud models)
@@ -565,6 +578,9 @@ ELEVEN_LABS_API_KEY=your_key    # ElevenLabs TTS
 
 # Telegram (optional)
 TELEGRAM_BOT_TOKEN=your_token
+
+# Authentication (optional)
+JARVIS_AUTH_ENABLED=false             # Enable login (manage users via: jarvis user create)
 
 # Vector DB (optional - defaults to ChromaDB local)
 QDRANT_URL=your_url             # Qdrant cloud URL
@@ -624,6 +640,47 @@ Or let Jarvis create them dynamically:
 You: Create a skill that fetches stock prices
 Jarvis: [creates ~/.jarvis/skills/fetch_stock_price.py]
 ```
+
+## Authentication (Optional)
+
+Jarvis supports optional email/password authentication with session-based login. User management is done entirely via CLI.
+
+### Setup
+
+```bash
+# Install auth dependencies
+pip install -e ".[auth]"
+
+# Enable auth
+export JARVIS_AUTH_ENABLED=true
+```
+
+### User Management (CLI)
+
+All user operations are handled through the command line:
+
+```bash
+# Create a user account
+jarvis user create
+jarvis user create -e user@example.com -p secret -n "John"
+
+# List all users
+jarvis user list
+
+# Reset a user's password
+jarvis user passwd user@example.com
+
+# Change display name
+jarvis user rename user@example.com -n "New Name"
+
+# Change email address
+jarvis user email old@example.com -e new@example.com
+
+# Delete a user
+jarvis user delete user@example.com
+```
+
+Users are created with email verified. No email/SMTP setup required.
 
 ## Troubleshooting
 
@@ -748,7 +805,12 @@ jarvis/
 │   │   └── rag.py           # RAG engine (ChromaDB/Qdrant + reranking)
 │   ├── integrations/        # External integrations
 │   │   └── telegram_bot.py  # Full Telegram bot
-│   ├── auth/                # Auth helpers
+│   ├── auth/                # Authentication system
+│   │   ├── models.py        # SQLAlchemy ORM models (User, Session, Token)
+│   │   ├── db.py            # Database operations
+│   │   ├── email_auth.py    # Email/password login
+│   │   ├── middleware.py    # Auth middleware, CSRF, security headers
+│   │   ├── security.py      # Password hashing (argon2), tokens
 │   │   ├── credentials.py   # Credential management
 │   │   ├── claude.py        # Claude auth
 │   │   └── codex.py         # Codex auth
@@ -768,8 +830,11 @@ jarvis/
 │   │   │   ├── orb/         # Animated orb, FloatingOrb, OrbRings
 │   │   │   ├── voice/       # VoiceOverlay, WaveformVisualizer
 │   │   │   ├── camera/      # DraggableCamera
+│   │   │   ├── sidebar/     # ChatSidebar, ChatItem, UserMenu
+│   │   │   ├── auth/        # LoginPage, ProtectedRoute
 │   │   │   ├── dashboard/   # DashboardView, WidgetCard
 │   │   │   └── widgets/     # Weather, Time, Status, Voice, Commands
+│   │   ├── contexts/        # AuthContext
 │   │   ├── hooks/           # useWebSocket, useVoice, useFileUpload, useWakeWord, useCamera, useTheme, useDraggable
 │   │   └── types/           # TypeScript interfaces
 │   └── dist/                # Production build

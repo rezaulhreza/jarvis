@@ -75,6 +75,7 @@ class ContextManager:
         self.working_memory: dict = {}
         self.current_task: Optional[str] = None
         self.current_chat_id: Optional[str] = None
+        self.user_id: Optional[str] = None  # Set when auth is enabled
 
         # LLM provider for intelligent summarization (set externally)
         self._provider = None
@@ -450,17 +451,27 @@ Summary (2-3 sentences):"""
 
     # ============== Chat Management ==============
 
-    def create_chat(self, title: str = "New Chat") -> str:
+    def create_chat(self, title: str = "New Chat", user_id: str = None) -> str:
         """Create a new chat and return its ID."""
         chat_id = str(uuid.uuid4())
         now = datetime.now().isoformat()
+        uid = user_id or self.user_id
 
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
-        cursor.execute('''
-            INSERT INTO chats (id, title, created_at, updated_at)
-            VALUES (?, ?, ?, ?)
-        ''', (chat_id, title, now, now))
+
+        # Check if user_id column exists
+        try:
+            cursor.execute('''
+                INSERT INTO chats (id, title, created_at, updated_at, user_id)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (chat_id, title, now, now, uid))
+        except sqlite3.OperationalError:
+            cursor.execute('''
+                INSERT INTO chats (id, title, created_at, updated_at)
+                VALUES (?, ?, ?, ?)
+            ''', (chat_id, title, now, now))
+
         conn.commit()
         conn.close()
 
@@ -473,10 +484,18 @@ Summary (2-3 sentences):"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
 
-        cursor.execute('''
-            SELECT id, title, created_at, updated_at, message_count
-            FROM chats WHERE id = ?
-        ''', (chat_id,))
+        # Try with user_id column first
+        try:
+            cursor.execute('''
+                SELECT id, title, created_at, updated_at, message_count, user_id
+                FROM chats WHERE id = ?
+            ''', (chat_id,))
+        except sqlite3.OperationalError:
+            cursor.execute('''
+                SELECT id, title, created_at, updated_at, message_count
+                FROM chats WHERE id = ?
+            ''', (chat_id,))
+
         row = cursor.fetchone()
 
         if not row:
@@ -488,7 +507,8 @@ Summary (2-3 sentences):"""
             "title": row[1],
             "created_at": row[2],
             "updated_at": row[3],
-            "message_count": row[4]
+            "message_count": row[4],
+            "user_id": row[5] if len(row) > 5 else None,
         }
 
         # Get messages for this chat
@@ -507,31 +527,50 @@ Summary (2-3 sentences):"""
         conn.close()
         return chat
 
-    def list_chats(self, limit: int = 50, search: str = None) -> List[Dict]:
-        """List all chats, optionally filtered by search term."""
+    def list_chats(self, limit: int = 50, search: str = None, user_id: str = None) -> List[Dict]:
+        """List all chats, optionally filtered by search term and user_id."""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
+        uid = user_id or self.user_id
+
+        # Check if user_id column exists
+        has_user_id = False
+        try:
+            cursor.execute("SELECT user_id FROM chats LIMIT 1")
+            has_user_id = True
+        except sqlite3.OperationalError:
+            pass
+
+        # Build user filter
+        user_filter = ""
+        params: list = []
+        if uid and has_user_id:
+            user_filter = " AND c.user_id = ?"
+            params.append(uid)
 
         if search:
-            cursor.execute('''
+            query = f'''
                 SELECT c.id, c.title, c.created_at, c.updated_at, c.message_count,
                        (SELECT content FROM messages WHERE chat_id = c.id ORDER BY id ASC LIMIT 1) as preview
                 FROM chats c
                 WHERE c.archived = 0 AND (c.title LIKE ? OR c.id IN (
                     SELECT DISTINCT chat_id FROM messages WHERE content LIKE ?
-                ))
+                )){user_filter}
                 ORDER BY c.updated_at DESC
                 LIMIT ?
-            ''', (f'%{search}%', f'%{search}%', limit))
+            '''
+            search_params = [f'%{search}%', f'%{search}%'] + params + [limit]
+            cursor.execute(query, search_params)
         else:
-            cursor.execute('''
+            query = f'''
                 SELECT c.id, c.title, c.created_at, c.updated_at, c.message_count,
                        (SELECT content FROM messages WHERE chat_id = c.id ORDER BY id ASC LIMIT 1) as preview
                 FROM chats c
-                WHERE c.archived = 0
+                WHERE c.archived = 0{user_filter}
                 ORDER BY c.updated_at DESC
                 LIMIT ?
-            ''', (limit,))
+            '''
+            cursor.execute(query, params + [limit])
 
         chats = []
         for row in cursor.fetchall():

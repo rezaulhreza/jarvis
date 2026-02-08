@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { apiFetch } from '../../lib/utils'
 import {
   BrainCircuit,
   Zap,
@@ -78,7 +79,7 @@ export function MultiModelAnalysisWidget({ className = '', compact = false }: Mu
     setResult(null)
 
     try {
-      const res = await fetch('/api/analyze', {
+      const res = await apiFetch('/api/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ query, profile }),
