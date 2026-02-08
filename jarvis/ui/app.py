@@ -121,6 +121,23 @@ def create_app() -> FastAPI:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     shared_context = ContextManager(db_path=str(db_path))
 
+    # === Auth Setup ===
+    from jarvis.auth.middleware import is_auth_enabled
+
+    auth_enabled = is_auth_enabled()
+    if auth_enabled:
+        from jarvis.auth import init_auth
+        from jarvis.auth.middleware import (
+            AuthMiddleware, CSRFMiddleware, SecurityHeadersMiddleware,
+        )
+        init_auth()
+        app.add_middleware(SecurityHeadersMiddleware)
+        app.add_middleware(CSRFMiddleware)
+        app.add_middleware(AuthMiddleware)
+        print("[Auth] Authentication enabled")
+    else:
+        print("[Auth] Authentication disabled (set JARVIS_AUTH_ENABLED=true to enable)")
+
     # Serve React build if available
     if REACT_BUILD_DIR.exists():
         app.mount("/assets", StaticFiles(directory=REACT_BUILD_DIR / "assets"), name="assets")
@@ -805,43 +822,50 @@ RULES:
     # Create table on startup
     _init_settings_db()
 
-    def _get_user_instructions() -> str:
+    def _settings_key(base: str, user_id: str | None) -> str:
+        """Build a per-user settings key. Global when user_id is None."""
+        return f"{base}:{user_id}" if user_id else base
+
+    def _get_user_instructions(user_id: str | None = None) -> str:
         """Read user-editable instructions from SQLite."""
         import sqlite3
         from jarvis import get_data_dir
         _db = get_data_dir() / "memory" / "jarvis.db"
+        key = _settings_key("system_instructions", user_id)
         try:
             conn = sqlite3.connect(str(_db))
             row = conn.execute(
-                "SELECT value FROM user_settings WHERE key = 'system_instructions'"
+                "SELECT value FROM user_settings WHERE key = ?", (key,)
             ).fetchone()
             conn.close()
             return row[0] if row else ""
         except Exception:
             return ""
 
-    def _set_user_instructions(content: str):
+    def _set_user_instructions(content: str, user_id: str | None = None):
         """Save user-editable instructions to SQLite."""
         import sqlite3
         from jarvis import get_data_dir
         _db = get_data_dir() / "memory" / "jarvis.db"
+        key = _settings_key("system_instructions", user_id)
         conn = sqlite3.connect(str(_db))
         conn.execute(
             """INSERT INTO user_settings (key, value, updated_at)
-               VALUES ('system_instructions', ?, datetime('now'))
+               VALUES (?, ?, datetime('now'))
                ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at""",
-            (content,)
+            (key, content)
         )
         conn.commit()
         conn.close()
 
-    def _delete_user_instructions():
+    def _delete_user_instructions(user_id: str | None = None):
         """Delete user instructions from SQLite."""
         import sqlite3
         from jarvis import get_data_dir
         _db = get_data_dir() / "memory" / "jarvis.db"
+        key = _settings_key("system_instructions", user_id)
         conn = sqlite3.connect(str(_db))
-        conn.execute("DELETE FROM user_settings WHERE key = 'system_instructions'")
+        conn.execute("DELETE FROM user_settings WHERE key = ?", (key,))
         conn.commit()
         conn.close()
 
@@ -862,11 +886,64 @@ RULES:
 
     _migrate_soul_to_db()
 
-    def _build_full_system_prompt(name: str = None, user_instructions: str = None) -> str:
+    # ============== Auth API Endpoints ==============
+
+    if auth_enabled:
+        from jarvis.auth import email_auth, db as auth_db
+        from jarvis.auth.middleware import (
+            set_session_cookie, set_csrf_cookie, clear_session_cookie,
+            SESSION_COOKIE,
+        )
+        from jarvis.auth.dependencies import get_current_user
+        from fastapi import Depends
+
+        @app.post("/api/auth/login")
+        async def auth_login(request: Request, data: dict):
+            """Login with email/password."""
+            email = data.get("email", "").strip()
+            password = data.get("password", "")
+
+            ip = request.client.host if request.client else None
+            ua = request.headers.get("user-agent")
+
+            session_id, user, error = await email_auth.login(email, password, ip=ip, user_agent=ua)
+            if error:
+                status = 403 if "verify" in error.lower() else 401
+                return JSONResponse(status_code=status, content={"error": error})
+
+            response = JSONResponse(content={"success": True, "user": user})
+            set_session_cookie(response, session_id)
+            set_csrf_cookie(response)
+            return response
+
+        @app.post("/api/auth/logout")
+        async def auth_logout(request: Request):
+            """Logout - clear session."""
+            session_id = request.cookies.get(SESSION_COOKIE)
+            if session_id:
+                auth_db.delete_session(session_id)
+            response = JSONResponse(content={"success": True})
+            clear_session_cookie(response)
+            return response
+
+        @app.get("/api/auth/me")
+        async def auth_me(user: dict = Depends(get_current_user)):
+            """Get current user info."""
+            return {"user": user}
+
+        @app.delete("/api/auth/sessions")
+        async def auth_logout_all(user: dict = Depends(get_current_user)):
+            """Logout from all devices."""
+            count = auth_db.delete_user_sessions(user["id"])
+            response = JSONResponse(content={"success": True, "sessions_revoked": count})
+            clear_session_cookie(response)
+            return response
+
+    def _build_full_system_prompt(name: str = None, user_instructions: str = None, user_id: str | None = None) -> str:
         """Build the complete system prompt: soul + user instructions.
         User instructions cannot override identity."""
         soul = _build_soul(name)
-        instructions = user_instructions if user_instructions is not None else _get_user_instructions()
+        instructions = user_instructions if user_instructions is not None else _get_user_instructions(user_id)
         if instructions and instructions.strip():
             return soul + f"""
 
@@ -882,29 +959,32 @@ that part and follow the soul above.
     # --- API Endpoints ---
 
     @app.get("/api/system-instructions")
-    async def get_system_instructions():
+    async def get_system_instructions(request: Request):
         """Get user-editable custom instructions (NOT the soul)."""
-        content = _get_user_instructions()
+        uid = _get_request_user_id(request)
+        content = _get_user_instructions(uid)
         return {
             "content": content,
             "isEmpty": not bool(content.strip()),
         }
 
     @app.put("/api/system-instructions")
-    async def set_system_instructions(data: dict):
+    async def set_system_instructions(request: Request, data: dict):
         """Set user-editable custom instructions."""
+        uid = _get_request_user_id(request)
         content = data.get("content", "")
         try:
-            _set_user_instructions(content)
+            _set_user_instructions(content, uid)
             return {"success": True}
         except Exception as e:
             return {"error": str(e)}
 
     @app.delete("/api/system-instructions")
-    async def delete_system_instructions():
+    async def delete_system_instructions(request: Request):
         """Clear user custom instructions."""
+        uid = _get_request_user_id(request)
         try:
-            _delete_user_instructions()
+            _delete_user_instructions(uid)
             return {"success": True}
         except Exception as e:
             return {"error": str(e)}
@@ -951,11 +1031,17 @@ that part and follow the soul above.
 
     # ============== Memories API ==============
 
-    def _parse_facts_file() -> list[dict]:
-        """Parse facts.md into structured memory items."""
+    def _get_facts_path(user_id: str | None = None):
+        """Get per-user or global facts file path."""
         from jarvis import get_data_dir
+        if user_id:
+            return get_data_dir() / "memory" / f"facts_{user_id}.md"
+        return get_data_dir() / "memory" / "facts.md"
+
+    def _parse_facts_file(user_id: str | None = None) -> list[dict]:
+        """Parse facts.md into structured memory items."""
         import re
-        facts_path = get_data_dir() / "memory" / "facts.md"
+        facts_path = _get_facts_path(user_id)
         if not facts_path.exists():
             return []
 
@@ -1007,10 +1093,9 @@ that part and follow the soul above.
 
         return memories
 
-    def _rebuild_facts_file(memories: list[dict]):
+    def _rebuild_facts_file(memories: list[dict], user_id: str | None = None):
         """Rebuild facts.md from structured memory items."""
-        from jarvis import get_data_dir
-        facts_path = get_data_dir() / "memory" / "facts.md"
+        facts_path = _get_facts_path(user_id)
         facts_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Group by section
@@ -1038,24 +1123,26 @@ that part and follow the soul above.
         facts_path.write_text("\n".join(lines))
 
     @app.get("/api/memories")
-    async def get_memories():
+    async def get_memories(request: Request):
         """Get all memories/facts."""
         try:
-            memories = _parse_facts_file()
+            uid = _get_request_user_id(request)
+            memories = _parse_facts_file(uid)
             return {"memories": memories}
         except Exception as e:
             return JSONResponse(status_code=500, content={"error": str(e)})
 
     @app.post("/api/memories")
-    async def add_memory(data: dict):
+    async def add_memory(request: Request, data: dict):
         """Add a new memory."""
+        uid = _get_request_user_id(request)
         category = data.get("category", "Other")
         fact = data.get("fact", "").strip()
         if not fact:
             return JSONResponse(status_code=400, content={"error": "Fact text is required"})
 
         from datetime import datetime
-        memories = _parse_facts_file()
+        memories = _parse_facts_file(uid)
         new_id = max((m["id"] for m in memories), default=-1) + 1
         today = datetime.now().strftime("%Y-%m-%d")
 
@@ -1069,27 +1156,29 @@ that part and follow the soul above.
             "section": section,
         })
 
-        _rebuild_facts_file(memories)
+        _rebuild_facts_file(memories, uid)
         return {"success": True, "memory": memories[-1]}
 
     @app.put("/api/memories/{memory_id}")
-    async def update_memory(memory_id: int, data: dict):
+    async def update_memory(request: Request, memory_id: int, data: dict):
         """Update an existing memory."""
-        memories = _parse_facts_file()
+        uid = _get_request_user_id(request)
+        memories = _parse_facts_file(uid)
         for mem in memories:
             if mem["id"] == memory_id:
                 if "category" in data:
                     mem["category"] = data["category"]
                 if "fact" in data:
                     mem["fact"] = data["fact"].strip()
-                _rebuild_facts_file(memories)
+                _rebuild_facts_file(memories, uid)
                 return {"success": True, "memory": mem}
         return JSONResponse(status_code=404, content={"error": "Memory not found"})
 
     @app.delete("/api/memories/{memory_id}")
-    async def delete_memory(memory_id: int):
+    async def delete_memory(request: Request, memory_id: int):
         """Delete a memory."""
-        memories = _parse_facts_file()
+        uid = _get_request_user_id(request)
+        memories = _parse_facts_file(uid)
         original_len = len(memories)
         memories = [m for m in memories if m["id"] != memory_id]
         if len(memories) == original_len:
@@ -1097,59 +1186,97 @@ that part and follow the soul above.
         # Re-index
         for i, mem in enumerate(memories):
             mem["id"] = i
-        _rebuild_facts_file(memories)
+        _rebuild_facts_file(memories, uid)
         return {"success": True}
 
     # ============== Chat History API ==============
 
+    def _get_request_user_id(request: Request) -> str | None:
+        """Get user_id from request state if auth is enabled."""
+        if auth_enabled and hasattr(request.state, 'user'):
+            return request.state.user.get("id")
+        return None
+
     @app.get("/api/chats")
-    async def list_chats(search: str = None, limit: int = 50):
+    async def list_chats(request: Request, search: str = None, limit: int = 50):
         """List all chats, optionally filtered by search."""
-        chats = shared_context.list_chats(limit=limit, search=search)
+        user_id = _get_request_user_id(request)
+        chats = shared_context.list_chats(limit=limit, search=search, user_id=user_id)
         return {"chats": chats}
 
     @app.post("/api/chats")
-    async def create_chat(title: str = "New Chat"):
+    async def create_chat(request: Request, title: str = "New Chat"):
         """Create a new chat. Cleans up empty chats first."""
+        user_id = _get_request_user_id(request)
         # Clean up empty chats (no messages) before creating new one
-        existing_chats = shared_context.list_chats(limit=10)
+        existing_chats = shared_context.list_chats(limit=10, user_id=user_id)
         for chat in existing_chats:
             if chat.get("message_count", 0) == 0:
                 shared_context.delete_chat(chat["id"])
 
-        chat_id = shared_context.create_chat(title)
+        chat_id = shared_context.create_chat(title, user_id=user_id)
         return {"id": chat_id, "title": title}
 
     @app.get("/api/chats/{chat_id}")
-    async def get_chat(chat_id: str):
+    async def get_chat(request: Request, chat_id: str):
         """Get a chat with its messages."""
         chat = shared_context.get_chat(chat_id)
         if not chat:
             return {"error": "Chat not found"}, 404
+        # Ownership check
+        user_id = _get_request_user_id(request)
+        if user_id and chat.get("user_id") and chat["user_id"] != user_id:
+            return JSONResponse(status_code=404, content={"error": "Chat not found"})
         return chat
 
     @app.patch("/api/chats/{chat_id}")
-    async def update_chat(chat_id: str, title: str = None):
+    async def update_chat(request: Request, chat_id: str, data: dict = None):
         """Update a chat's title."""
+        user_id = _get_request_user_id(request)
+        chat = shared_context.get_chat(chat_id)
+        if not chat:
+            return JSONResponse(status_code=404, content={"error": "Chat not found"})
+        if user_id and chat.get("user_id") and chat["user_id"] != user_id:
+            return JSONResponse(status_code=404, content={"error": "Chat not found"})
+        title = data.get("title") if data else None
         success = shared_context.update_chat(chat_id, title=title)
         if not success:
-            return {"error": "Chat not found"}, 404
+            return JSONResponse(status_code=404, content={"error": "Chat not found"})
         return {"success": True}
 
     @app.delete("/api/chats/{chat_id}")
-    async def delete_chat(chat_id: str):
+    async def delete_chat(request: Request, chat_id: str):
         """Delete a chat."""
+        user_id = _get_request_user_id(request)
+        chat = shared_context.get_chat(chat_id)
+        if chat and user_id and chat.get("user_id") and chat["user_id"] != user_id:
+            return JSONResponse(status_code=404, content={"error": "Chat not found"})
         success = shared_context.delete_chat(chat_id)
         if not success:
-            return {"error": "Chat not found"}, 404
+            return JSONResponse(status_code=404, content={"error": "Chat not found"})
         return {"success": True}
 
+    @app.delete("/api/chats")
+    async def delete_all_chats(request: Request):
+        """Delete all chats for the current user."""
+        user_id = _get_request_user_id(request)
+        chats = shared_context.list_chats(limit=1000, user_id=user_id)
+        deleted = 0
+        for chat in chats:
+            if shared_context.delete_chat(chat["id"]):
+                deleted += 1
+        return {"success": True, "deleted": deleted}
+
     @app.post("/api/chats/{chat_id}/switch")
-    async def switch_chat(chat_id: str):
+    async def switch_chat(request: Request, chat_id: str):
         """Switch to a different chat."""
+        user_id = _get_request_user_id(request)
+        chat = shared_context.get_chat(chat_id)
+        if chat and user_id and chat.get("user_id") and chat["user_id"] != user_id:
+            return JSONResponse(status_code=404, content={"error": "Chat not found"})
         success = shared_context.switch_chat(chat_id)
         if not success:
-            return {"error": "Chat not found"}, 404
+            return JSONResponse(status_code=404, content={"error": "Chat not found"})
         return {"success": True, "messages": shared_context.messages}
 
     @app.post("/api/chats/{chat_id}/generate-title")
@@ -2717,6 +2844,19 @@ Analyze queries using multiple AI models simultaneously.
         session_id = str(id(websocket))
         connections[session_id] = websocket
 
+        # Authenticate WebSocket if auth is enabled
+        ws_user = None
+        if auth_enabled:
+            from jarvis.auth.dependencies import get_ws_user
+            ws_user = await get_ws_user(websocket)
+            if not ws_user:
+                await websocket.send_json({
+                    "type": "error",
+                    "message": "Authentication required"
+                })
+                await websocket.close(code=4001)
+                return
+
         jarvis = None
         try:
             # Import here to avoid circular imports
@@ -2733,14 +2873,26 @@ Analyze queries using multiple AI models simultaneously.
             jarvis = Jarvis(ui=ui, working_dir=working_dir)
             instances[session_id] = jarvis
 
-            await websocket.send_json({
+            # Set user_id on context for user-scoped data
+            if ws_user:
+                jarvis.context.user_id = ws_user["id"]
+                # Create or switch to user's latest chat
+                user_chats = jarvis.context.list_chats(limit=1, user_id=ws_user["id"])
+                if user_chats and user_chats[0].get("message_count", 0) > 0:
+                    jarvis.context.switch_chat(user_chats[0]["id"])
+
+            connected_msg = {
                 "type": "connected",
                 "provider": jarvis.provider.name,
                 "model": jarvis.provider.model,
                 "project": jarvis.project.project_name,
                 "projectRoot": str(jarvis.project.project_root),
                 "assistantName": get_assistant_name(jarvis),
-            })
+            }
+            if ws_user:
+                connected_msg["user"] = ws_user
+
+            await websocket.send_json(connected_msg)
 
         except Exception as e:
             import traceback
@@ -2814,6 +2966,43 @@ Analyze queries using multiple AI models simultaneously.
                     if jarvis:
                         jarvis.context.clear()
                     await websocket.send_json({"type": "cleared"})
+
+                elif msg_type == "switch_chat":
+                    chat_id = data.get("chat_id")
+                    if chat_id and jarvis:
+                        success = jarvis.context.switch_chat(chat_id)
+                        if success:
+                            # Load messages for this chat
+                            chat_data = jarvis.context.get_chat(chat_id)
+                            ws_messages = []
+                            if chat_data and chat_data.get("messages"):
+                                for msg in chat_data["messages"]:
+                                    ws_messages.append({
+                                        "role": msg.get("role", "user"),
+                                        "content": msg.get("content", ""),
+                                        "timestamp": msg.get("timestamp", ""),
+                                    })
+                            await websocket.send_json({
+                                "type": "chat_switched",
+                                "chat_id": chat_id,
+                                "messages": ws_messages,
+                            })
+                        else:
+                            await websocket.send_json({
+                                "type": "error",
+                                "message": "Failed to switch chat",
+                            })
+
+                elif msg_type == "new_chat":
+                    if jarvis:
+                        user_id = getattr(jarvis.context, 'user_id', None)
+                        new_id = jarvis.context.create_chat("New chat", user_id=user_id)
+                        jarvis.context.switch_chat(new_id)
+                        await websocket.send_json({
+                            "type": "chat_switched",
+                            "chat_id": new_id,
+                            "messages": [],
+                        })
 
                 elif msg_type == "voice_with_video":
                     transcript = data.get("transcript", "").strip()
@@ -2922,7 +3111,7 @@ Analyze queries using multiple AI models simultaneously.
     # Message counter for throttled fact extraction
     _fact_extraction_counter: dict = {}
 
-    async def _extract_facts_async(jarvis, user_input: str, assistant_response: str):
+    async def _extract_facts_async(jarvis, user_input: str, assistant_response: str, user_id: str | None = None):
         """Extract facts from conversation in background (throttled to every 5 messages)."""
         try:
             session_id = id(jarvis)
@@ -2932,6 +3121,9 @@ Analyze queries using multiple AI models simultaneously.
 
             from jarvis.core.fact_extractor import get_fact_extractor
             extractor = get_fact_extractor()
+            # Use per-user facts file
+            if user_id:
+                extractor.facts_file = _get_facts_path(user_id)
             messages = [
                 {"role": "user", "content": user_input},
                 {"role": "assistant", "content": assistant_response}
@@ -3375,6 +3567,22 @@ Analyze queries using multiple AI models simultaneously.
             # Add to context (creates chat if needed)
             jarvis.context.add_message_to_chat("user", user_input)
 
+            # Auto-generate title from first user message and notify frontend of chat_id
+            chat_id = jarvis.context.current_chat_id
+            if chat_id:
+                chat_data = jarvis.context.get_chat(chat_id)
+                msg_count = chat_data.get("message_count", 0) if chat_data else 0
+                if msg_count <= 1:
+                    auto_title = user_input[:80].strip()
+                    if len(user_input) > 80:
+                        auto_title = auto_title.rsplit(' ', 1)[0] + '...'
+                    jarvis.context.update_chat(chat_id, title=auto_title)
+                # Notify frontend of chat_id (for URL persistence)
+                await websocket.send_json({
+                    "type": "chat_id_updated",
+                    "chat_id": chat_id,
+                })
+
             # Build history (enriched with semantic retrieval when available)
             from jarvis.providers import Message
             history = []
@@ -3732,19 +3940,19 @@ Analyze queries using multiple AI models simultaneously.
                 if hasattr(jarvis.ui, "begin_turn"):
                     jarvis.ui.begin_turn()
 
-                # Load user facts for context
+                # Load user facts for context (per-user when auth enabled)
                 user_facts = ""
                 try:
-                    from jarvis import get_data_dir
-                    facts_path = get_data_dir() / "memory" / "facts.md"
+                    _ws_uid = getattr(jarvis.context, 'user_id', None)
+                    facts_path = _get_facts_path(_ws_uid)
                     if facts_path.exists():
                         user_facts = facts_path.read_text()[:1500]  # Limit size
                 except Exception:
                     pass
 
-                # Build system prompt: soul (immutable) + user instructions (editable)
+                # Build system prompt: soul (immutable) + user instructions (editable, per-user)
                 _name = get_assistant_name(jarvis)
-                chat_system = _build_full_system_prompt(_name)
+                chat_system = _build_full_system_prompt(_name, user_id=_ws_uid)
 
                 # Add user facts if available
                 if user_facts:
@@ -3927,7 +4135,7 @@ Analyze queries using multiple AI models simultaneously.
                     jarvis.context.add_message_to_chat("assistant", clean_response_text.strip())
 
                     # Auto-extract facts from conversation (async, non-blocking)
-                    asyncio.create_task(_extract_facts_async(jarvis, user_input, clean_response_text.strip()))
+                    asyncio.create_task(_extract_facts_async(jarvis, user_input, clean_response_text.strip(), getattr(jarvis.context, 'user_id', None)))
 
                 print(f"[DONE] Total: {_time.time() - _req_start:.1f}s (fast chat)")
 
@@ -3989,7 +4197,7 @@ Analyze queries using multiple AI models simultaneously.
                         if response:
                             clean_orch = _clean_for_web(response)
                             jarvis.context.add_message_to_chat("assistant", clean_orch)
-                            asyncio.create_task(_extract_facts_async(jarvis, user_input, clean_orch))
+                            asyncio.create_task(_extract_facts_async(jarvis, user_input, clean_orch, getattr(jarvis.context, 'user_id', None)))
                             response_msg = {
                                 "type": "response",
                                 "content": clean_orch,
@@ -4122,7 +4330,7 @@ Analyze queries using multiple AI models simultaneously.
                         jarvis.context.add_message_to_chat("assistant", clean.strip())
 
                         # Auto-extract facts from conversation (async, non-blocking)
-                        asyncio.create_task(_extract_facts_async(jarvis, user_input, clean.strip()))
+                        asyncio.create_task(_extract_facts_async(jarvis, user_input, clean.strip(), getattr(jarvis.context, 'user_id', None)))
 
                 print(f"[DONE] Total: {_time.time() - _req_start:.1f}s (agent)")
 
@@ -4146,6 +4354,20 @@ Analyze queries using multiple AI models simultaneously.
             except Exception:
                 # Connection already closed, ignore
                 pass
+
+    # ============== SPA Catch-All Route ==============
+    # Must be last - serves React's index.html for client-side routing
+
+    @app.get("/{full_path:path}")
+    async def spa_catch_all(full_path: str):
+        """Serve React SPA for all non-API routes (enables client-side routing)."""
+        # Never serve SPA for API paths — return proper 404
+        if full_path.startswith("api/"):
+            return JSONResponse(status_code=404, content={"detail": "Not found"})
+        react_index = REACT_BUILD_DIR / "index.html"
+        if react_index.exists():
+            return FileResponse(react_index)
+        return get_html_template()
 
     return app
 

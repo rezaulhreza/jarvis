@@ -1,4 +1,5 @@
 import { useState, useCallback } from 'react'
+import { apiFetch } from '../lib/utils'
 import type { UploadedFile, FileType, UploadStatus } from '../types'
 
 // File type detection
@@ -75,7 +76,7 @@ export function useFileUpload(): UseFileUploadReturn {
     formData.append('file', file)
 
     try {
-      const response = await fetch('/api/upload', {
+      const response = await apiFetch('/api/upload', {
         method: 'POST',
         body: formData,
       })

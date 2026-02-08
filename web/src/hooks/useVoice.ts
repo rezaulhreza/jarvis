@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
+import { apiFetch } from '../lib/utils'
 
 interface UseVoiceOptions {
   onSpeechEnd?: (transcript: string) => void
@@ -145,7 +146,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
       // Use Chutes API if configured, otherwise fall back to local Whisper
       const endpoint = sttProviderRef.current === 'chutes' ? '/api/stt/chutes' : '/api/transcribe'
 
-      const res = await fetch(endpoint, {
+      const res = await apiFetch(endpoint, {
         method: 'POST',
         body: formData,
       })
@@ -524,7 +525,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
     // ElevenLabs TTS
     if (provider === 'elevenlabs') {
       try {
-        const res = await fetch('/api/tts/elevenlabs', {
+        const res = await apiFetch('/api/tts/elevenlabs', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ text }),
@@ -563,7 +564,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
     // Edge TTS
     if (provider === 'edge') {
       try {
-        const res = await fetch('/api/tts', {
+        const res = await apiFetch('/api/tts', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ text }),
@@ -600,7 +601,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
     if (provider === 'kokoro') {
       console.log('[TTS] Using Kokoro provider')
       try {
-        const res = await fetch('/api/tts/kokoro', {
+        const res = await apiFetch('/api/tts/kokoro', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ text }),

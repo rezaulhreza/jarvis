@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect } from 'react'
+import { apiFetch } from '../lib/utils'
 import type {
   VoiceSettings,
   TTSProvider,
@@ -55,7 +56,7 @@ export function useSettings(): UseSettingsReturn {
       setIsLoading(true)
       try {
         // Load voice settings
-        const voiceRes = await fetch('/api/settings/voice')
+        const voiceRes = await apiFetch('/api/settings/voice')
         if (voiceRes.ok) {
           const data = await voiceRes.json()
           setVoiceSettings({
@@ -66,7 +67,7 @@ export function useSettings(): UseSettingsReturn {
         }
 
         // Load user custom instructions (not the soul)
-        const promptRes = await fetch('/api/system-instructions')
+        const promptRes = await apiFetch('/api/system-instructions')
         if (promptRes.ok) {
           const data = await promptRes.json()
           setSystemPromptState(data.content || '')
@@ -74,7 +75,7 @@ export function useSettings(): UseSettingsReturn {
         }
 
         // Load providers
-        const providersRes = await fetch('/api/providers')
+        const providersRes = await apiFetch('/api/providers')
         if (providersRes.ok) {
           const data = await providersRes.json()
           setProviders(data.providers || {})
@@ -111,7 +112,7 @@ export function useSettings(): UseSettingsReturn {
   // TTS provider
   const setTTSProvider = useCallback(async (provider: TTSProvider) => {
     setVoiceSettings((prev) => ({ ...prev, tts_provider: provider }))
-    await fetch('/api/settings/voice', {
+    await apiFetch('/api/settings/voice', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ tts_provider: provider }),
@@ -121,7 +122,7 @@ export function useSettings(): UseSettingsReturn {
   // STT provider
   const setSTTProvider = useCallback(async (provider: STTProvider) => {
     setVoiceSettings((prev) => ({ ...prev, stt_provider: provider }))
-    await fetch('/api/settings/voice', {
+    await apiFetch('/api/settings/voice', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ stt_provider: provider }),
@@ -133,19 +134,19 @@ export function useSettings(): UseSettingsReturn {
     async (voiceId: string, provider: 'edge' | 'elevenlabs' | 'kokoro') => {
       setVoiceSettings((prev) => ({ ...prev, tts_voice: voiceId }))
       if (provider === 'elevenlabs') {
-        await fetch('/api/settings/elevenlabs', {
+        await apiFetch('/api/settings/elevenlabs', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ voice_id: voiceId }),
         })
       } else if (provider === 'kokoro') {
-        await fetch('/api/settings/kokoro', {
+        await apiFetch('/api/settings/kokoro', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ voice_id: voiceId }),
         })
       } else {
-        await fetch('/api/settings/voice', {
+        await apiFetch('/api/settings/voice', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ voice: voiceId }),
@@ -159,7 +160,7 @@ export function useSettings(): UseSettingsReturn {
   const setSystemPrompt = useCallback(async (prompt: string) => {
     setSystemPromptState(prompt)
     setIsDefaultPrompt(!prompt.trim())
-    await fetch('/api/system-instructions', {
+    await apiFetch('/api/system-instructions', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ content: prompt }),
@@ -167,7 +168,7 @@ export function useSettings(): UseSettingsReturn {
   }, [])
 
   const resetSystemPrompt = useCallback(async () => {
-    const res = await fetch('/api/system-instructions', { method: 'DELETE' })
+    const res = await apiFetch('/api/system-instructions', { method: 'DELETE' })
     if (res.ok) {
       setSystemPromptState('')
       setIsDefaultPrompt(true)
@@ -176,7 +177,7 @@ export function useSettings(): UseSettingsReturn {
 
   // Refresh functions
   const refreshProviders = useCallback(async () => {
-    const res = await fetch('/api/providers')
+    const res = await apiFetch('/api/providers')
     if (res.ok) {
       const data = await res.json()
       setProviders(data.providers || {})

@@ -28,7 +28,8 @@ export function MessageBubble({ message }: MessageBubbleProps) {
 
   const isUser = role === 'user'
 
-  const timeStr = timestamp?.toLocaleTimeString([], {
+  const ts = timestamp instanceof Date ? timestamp : timestamp ? new Date(timestamp) : null
+  const timeStr = ts?.toLocaleTimeString([], {
     hour: '2-digit',
     minute: '2-digit',
   })

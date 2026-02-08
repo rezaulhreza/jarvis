@@ -49,9 +49,11 @@ interface WSMessage {
   provider?: string
   project?: string
   assistantName?: string
+  chat_id?: string
   done?: boolean
   error?: string
   message?: string  // Error message from backend
+  code?: number     // WebSocket close code
   rag?: RagInfo
   tools?: ToolEvent[]
   intent?: IntentInfo
@@ -62,6 +64,8 @@ interface WSMessage {
   media_type?: 'image' | 'video' | 'audio'
   path?: string
   filename?: string
+  // Chat switching
+  messages?: Message[]
 }
 
 interface ToolEvent {
@@ -92,6 +96,7 @@ export function useWebSocket() {
   const [provider, setProvider] = useState('')
   const [project, setProject] = useState('')
   const [assistantName, setAssistantName] = useState('Jarvis')
+  const [chatId, setChatId] = useState<string | null>(null)
   const [ragStatus, setRagStatus] = useState<RagInfo | null>(null)
   const [toolTimeline, setToolTimeline] = useState<ToolEvent[]>([])
   const [intentInfo, setIntentInfo] = useState<IntentInfo | null>(null)
@@ -101,6 +106,7 @@ export function useWebSocket() {
   const [, setPendingTools] = useState<ToolEvent[]>([])
   const thinkingStartRef = useRef<number | null>(null)
   const isInsideThinkingRef = useRef(false)  // Track if currently inside <think> block
+  const onAuthErrorRef = useRef<(() => void) | null>(null)
 
   // Define handleMessage before the effect that uses it
   const handleMessage = useCallback((data: WSMessage) => {
@@ -110,6 +116,7 @@ export function useWebSocket() {
         setProvider(data.provider || '')
         setProject(data.project || '')
         if (data.assistantName) setAssistantName(data.assistantName)
+        if (data.chat_id) setChatId(data.chat_id)
         break
 
       case 'thinking':
@@ -320,6 +327,10 @@ export function useWebSocket() {
         break
       }
 
+      case 'chat_id_updated':
+        setChatId(data.chat_id || null)
+        break
+
       case 'status':
         // Status updates during long operations (e.g., "Generating image...")
         break
@@ -336,6 +347,23 @@ export function useWebSocket() {
 
       case 'cleared':
         setMessages([])
+        setStreaming('')
+        setStreamingThinking('')
+        setRagStatus(null)
+        setToolTimeline([])
+        setLiveToolStatus([])
+        setIntentInfo(null)
+        setContextStats(null)
+        thinkingStartRef.current = null
+        isInsideThinkingRef.current = false
+        break
+
+      case 'chat_switched':
+        setChatId(data.chat_id || null)
+        setMessages((data.messages || []).map((m: Message) => ({
+          ...m,
+          timestamp: m.timestamp ? new Date(m.timestamp) : new Date(),
+        })))
         setStreaming('')
         setStreamingThinking('')
         setRagStatus(null)
@@ -363,9 +391,14 @@ export function useWebSocket() {
         if (!isCleaningUp) setConnected(true)
       }
 
-      ws.current.onclose = () => {
+      ws.current.onclose = (event) => {
         if (!isCleaningUp) {
           setConnected(false)
+          // Auth failure — redirect to login
+          if (event.code === 4001) {
+            onAuthErrorRef.current?.()
+            return
+          }
           reconnectTimer = setTimeout(connect, 2000)
         }
       }
@@ -473,6 +506,31 @@ export function useWebSocket() {
     isInsideThinkingRef.current = false
   }, [])
 
+  const switchChat = useCallback((newChatId: string) => {
+    if (!ws.current || ws.current.readyState !== WebSocket.OPEN) return
+    ws.current.send(JSON.stringify({ type: 'switch_chat', chat_id: newChatId }))
+  }, [])
+
+  const createChat = useCallback(() => {
+    if (!ws.current || ws.current.readyState !== WebSocket.OPEN) return
+    ws.current.send(JSON.stringify({ type: 'new_chat' }))
+    setMessages([])
+    setChatId(null)
+    setStreaming('')
+    setStreamingThinking('')
+    setRagStatus(null)
+    setToolTimeline([])
+    setLiveToolStatus([])
+    setIntentInfo(null)
+    setContextStats(null)
+    thinkingStartRef.current = null
+    isInsideThinkingRef.current = false
+  }, [])
+
+  const setOnAuthError = useCallback((callback: () => void) => {
+    onAuthErrorRef.current = callback
+  }, [])
+
   return {
     connected,
     messages,
@@ -483,6 +541,7 @@ export function useWebSocket() {
     provider,
     project,
     assistantName,
+    chatId,
     ragStatus,
     toolTimeline,
     liveToolStatus,
@@ -492,7 +551,10 @@ export function useWebSocket() {
     sendWithVideo,
     switchModel,
     switchProvider,
+    switchChat,
+    createChat,
     clear,
     stopGeneration,
+    setOnAuthError,
   }
 }

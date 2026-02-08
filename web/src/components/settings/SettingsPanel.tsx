@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { cn } from '../../lib/utils'
+import { cn, apiFetch } from '../../lib/utils'
 import { SystemInstructions } from './SystemInstructions'
 import { MemoryPanel } from './MemoryPanel'
 import {
@@ -345,7 +345,7 @@ function VoiceSettingsTab({
 
   const saveElevenLabsKey = async () => {
     if (!elevenLabsKey) return
-    await fetch('/api/settings/elevenlabs', {
+    await apiFetch('/api/settings/elevenlabs', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ api_key: elevenLabsKey }),
@@ -667,7 +667,7 @@ function IntegrationsTab() {
   useEffect(() => {
     const fetchStatus = async () => {
       try {
-        const res = await fetch('/api/integrations/telegram/status')
+        const res = await apiFetch('/api/integrations/telegram/status')
         if (res.ok) {
           const data = await res.json()
           setTelegramStatus(data)
@@ -687,7 +687,7 @@ function IntegrationsTab() {
     setError('')
     setSuccess('')
     try {
-      const res = await fetch('/api/integrations/telegram/configure', {
+      const res = await apiFetch('/api/integrations/telegram/configure', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ token: telegramToken.trim() }),
@@ -696,7 +696,7 @@ function IntegrationsTab() {
         setSuccess('Telegram bot token saved!')
         setTelegramToken('')
         // Refresh status
-        const statusRes = await fetch('/api/integrations/telegram/status')
+        const statusRes = await apiFetch('/api/integrations/telegram/status')
         if (statusRes.ok) {
           setTelegramStatus(await statusRes.json())
         }
@@ -717,7 +717,7 @@ function IntegrationsTab() {
     setError('')
     setSuccess('')
     try {
-      const res = await fetch('/api/integrations/telegram/webhook/setup', {
+      const res = await apiFetch('/api/integrations/telegram/webhook/setup', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ url: webhookUrl.trim() }),
@@ -727,7 +727,7 @@ function IntegrationsTab() {
         setSuccess('Webhook configured!')
         setWebhookUrl('')
         // Refresh status
-        const statusRes = await fetch('/api/integrations/telegram/status')
+        const statusRes = await apiFetch('/api/integrations/telegram/status')
         if (statusRes.ok) {
           setTelegramStatus(await statusRes.json())
         }
@@ -745,12 +745,12 @@ function IntegrationsTab() {
     setSaving(true)
     setError('')
     try {
-      const res = await fetch('/api/integrations/telegram/webhook/remove', {
+      const res = await apiFetch('/api/integrations/telegram/webhook/remove', {
         method: 'POST',
       })
       if (res.ok) {
         setSuccess('Webhook removed')
-        const statusRes = await fetch('/api/integrations/telegram/status')
+        const statusRes = await apiFetch('/api/integrations/telegram/status')
         if (statusRes.ok) {
           setTelegramStatus(await statusRes.json())
         }
@@ -920,7 +920,7 @@ function CalendarIntegration() {
 
   const fetchStatus = async () => {
     try {
-      const res = await fetch('/api/calendar/status')
+      const res = await apiFetch('/api/calendar/status')
       if (res.ok) {
         setStatus(await res.json())
       }
@@ -938,7 +938,7 @@ function CalendarIntegration() {
     setSuccess('')
 
     try {
-      const res = await fetch('/api/calendar/apple/connect', {
+      const res = await apiFetch('/api/calendar/apple/connect', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username: appleId.trim(), app_password: appleAppPassword.trim() }),
@@ -962,7 +962,7 @@ function CalendarIntegration() {
 
   const disconnectApple = async () => {
     try {
-      await fetch('/api/calendar/apple/disconnect', { method: 'POST' })
+      await apiFetch('/api/calendar/apple/disconnect', { method: 'POST' })
       fetchStatus()
     } catch (err) {
       console.error('Failed to disconnect:', err)

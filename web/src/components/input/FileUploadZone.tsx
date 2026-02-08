@@ -122,7 +122,7 @@ export function FileUploadZone({
       onDragLeave={handleDragLeave}
       onDragOver={handleDragOver}
       onDrop={handleDrop}
-      className="relative flex-1 flex flex-col"
+      className="relative flex-1 flex flex-col min-h-0 overflow-hidden"
     >
       {children}
 

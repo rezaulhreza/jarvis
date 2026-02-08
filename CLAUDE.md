@@ -25,6 +25,7 @@ jarvis/                  # Python backend package
 ├── providers/          # LLM provider abstractions (ollama, anthropic, openai, gemini)
 ├── skills/             # Built-in tools (web_search, file_ops, shell, etc.)
 ├── knowledge/          # RAG engine with ChromaDB/Qdrant
+├── auth/               # Authentication (SQLAlchemy models, email/OAuth, middleware)
 ├── ui/                 # Terminal and FastAPI web server
 ├── voice/              # Voice I/O system
 ├── assistant.py        # Main Jarvis class
@@ -120,6 +121,8 @@ The system uses `config/rules.md` to define which operations require user confir
 - `rich>=13.0.0` - Terminal UI
 - `click>=8.0.0` - CLI framework
 - `sentence-transformers>=2.2.0` - Embeddings
+- `sqlalchemy>=2.0.0` - ORM for auth tables (optional, `[auth]` extra)
+- `passlib[bcrypt]>=1.7.0` - Password hashing (optional, `[auth]` extra)
 
 ## Development Notes
 
@@ -127,8 +130,12 @@ The system uses `config/rules.md` to define which operations require user confir
 - The web UI runs on port 7777 (backend) and 3000 (frontend dev server)
 - Conversation history is stored in `memory/jarvis.db`
 - Vector embeddings are stored in `knowledge/chroma_db/`
+- Auth is optional: `JARVIS_AUTH_ENABLED=true` enables it, `JARVIS_EMAIL_VERIFICATION=false` skips email verify
+- All dependencies are managed via `pyproject.toml` (no requirements.txt)
 
 # Version Control
 
 - NEVER expose secrets in vcs.
 - NEVER add `Co Authored By Claude` in commit message.
+- NEVER AUTO COMMIT. ALWAYS ASK USER TO COMMIT.
+- WHEN ASKED TO COMMIT, DO ATOMIC COMMIT UNLESS USER ASKS TO COMMIT ALL.

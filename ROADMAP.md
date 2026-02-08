@@ -279,12 +279,37 @@ Transform Jarvis into a fully autonomous AI life management platform with:
 
 ---
 
+### Phase 7: Authentication & Multi-User (2026-02-08)
+
+#### Authentication System
+- [x] SQLAlchemy ORM models (User, Session, VerificationToken) with SQLite
+- [x] Email/password login with argon2 password hashing
+- [x] Session-based auth with httpOnly cookies (30-day expiry)
+- [x] CSRF protection (double-submit cookie pattern)
+- [x] Security headers middleware (X-Content-Type-Options, X-Frame-Options, etc.)
+- [x] CLI user management: `jarvis user create/list/delete/passwd/rename/email`
+- [x] Login-only UI (no registration, OAuth, or password reset exposed in UI)
+
+#### Per-User Isolation
+- [x] Per-user chat history (scoped by user_id in SQLite)
+- [x] Per-user system instructions (composite key `system_instructions:{user_id}`)
+- [x] Per-user memory/facts (`facts_{user_id}.md` files)
+- [x] Per-user fact extraction (async, scoped to user)
+
+#### Frontend Auth
+- [x] AuthContext with login/logout
+- [x] ProtectedRoute component
+- [x] Chat sidebar with user menu and logout
+- [x] Clean login page (email + password only)
+
+---
+
 ## In Progress
 
-### Phase 7: Polish & Stability
+### Phase 8: Polish & Stability
 
 #### UI Improvements
-- [ ] Chat history sidebar with search, edit, and auto-titles
+- [x] Chat history sidebar with search, edit, and auto-titles
 - [ ] Keyboard shortcuts for common actions
 - [ ] Message editing and regeneration
 - [ ] Export conversations (Markdown, JSON)
@@ -306,28 +331,7 @@ Transform Jarvis into a fully autonomous AI life management platform with:
 
 ## Planned
 
-### Phase 8: Multi-User Support
-
-#### Authentication
-- [ ] User registration/login
-- [ ] JWT token authentication
-- [ ] Role-based access control (admin, user, viewer)
-- [ ] Session management with refresh tokens
-
-#### Per-User Isolation
-- [ ] Per-user settings storage
-- [ ] Per-user conversation history
-- [ ] Per-user knowledge base
-- [ ] Per-user integrations and API keys
-
-#### Security
-- [ ] API key encryption at rest
-- [ ] Rate limiting per user
-- [ ] Audit logging
-- [ ] Input sanitization
-- [ ] HTTPS enforcement
-
-### Phase 9: Real Integrations
+### Phase 9: Real Integrations (Future)
 
 #### Calendar
 - [ ] Google Calendar API
@@ -390,7 +394,7 @@ Transform Jarvis into a fully autonomous AI life management platform with:
 | Task Storage | SQLite | Simple, local, no external deps |
 | Weather API | wttr.in / Open-Meteo | Free, no API key required |
 | Telegram | python-telegram-bot | Mature, async support |
-| Auth (planned) | JWT + bcrypt | Industry standard |
+| Auth | Session cookies + argon2 | Simple, secure, CLI-managed users |
 | Multi-model | Custom router + intent | Full control over handoffs |
 | Vector DB | ChromaDB + Qdrant | Local-first with cloud option |
 | Embeddings | nomic-embed-text | 768-dim, runs locally via Ollama |
@@ -405,6 +409,15 @@ Transform Jarvis into a fully autonomous AI life management platform with:
 ---
 
 ## Progress Log
+
+### 2026-02-08
+- Added authentication system (SQLAlchemy ORM, argon2 hashing, session cookies, CSRF)
+- Added per-user data isolation (chat history, system instructions, memory/facts)
+- Added CLI user management (create, list, delete, passwd, rename, email)
+- Added login page UI with ProtectedRoute
+- Added chat sidebar with search, grouping, rename, delete, user menu
+- Removed OAuth (Google/GitHub) and self-registration from UI
+- Simplified auth to login-only UI + CLI user management
 
 ### 2026-02-07
 - Added async parallel tool executor with concurrent execution

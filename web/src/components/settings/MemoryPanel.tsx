@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { cn } from '../../lib/utils'
+import { cn, apiFetch } from '../../lib/utils'
 import {
   Trash2,
   Pencil,
@@ -108,7 +108,7 @@ export function MemoryPanel() {
     setAdding(true)
     setError('')
     try {
-      const res = await fetch('/api/memories', {
+      const res = await apiFetch('/api/memories', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ category: newCategory, fact: newFact.trim() }),
@@ -140,7 +140,7 @@ export function MemoryPanel() {
     setSaving(true)
     setError('')
     try {
-      const res = await fetch(`/api/memories/${editingId}`, {
+      const res = await apiFetch(`/api/memories/${editingId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ category: editCategory, fact: editFact.trim() }),
@@ -168,7 +168,7 @@ export function MemoryPanel() {
   const handleDelete = async (id: number) => {
     setError('')
     try {
-      const res = await fetch(`/api/memories/${id}`, { method: 'DELETE' })
+      const res = await apiFetch(`/api/memories/${id}`, { method: 'DELETE' })
       if (res.ok) {
         setConfirmDeleteId(null)
         await fetchMemories()
