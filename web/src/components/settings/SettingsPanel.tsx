@@ -14,6 +14,7 @@ import {
   MessageCircle,
   AlertCircle,
   Loader2,
+  Search,
 } from 'lucide-react'
 import type {
   VoiceSettings,
@@ -218,6 +219,19 @@ function ModelSettings({
   onSwitchModel: (model: string) => void
   onSwitchProvider: (provider: string) => void
 }) {
+  const [modelSearch, setModelSearch] = useState('')
+
+  const filteredModels = modelSearch
+    ? models.filter((m) => m.toLowerCase().includes(modelSearch.toLowerCase()))
+    : models
+
+  // Put current model first, then sort alphabetically
+  const sortedModels = [...filteredModels].sort((a, b) => {
+    if (a === currentModel) return -1
+    if (b === currentModel) return 1
+    return a.localeCompare(b)
+  })
+
   return (
     <div className="space-y-6">
       {/* Provider Selection */}
@@ -254,12 +268,35 @@ function ModelSettings({
 
       {/* Model Selection */}
       <div>
-        <h3 className="text-sm font-medium text-text mb-3">Model</h3>
-        <div className="space-y-1 max-h-64 overflow-y-auto scrollbar-thin">
-          {models.length === 0 ? (
-            <p className="text-sm text-text-muted p-3">No models available</p>
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-sm font-medium text-text">Model</h3>
+          <span className="text-xs text-text-muted">{filteredModels.length} models</span>
+        </div>
+
+        {/* Search */}
+        <div className="relative mb-2">
+          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-text-muted" />
+          <input
+            type="text"
+            value={modelSearch}
+            onChange={(e) => setModelSearch(e.target.value)}
+            placeholder="Search models..."
+            className={cn(
+              'w-full pl-9 pr-3 py-2 rounded-lg text-sm',
+              'bg-surface-2 border border-border/30 text-text',
+              'placeholder:text-text-muted/40',
+              'focus:outline-none focus:border-cyan-500/50'
+            )}
+          />
+        </div>
+
+        <div className="space-y-1 max-h-80 overflow-y-auto scrollbar-thin">
+          {sortedModels.length === 0 ? (
+            <p className="text-sm text-text-muted p-3">
+              {modelSearch ? 'No models match your search' : 'No models available'}
+            </p>
           ) : (
-            models.map((model) => (
+            sortedModels.map((model) => (
               <button
                 key={model}
                 onClick={() => onSwitchModel(model)}

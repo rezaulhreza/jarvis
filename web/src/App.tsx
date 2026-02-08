@@ -533,36 +533,32 @@ export default function App() {
           </div>
         </div>
 
-        {/* Camera video preview - floating PiP */}
-        {isCameraActive && (
-          <div className="absolute bottom-32 right-6 z-20">
-            <div className="relative rounded-2xl overflow-hidden border-2 border-cyan-500/40 shadow-lg shadow-cyan-500/20">
-              <video
-                ref={videoRef}
-                autoPlay
-                playsInline
-                muted
-                className="w-[160px] h-[120px] object-cover mirror"
-                style={{ transform: 'scaleX(-1)' }}
-              />
-              <div className="absolute top-2 left-2 flex items-center gap-1 px-2 py-0.5 rounded-full bg-black/60 backdrop-blur-sm">
-                <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse" />
-                <span className="text-[10px] text-cyan-400 font-medium">LIVE</span>
-              </div>
-              <button
-                onClick={stopCamera}
-                className="absolute top-2 right-2 w-6 h-6 rounded-full bg-black/60 backdrop-blur-sm flex items-center justify-center text-white/60 hover:text-white transition-colors"
-              >
-                <CameraOff size={12} />
-              </button>
+        {/* Single video element - always mounted so ref stays stable */}
+        <div className={cn(
+          "absolute bottom-32 right-6 z-20",
+          !isCameraActive && "hidden"
+        )}>
+          <div className="relative rounded-2xl overflow-hidden border-2 border-cyan-500/40 shadow-lg shadow-cyan-500/20">
+            <video
+              ref={videoRef}
+              autoPlay
+              playsInline
+              muted
+              className="w-[160px] h-[120px] object-cover"
+              style={{ transform: 'scaleX(-1)' }}
+            />
+            <div className="absolute top-2 left-2 flex items-center gap-1 px-2 py-0.5 rounded-full bg-black/60 backdrop-blur-sm">
+              <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse" />
+              <span className="text-[10px] text-cyan-400 font-medium">LIVE</span>
             </div>
+            <button
+              onClick={stopCamera}
+              className="absolute top-2 right-2 w-6 h-6 rounded-full bg-black/60 backdrop-blur-sm flex items-center justify-center text-white/60 hover:text-white transition-colors"
+            >
+              <CameraOff size={12} />
+            </button>
           </div>
-        )}
-
-        {/* Hidden video element for camera (when preview not shown) */}
-        {!isCameraActive && (
-          <video ref={videoRef} className="hidden" autoPlay playsInline muted />
-        )}
+        </div>
 
         {/* Camera error toast */}
         {cameraError && (
