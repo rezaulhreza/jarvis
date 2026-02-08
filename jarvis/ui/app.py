@@ -2695,7 +2695,9 @@ Analyze queries using multiple AI models simultaneously.
                         # Run vision in thread to not block event loop
                         try:
                             from jarvis.skills.media_gen import analyze_image
-                            analysis = await asyncio.to_thread(analyze_image, frame_path, vision_prompt)
+                            # Use current provider for vision (chutes/ollama/auto)
+                            vision_provider = jarvis.provider.name if hasattr(jarvis, 'provider') else "auto"
+                            analysis = await asyncio.to_thread(analyze_image, frame_path, vision_prompt, vision_provider)
 
                             # Clear tool status
                             await websocket.send_json({

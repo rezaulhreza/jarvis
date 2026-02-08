@@ -426,6 +426,14 @@ class ChutesProvider(BaseProvider):
                     metadata={"owned_by": getattr(model, "owned_by", None)}
                 ))
 
+            # Merge in KNOWN_MODELS that weren't discovered by API
+            discovered_ids = {m.id for m in self._discovered_models}
+            for known in self.KNOWN_MODELS:
+                if known not in discovered_ids:
+                    self._discovered_models.append(ModelInfo(
+                        id=known, name=known.split("/")[-1] if "/" in known else known
+                    ))
+
             print(f"[Chutes] Discovered {len(self._discovered_models)} models")
             return self._discovered_models
 

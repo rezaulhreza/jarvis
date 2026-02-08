@@ -554,7 +554,7 @@ def analyze_image(image_path: str, prompt: str = "Describe this image in detail.
                     "Content-Type": "application/json"
                 },
                 json={
-                    "model": "Qwen/Qwen2.5-VL-72B-Instruct",
+                    "model": "Qwen/Qwen2.5-VL-72B-Instruct-TEE",
                     "messages": [{
                         "role": "user",
                         "content": [
