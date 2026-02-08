@@ -85,7 +85,7 @@ export function MultiModelAnalysisWidget({ className = '', compact = false }: Mu
       })
       const data = await res.json()
       setResult(data)
-    } catch (err) {
+    } catch {
       setResult({
         error: 'Analysis failed',
         query,

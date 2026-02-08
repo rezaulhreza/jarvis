@@ -403,8 +403,6 @@ function MobileDashboard({
   orbState,
   volume,
   playbackVolume,
-  isMuted: _isMuted,
-  wakeWordEnabled: _wakeWordEnabled,
   input,
   files,
   reasoningLevel,
@@ -415,7 +413,6 @@ function MobileDashboard({
   onFilesAdded,
   onRemoveFile,
   onOrbClick,
-  onToggleMute: _onToggleMute,
   onOpenSettings,
   onQuickCommand,
 }: {

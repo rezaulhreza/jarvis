@@ -5,6 +5,10 @@
     <link rel="icon" type="image/jpeg" href="/jarvis.jpeg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Jarvis</title>
+    <script>
+      // Prevent flash of wrong theme
+      (function(){var t=localStorage.getItem('jarvis_theme');if(!t)t=window.matchMedia('(prefers-color-scheme:light)').matches?'light':'dark';document.documentElement.classList.add(t)})()
+    </script>
   </head>
   <body>
     <div id="root"></div>

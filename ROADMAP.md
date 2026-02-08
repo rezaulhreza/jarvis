@@ -218,15 +218,73 @@ Transform Jarvis into a fully autonomous AI life management platform with:
 - [x] Backend `voice_with_video` handler: decode frame → vision analysis → respond
 - [x] Falls back to text-only if vision fails; auto-cleanup of temp frames
 
+### Phase 6: UI Redesign & Voice-First Experience (2026-02-08)
+
+#### Dark Glass UI Redesign
+- [x] Glass-card design system with `backdrop-filter: blur(20px)` and CSS custom properties
+- [x] Right-aligned user bubbles (cyan accent), left-aligned assistant bubbles (glass-card)
+- [x] Pill-shaped unified input with circular send button
+- [x] Welcome empty state with greeting and 4 quick action cards
+- [x] Compact header with avatar, model name, and consolidated controls
+
+#### Full-Screen Voice Overlay
+- [x] Extracted voice mode to dedicated `VoiceOverlay` component (was inline in App.tsx)
+- [x] XL iridescent orb (288px) with state-aware gradients and glass shine
+- [x] Real-time `WaveformVisualizer` using `requestAnimationFrame` + direct DOM updates (60fps)
+- [x] Live transcript display and assistant response text in voice mode
+- [x] Interrupt controls: stop TTS, stop generation, resume listening
+- [x] `interruptAndListen()` in useVoice for seamless conversation flow
+- [x] `getFrequencyData()` / `getPlaybackFrequencyData()` exposed for waveform viz
+
+#### Light & Dark Theme
+- [x] `useTheme` hook with localStorage persistence and OS preference detection
+- [x] CSS custom properties for all theme colors (`.light` class override)
+- [x] FOUC prevention via inline `<script>` in index.html
+- [x] Sun/Moon toggle button in header
+
+#### Stop Generation
+- [x] WebSocket `stop` message handler cancels active `asyncio.Task`
+- [x] `stop_requested` flag propagated to agent loop and streaming producer
+- [x] Send button becomes red stop icon during loading/streaming
+- [x] Voice mode mic button shows stop during thinking
+- [x] Immediate response termination with clean `done` message
+
+#### Draggable Camera Preview
+- [x] `useDraggable` hook with `PointerEvent` API (drag + resize + edge snapping)
+- [x] `DraggableCamera` component with LIVE badge, corner resize handles
+- [x] Position/size persisted to localStorage, boundary clamped to viewport
+- [x] Separate layouts: floating in chat mode, inline in voice overlay
+
+#### Floating Mobile Orb
+- [x] Iron Man arc reactor style FAB (`FloatingOrb` component, mobile only)
+- [x] Concentric ping rings, conic gradient spinner, volume-reactive scaling
+- [x] State-aware colors (purple listening, green speaking, cyan thinking)
+- [x] Glass shine sweep animation, breathing idle state
+- [x] Tap to enter voice mode
+
+#### Enhanced Orb System
+- [x] `xl` size variant (288px) for voice overlay
+- [x] Iridescent radial gradients per state (idle, listening, speaking, thinking)
+- [x] `orb-iridescent` animation (6s hue-rotate cycle)
+- [x] Glass shine overlay with traveling light reflection
+- [x] 4th halo ring with conic gradient in `OrbRings`
+
+#### Identity & Personalization
+- [x] Strong identity enforcement across 4 prompt locations (agent, fast chat, default soul, Telegram)
+- [x] "Built by Rez" branding with "personal AI assistant" identity
+- [x] Per-user personalization via `user.nickname`/`user.name` in config
+- [x] Never reveals underlying model, never mentions Google/OpenAI/Anthropic/Meta
+- [x] Conditional TTS default: kokoro (when Chutes API key set) / edge (otherwise)
+- [x] Direct and brief response style in system prompt
+
 ---
 
 ## In Progress
 
-### Phase 6: Polish & Stability
+### Phase 7: Polish & Stability
 
 #### UI Improvements
 - [ ] Chat history sidebar with search, edit, and auto-titles
-- [ ] Responsive design alignment (desktop ↔ mobile)
 - [ ] Keyboard shortcuts for common actions
 - [ ] Message editing and regeneration
 - [ ] Export conversations (Markdown, JSON)
@@ -248,7 +306,7 @@ Transform Jarvis into a fully autonomous AI life management platform with:
 
 ## Planned
 
-### Phase 7: Multi-User Support
+### Phase 8: Multi-User Support
 
 #### Authentication
 - [ ] User registration/login
@@ -269,7 +327,7 @@ Transform Jarvis into a fully autonomous AI life management platform with:
 - [ ] Input sanitization
 - [ ] HTTPS enforcement
 
-### Phase 8: Real Integrations
+### Phase 9: Real Integrations
 
 #### Calendar
 - [ ] Google Calendar API
@@ -301,7 +359,7 @@ Transform Jarvis into a fully autonomous AI life management platform with:
 - [ ] Workout tracking
 - [ ] Health metrics dashboard
 
-### Phase 9: Advanced AI Features
+### Phase 10: Advanced AI Features
 
 #### Model Orchestration
 - [ ] Task classification for optimal model selection

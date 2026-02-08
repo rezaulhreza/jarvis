@@ -368,19 +368,32 @@ class ChutesProvider(BaseProvider):
         # Use vision model
         vision_model = self.MODELS.get("vision", self.model)
 
+        # Detect if the prompt asks for brevity and adjust max_tokens accordingly
+        brief_keywords = ["brief", "short", "concise", "quick", "one sentence", "few words"]
+        is_brief = any(kw in prompt.lower() for kw in brief_keywords)
+        max_tokens = 200 if is_brief else 1024
+
+        messages = []
+        if is_brief:
+            messages.append({
+                "role": "system",
+                "content": "Respond concisely in 1-2 sentences. Be direct and brief unless otherwise specified."
+            })
+        messages.append({
+            "role": "user",
+            "content": [
+                {"type": "text", "text": prompt},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/jpeg;base64,{image_data}"}
+                }
+            ]
+        })
+
         response = self.client.chat.completions.create(
             model=vision_model,
-            messages=[{
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": f"data:image/jpeg;base64,{image_data}"}
-                    }
-                ]
-            }],
-            max_tokens=1024
+            messages=messages,
+            max_tokens=max_tokens
         )
         return response.choices[0].message.content
 

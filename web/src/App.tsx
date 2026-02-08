@@ -4,13 +4,17 @@ import { useVoice } from './hooks/useVoice'
 import { useCamera } from './hooks/useCamera'
 import { useFileUpload } from './hooks/useFileUpload'
 import { useWakeWord } from './hooks/useWakeWord'
+import { useTheme } from './hooks/useTheme'
 import { cn } from './lib/utils'
 
 // Components
 import { MessageList } from './components/chat'
 import { UnifiedInput, FileUploadZone } from './components/input'
 import { SettingsPanel } from './components/settings'
-import { Orb, getOrbState } from './components/orb'
+import { VoiceOverlay } from './components/voice/VoiceOverlay'
+import { FloatingOrb } from './components/orb'
+import { getOrbState } from './components/orb/getOrbState'
+import { DraggableCamera } from './components/camera/DraggableCamera'
 
 // Icons
 import {
@@ -18,14 +22,9 @@ import {
   Zap,
   Scale,
   Brain,
-  Trash2,
-  Volume2,
-  VolumeX,
-  Mic,
-  Keyboard,
   AudioWaveform,
-  Camera,
-  CameraOff,
+  Sun,
+  Moon,
 } from 'lucide-react'
 
 // Types
@@ -38,18 +37,25 @@ const LOADING_TEXTS = [
 ]
 
 export default function App() {
+  // Theme
+  const { theme, toggleTheme } = useTheme()
+
   // Assistant configuration (customizable name, etc.)
   const [assistantName, setAssistantName] = useState('Jarvis')
 
   // State
   const [mode, setMode] = useState<'chat' | 'voice'>('chat')
   const [reasoningLevel, setReasoningLevel] = useState<ReasoningLevel>(null)
-  const [voiceOutput, setVoiceOutput] = useState(false)
+  const [voiceOutput] = useState(false)
   const [input, setInput] = useState('')
   const [lastSpokenIndex, setLastSpokenIndex] = useState(-1)
   const [loadingText, setLoadingText] = useState('')
-  const [wakeWordEnabled, setWakeWordEnabled] = useState(false) // Disabled for now
-  const [wakeWord, setWakeWord] = useState('jarvis')
+  const [wakeWordEnabled, setWakeWordEnabled] = useState(() => {
+    return localStorage.getItem('jarvis_wake_word_enabled') === 'true'
+  })
+  const [wakeWord, setWakeWord] = useState(() => {
+    return localStorage.getItem('jarvis_wake_word') || 'jarvis'
+  })
 
   // Settings state
   const [showSettings, setShowSettings] = useState(false)
@@ -59,7 +65,7 @@ export default function App() {
   const [elevenVoices, setElevenVoices] = useState<{ id: string; name: string }[]>([])
   const [kokoroVoices, setKokoroVoices] = useState<{ id: string; name: string }[]>([])
   const [chutesConfigured, setChutesConfigured] = useState(false)
-  const [ttsProvider, setTtsProvider] = useState<TTSProvider>('browser')
+  const [ttsProvider, setTtsProvider] = useState<TTSProvider>('edge')
   const [sttProvider, setSttProvider] = useState<STTProvider>('browser')
   const [currentVoice, setCurrentVoice] = useState('en-GB-SoniaNeural')
   const [systemPrompt, setSystemPromptState] = useState('')
@@ -76,14 +82,13 @@ export default function App() {
     model,
     provider,
     assistantName: wsAssistantName,
-    intentInfo,
     contextStats,
     liveToolStatus,
     send,
     sendWithVideo,
-    clear,
     switchModel,
     switchProvider,
+    stopGeneration,
   } = useWebSocket()
 
   // File upload hook
@@ -115,19 +120,23 @@ export default function App() {
     console.log('User interrupted')
   }, [])
 
-  // Voice hook - for push-to-talk and voice mode
+  // Voice hook
   const {
     isListening,
     isRecording,
     isPlaying,
     volume,
     playbackVolume,
+    interimTranscript,
     startListening,
     stopListening,
     startRecording,
     stopRecording,
     speak,
     stopSpeaking,
+    getFrequencyData,
+    getPlaybackFrequencyData,
+    interruptAndListen,
   } = useVoice({
     onSpeechEnd: handleVoiceInput,
     onInterrupt: handleInterrupt,
@@ -136,26 +145,57 @@ export default function App() {
 
   // Sync assistant name from WebSocket connection
   useEffect(() => {
-    if (wsAssistantName) setAssistantName(wsAssistantName)
+    if (wsAssistantName) setAssistantName(wsAssistantName) // eslint-disable-line react-hooks/set-state-in-effect -- syncing external WS data
   }, [wsAssistantName])
 
-  // Load wake word from localStorage
-  useEffect(() => {
-    const savedWakeWord = localStorage.getItem('jarvis_wake_word')
-    if (savedWakeWord) setWakeWord(savedWakeWord)
-  }, [])
+  // Voice mode handlers
+  const enterVoiceMode = useCallback(() => {
+    setMode('voice')
+    stopSpeaking()
+    startListening()
+  }, [stopSpeaking, startListening])
 
-  // Wake word detection - disabled for now
+  const exitVoiceMode = useCallback(() => {
+    stopListening()
+    stopSpeaking()
+    stopCamera()
+    setMode('chat')
+  }, [stopListening, stopSpeaking, stopCamera])
+
+  // Wake word detection
+  // Stop wake word when voice mode is active (browsers allow only one SpeechRecognition)
+  const wakeWordActive = wakeWordEnabled && mode !== 'voice' && !isListening && !isRecording
   useWakeWord({
     keyword: wakeWord,
-    onWakeWord: () => {},
-    enabled: false,
+    onWakeWord: enterVoiceMode,
+    enabled: wakeWordActive,
   })
+
+  // Persist wake word settings to both localStorage (fast) and backend (durable)
+  const handleSetWakeWordEnabled = useCallback(async (enabled: boolean) => {
+    setWakeWordEnabled(enabled)
+    localStorage.setItem('jarvis_wake_word_enabled', String(enabled))
+    await fetch('/api/settings/voice', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ wake_word_enabled: enabled }),
+    }).catch(() => { /* ignore network errors */ })
+  }, [])
+
+  const handleSetWakeWord = useCallback(async (word: string) => {
+    setWakeWord(word)
+    localStorage.setItem('jarvis_wake_word', word)
+    await fetch('/api/settings/voice', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ wake_word: word }),
+    }).catch(() => { /* ignore network errors */ })
+  }, [])
 
   // Randomize loading text
   useEffect(() => {
     if (isLoading) {
-      setLoadingText(LOADING_TEXTS[Math.floor(Math.random() * LOADING_TEXTS.length)])
+      setLoadingText(LOADING_TEXTS[Math.floor(Math.random() * LOADING_TEXTS.length)]) // eslint-disable-line react-hooks/set-state-in-effect -- derived state from prop
     }
   }, [isLoading])
 
@@ -198,6 +238,14 @@ export default function App() {
           if (data.tts_provider) setTtsProvider(data.tts_provider)
           if (data.tts_voice) setCurrentVoice(data.tts_voice)
           if (data.stt_provider) setSttProvider(data.stt_provider)
+          if (data.wake_word) {
+            setWakeWord(data.wake_word)
+            localStorage.setItem('jarvis_wake_word', data.wake_word)
+          }
+          if (data.wake_word_enabled !== undefined) {
+            setWakeWordEnabled(data.wake_word_enabled)
+            localStorage.setItem('jarvis_wake_word_enabled', String(data.wake_word_enabled))
+          }
         }
         if (promptRes?.ok) {
           const data = await promptRes.json()
@@ -227,7 +275,7 @@ export default function App() {
       const last = messages[lastIndex]
       if (last.role === 'assistant' && lastIndex > lastSpokenIndex) {
         speak(last.content, ttsProvider)
-        setLastSpokenIndex(lastIndex)
+        setLastSpokenIndex(lastIndex) // eslint-disable-line react-hooks/set-state-in-effect -- tracking spoken index
       }
     }
   }, [messages, mode, voiceOutput, speak, lastSpokenIndex, ttsProvider])
@@ -251,29 +299,23 @@ export default function App() {
     }
   }, [mode, isListening, stopListening])
 
-  // Voice mode handlers
-  const enterVoiceMode = useCallback(() => {
-    setMode('voice')
-    stopSpeaking()
-    startListening()
-  }, [stopSpeaking, startListening])
-
-  const exitVoiceMode = useCallback(() => {
-    stopListening()
-    stopSpeaking()
-    stopCamera()
-    setMode('chat')
-  }, [stopListening, stopSpeaking, stopCamera])
-
   // Handlers
   const handleSend = useCallback(() => {
     const attachments = getAttachmentIds()
-    // Allow sending with just attachments (no text)
     if ((!input.trim() && attachments.length === 0) || !connected) return
     send(input.trim(), true, reasoningLevel, attachments)
     setInput('')
     clearFiles()
   }, [input, connected, send, reasoningLevel, clearFiles, getAttachmentIds])
+
+  const handleQuickAction = useCallback((prompt: string) => {
+    setInput(prompt)
+    // If it's a complete prompt (no trailing space), send immediately
+    if (!prompt.endsWith(' ') && connected) {
+      send(prompt, true)
+      setInput('')
+    }
+  }, [connected, send])
 
   const handleCameraToggle = useCallback(() => {
     if (isCameraActive) {
@@ -294,6 +336,14 @@ export default function App() {
       startRecording()
     }
   }, [isRecording, stopRecording, send, stopSpeaking, startRecording])
+
+  const handleVoiceMicToggle = useCallback(() => {
+    if (isListening) {
+      stopListening()
+    } else {
+      startListening()
+    }
+  }, [isListening, stopListening, startListening])
 
   // Settings handlers
   const handleSetTTSProvider = useCallback(async (p: TTSProvider) => {
@@ -357,296 +407,53 @@ export default function App() {
   }, [])
 
   // Smart defaults: Auto-configure TTS when switching to Chutes
-  // Note: Keep browser STT as default since it's more reliable
   useEffect(() => {
     if (provider === 'chutes' && chutesConfigured) {
-      // Auto-set Kokoro TTS for best voice quality
       if (ttsProvider !== 'kokoro') {
-        handleSetTTSProvider('kokoro')
+        handleSetTTSProvider('kokoro') // eslint-disable-line react-hooks/set-state-in-effect -- auto-config on provider change
       }
-      // Keep browser STT - it's more reliable than Chutes STT
     }
   }, [provider, chutesConfigured, ttsProvider, handleSetTTSProvider])
 
-  // Get orb state
-  const orbState = getOrbState({ isPlaying, isLoading, isListening, isRecording })
+  // Get last assistant message for voice overlay
+  const lastAssistantMessage = messages.length > 0 && messages[messages.length - 1].role === 'assistant'
+    ? messages[messages.length - 1].content
+    : undefined
 
-  // ============================================
-  // VOICE MODE - Futuristic Full Screen Interface
-  // ============================================
-  if (mode === 'voice') {
-    return (
-      <div className="h-full bg-[#030306] flex flex-col overflow-hidden relative">
-        {/* Animated background gradient */}
-        <div className="absolute inset-0 overflow-hidden">
-          <div className={cn(
-            'absolute inset-0 transition-all duration-1000',
-            isListening && 'bg-gradient-radial from-purple-900/20 via-transparent to-transparent',
-            isPlaying && 'bg-gradient-radial from-emerald-900/20 via-transparent to-transparent',
-            isLoading && 'bg-gradient-radial from-cyan-900/20 via-transparent to-transparent',
-            !isListening && !isPlaying && !isLoading && 'bg-gradient-radial from-slate-900/20 via-transparent to-transparent'
-          )} />
-          {/* Subtle grid overlay */}
-          <div className="absolute inset-0 opacity-[0.02]" style={{
-            backgroundImage: 'linear-gradient(rgba(255,255,255,0.1) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.1) 1px, transparent 1px)',
-            backgroundSize: '50px 50px'
-          }} />
-        </div>
-
-        {/* Top bar */}
-        <header className="relative flex items-center justify-between px-6 py-4 z-10">
-          <div className="flex items-center gap-3">
-            <div className={cn(
-              'w-2 h-2 rounded-full transition-colors',
-              connected ? 'bg-emerald-400 shadow-lg shadow-emerald-400/50' : 'bg-red-500'
-            )} />
-            <span className="text-sm text-white/60 font-light tracking-wide">
-              {connected ? 'ONLINE' : 'OFFLINE'}
-            </span>
-          </div>
-
-          <div className="flex items-center gap-4">
-            {/* Model info */}
-            <span className="text-xs text-white/40 font-mono">{model?.split('/').pop() || 'AI'}</span>
-
-            {/* Camera toggle */}
-            <button
-              onClick={handleCameraToggle}
-              className={cn(
-                'flex items-center gap-2 px-4 py-2 rounded-full border transition-all',
-                isCameraActive
-                  ? 'bg-cyan-500/20 border-cyan-500/40 text-cyan-400'
-                  : 'bg-white/5 hover:bg-white/10 border-white/10 text-white/70 hover:text-white'
-              )}
-              title={isCameraActive ? 'Stop camera' : 'Start camera'}
-            >
-              {isCameraActive ? <CameraOff size={16} /> : <Camera size={16} />}
-              <span className="text-sm">{isCameraActive ? 'Video On' : 'Video'}</span>
-            </button>
-
-            {/* Back to chat */}
-            <button
-              onClick={exitVoiceMode}
-              className="flex items-center gap-2 px-4 py-2 rounded-full bg-white/5 hover:bg-white/10 border border-white/10 text-white/70 hover:text-white transition-all"
-            >
-              <Keyboard size={16} />
-              <span className="text-sm">Chat</span>
-            </button>
-          </div>
-        </header>
-
-        {/* Center - The Orb */}
-        <div className="flex-1 flex flex-col items-center justify-center relative z-10">
-          {/* Orb container with extra glow effects */}
-          <div className="relative">
-            {/* Outer pulse rings */}
-            {isListening && (
-              <>
-                <div className="absolute inset-0 -m-8 rounded-full border border-purple-500/20 animate-ping" style={{ animationDuration: '2s' }} />
-                <div className="absolute inset-0 -m-16 rounded-full border border-purple-500/10 animate-ping" style={{ animationDuration: '3s' }} />
-              </>
-            )}
-            {isPlaying && (
-              <>
-                <div className="absolute inset-0 -m-8 rounded-full border border-emerald-500/20 animate-ping" style={{ animationDuration: '1.5s' }} />
-                <div className="absolute inset-0 -m-16 rounded-full border border-emerald-500/10 animate-ping" style={{ animationDuration: '2.5s' }} />
-              </>
-            )}
-            {isLoading && (
-              <div className="absolute inset-0 -m-12 rounded-full border-2 border-transparent border-t-cyan-500/50 animate-spin" style={{ animationDuration: '1s' }} />
-            )}
-
-            <Orb
-              state={orbState}
-              volume={volume}
-              playbackVolume={playbackVolume}
-              onClick={() => isListening ? stopListening() : startListening()}
-              size="lg"
-            />
-          </div>
-
-          {/* Status text */}
-          <div className="mt-12 text-center space-y-3">
-            <div className="h-8 flex items-center justify-center">
-              {isLoading && (
-                <p className="text-cyan-400 text-lg font-light animate-pulse">{loadingText}</p>
-              )}
-              {isPlaying && (
-                <p className="text-emerald-400 text-lg font-light">Speaking...</p>
-              )}
-              {isListening && !isLoading && !isPlaying && (
-                <p className={cn(
-                  'text-lg font-light transition-colors',
-                  volume > 0.02 ? 'text-purple-400' : 'text-white/40'
-                )}>
-                  {volume > 0.02 ? 'Listening...' : 'Speak now...'}
-                </p>
-              )}
-              {!isListening && !isLoading && !isPlaying && (
-                <p className="text-white/30 text-lg font-light">Tap orb to speak</p>
-              )}
-            </div>
-
-            {/* Volume indicator */}
-            {isListening && (
-              <div className="flex items-center justify-center gap-1">
-                {[...Array(7)].map((_, i) => (
-                  <div
-                    key={i}
-                    className={cn(
-                      'w-1 rounded-full bg-purple-500 transition-all duration-75',
-                      volume > i * 0.12 ? 'opacity-100' : 'opacity-20'
-                    )}
-                    style={{ height: `${12 + i * 4}px` }}
-                  />
-                ))}
-              </div>
-            )}
-
-            {/* Mic and camera controls - close to orb */}
-            <div className="flex justify-center items-center gap-4 mt-6">
-              <button
-                onClick={handleCameraToggle}
-                className={cn(
-                  'w-12 h-12 rounded-full flex items-center justify-center transition-all',
-                  isCameraActive
-                    ? 'bg-cyan-500/20 border-2 border-cyan-500 text-cyan-400'
-                    : 'bg-white/5 border border-white/20 text-white/60 hover:bg-white/10 hover:text-white'
-                )}
-                title={isCameraActive ? 'Stop camera' : 'Start camera'}
-              >
-                {isCameraActive ? <CameraOff size={18} /> : <Camera size={18} />}
-              </button>
-
-              <button
-                onClick={() => isListening ? stopListening() : startListening()}
-                className={cn(
-                  'w-14 h-14 rounded-full flex items-center justify-center transition-all',
-                  isListening
-                    ? 'bg-purple-500/20 border-2 border-purple-500 text-purple-400'
-                    : 'bg-white/5 border border-white/20 text-white/60 hover:bg-white/10 hover:text-white'
-                )}
-              >
-                <Mic size={22} />
-              </button>
-            </div>
-          </div>
-        </div>
-
-        {/* Single video element - always mounted so ref stays stable */}
-        <div className={cn(
-          "absolute bottom-32 right-6 z-20",
-          !isCameraActive && "hidden"
-        )}>
-          <div className="relative rounded-2xl overflow-hidden border-2 border-cyan-500/40 shadow-lg shadow-cyan-500/20">
-            <video
-              ref={videoRef}
-              autoPlay
-              playsInline
-              muted
-              className="w-[160px] h-[120px] object-cover"
-              style={{ transform: 'scaleX(-1)' }}
-            />
-            <div className="absolute top-2 left-2 flex items-center gap-1 px-2 py-0.5 rounded-full bg-black/60 backdrop-blur-sm">
-              <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse" />
-              <span className="text-[10px] text-cyan-400 font-medium">LIVE</span>
-            </div>
-            <button
-              onClick={stopCamera}
-              className="absolute top-2 right-2 w-6 h-6 rounded-full bg-black/60 backdrop-blur-sm flex items-center justify-center text-white/60 hover:text-white transition-colors"
-            >
-              <CameraOff size={12} />
-            </button>
-          </div>
-        </div>
-
-        {/* Camera error toast */}
-        {cameraError && (
-          <div className="absolute bottom-32 right-6 z-20 px-4 py-2 rounded-xl bg-red-500/20 border border-red-500/30 text-red-400 text-sm backdrop-blur-sm">
-            {cameraError}
-          </div>
-        )}
-
-        {/* Last message preview */}
-        {messages.length > 0 && (
-          <div className="relative z-10 px-8 py-6">
-            <div className="max-w-2xl mx-auto">
-              <div className={cn(
-                'p-4 rounded-2xl backdrop-blur-xl border transition-colors',
-                messages[messages.length - 1].role === 'assistant'
-                  ? 'bg-white/5 border-white/10'
-                  : 'bg-purple-500/10 border-purple-500/20'
-              )}>
-                <p className="text-white/80 text-sm leading-relaxed line-clamp-3">
-                  {messages[messages.length - 1].content}
-                </p>
-              </div>
-            </div>
-          </div>
-        )}
-
-
-        {/* Settings Panel */}
-        <SettingsPanel
-          isOpen={showSettings}
-          onClose={() => setShowSettings(false)}
-          currentModel={model}
-          currentProvider={provider}
-          providers={providers}
-          models={models}
-          onSwitchModel={switchModel}
-          onSwitchProvider={switchProvider}
-          voiceSettings={{
-            tts_provider: ttsProvider,
-            tts_voice: currentVoice,
-            stt_provider: sttProvider,
-          }}
-          onSetTTSProvider={handleSetTTSProvider}
-          onSetSTTProvider={handleSetSTTProvider}
-          onSetVoice={handleSetVoice}
-          edgeVoices={voices}
-          elevenVoices={elevenVoices}
-          kokoroVoices={kokoroVoices}
-          wakeWord={wakeWord}
-          wakeWordEnabled={wakeWordEnabled}
-          onSetWakeWord={setWakeWord}
-          onSetWakeWordEnabled={setWakeWordEnabled}
-          systemPrompt={systemPrompt}
-          isDefaultPrompt={isDefaultPrompt}
-          onSetSystemPrompt={handleSetSystemPrompt}
-          onResetSystemPrompt={handleResetSystemPrompt}
-          chutesConfigured={chutesConfigured}
-        />
-      </div>
-    )
-  }
-
-  // ============================================
-  // CHAT MODE - Clean and minimal
-  // ============================================
   return (
     <FileUploadZone onFilesAdded={addFiles} disabled={isLoading}>
       <div className="flex flex-col h-full">
+        {/* ============================================ */}
         {/* Compact Header */}
-        <header className="flex items-center justify-between px-4 py-3 border-b border-border/20 bg-background/80 backdrop-blur-xl">
+        {/* ============================================ */}
+        <header className="flex items-center justify-between px-4 py-2.5 border-b border-border/20 bg-background/80 backdrop-blur-xl">
+          {/* Left: Avatar + name + model + wake word indicator */}
           <div className="flex items-center gap-3">
             <div className="relative">
-              <img src="/jarvis.jpeg" alt={assistantName} className="w-8 h-8 rounded-xl" />
+              <img src="/jarvis.jpeg" alt={assistantName} className="w-7 h-7 rounded-lg" />
               <div className={cn(
-                'absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-background',
+                'absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full border-[1.5px] border-background',
                 connected ? 'bg-success' : 'bg-error'
               )} />
             </div>
             <div className="flex flex-col">
-              <h1 className="text-sm font-semibold leading-none">{assistantName}</h1>
-              {project && (
-                <span className="text-xs text-text-muted">{project}</span>
-              )}
+              <div className="flex items-center gap-2">
+                <h1 className="text-sm font-semibold leading-none">{assistantName}</h1>
+                {wakeWordEnabled && (
+                  <div className="flex items-center gap-1" title="Wake word active">
+                    <span className="w-1.5 h-1.5 rounded-full bg-purple-400 animate-pulse" />
+                  </div>
+                )}
+              </div>
+              <span className="text-[11px] text-text-muted leading-tight mt-0.5">
+                {model?.split('/').pop() || project || 'AI'}
+              </span>
             </div>
           </div>
 
+          {/* Right: Reasoning + Voice mode + Settings */}
           <div className="flex items-center gap-1">
-            {/* Reasoning Level - Compact */}
+            {/* Reasoning Level */}
             <div className="flex items-center bg-surface/40 rounded-lg p-0.5 border border-border/10">
               {[
                 { level: 'fast' as const, icon: Zap, color: 'warning', title: 'Fast' },
@@ -678,41 +485,13 @@ export default function App() {
               <AudioWaveform size={16} />
             </button>
 
-            {/* Voice Input Button - Push to Talk */}
+            {/* Theme Toggle */}
             <button
-              onClick={handleVoiceToggle}
-              className={cn(
-                'p-2 rounded-lg transition-all border',
-                isRecording
-                  ? 'bg-error/20 border-error/30 text-error animate-pulse'
-                  : 'bg-surface/40 border-border/10 text-text-muted hover:text-primary hover:border-primary/30'
-              )}
-              title={isRecording ? 'Stop recording' : 'Voice input (push to talk)'}
+              onClick={toggleTheme}
+              className="p-2 rounded-lg bg-surface/40 text-text-muted hover:text-text border border-border/10 transition-colors"
+              title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
             >
-              <Mic size={16} />
-            </button>
-
-            {/* Voice Output */}
-            <button
-              onClick={() => { setVoiceOutput(!voiceOutput); if (voiceOutput) stopSpeaking() }}
-              className={cn(
-                'p-2 rounded-lg transition-all border',
-                voiceOutput
-                  ? 'bg-success/10 border-success/30 text-success'
-                  : 'bg-surface/40 border-border/10 text-text-muted'
-              )}
-              title={voiceOutput ? 'Voice output on' : 'Voice output off'}
-            >
-              {voiceOutput ? <Volume2 size={16} /> : <VolumeX size={16} />}
-            </button>
-
-            {/* Clear */}
-            <button
-              onClick={clear}
-              className="p-2 rounded-lg bg-surface/40 text-text-muted hover:text-error border border-border/10 transition-all"
-              title="Clear"
-            >
-              <Trash2 size={16} />
+              {theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
             </button>
 
             {/* Settings */}
@@ -751,15 +530,7 @@ export default function App() {
           </div>
         )}
 
-        {/* Intent Badge - Floating */}
-        {intentInfo?.detected && intentInfo.intent && (
-          <div className="absolute top-16 right-4 z-10">
-            <div className="text-[10px] px-2 py-1 bg-surface/80 backdrop-blur-sm rounded-lg border border-border/20 text-text-muted flex items-center gap-1.5">
-              <span className="w-1.5 h-1.5 rounded-full bg-primary" />
-              {intentInfo.intent}
-            </div>
-          </div>
-        )}
+        {/* Intent badge removed - was showing raw intent like "chat" to users */}
 
         {/* Messages */}
         <MessageList
@@ -769,10 +540,12 @@ export default function App() {
           isLoading={isLoading}
           loadingText={loadingText}
           liveToolStatus={liveToolStatus}
+          assistantName={assistantName}
+          onQuickAction={handleQuickAction}
         />
 
         {/* Recording indicator */}
-        {isRecording && (
+        {isRecording && mode === 'chat' && (
           <div className="absolute bottom-24 left-1/2 -translate-x-1/2 z-10">
             <div className="flex items-center gap-2 px-4 py-2 bg-error/20 backdrop-blur-sm rounded-full border border-error/30 text-error">
               <span className="w-2 h-2 rounded-full bg-error animate-pulse" />
@@ -786,13 +559,67 @@ export default function App() {
           value={input}
           onChange={setInput}
           onSend={handleSend}
+          onStop={stopGeneration}
           onVoiceToggle={handleVoiceToggle}
           onFilesAdded={addFiles}
           files={files}
           onRemoveFile={removeFile}
           isRecording={isRecording}
           isLoading={isLoading}
+          isStreaming={!!streaming}
           disabled={!connected}
+        />
+
+        {/* ============================================ */}
+        {/* Floating Orb - mobile FAB for voice mode */}
+        {/* ============================================ */}
+        {mode === 'chat' && (
+          <FloatingOrb
+            state={getOrbState({ isPlaying, isLoading, isListening, isRecording })}
+            volume={volume}
+            isStreaming={!!streaming}
+            onClick={enterVoiceMode}
+          />
+        )}
+
+        {/* ============================================ */}
+        {/* Voice Overlay - sits on top of everything */}
+        {/* ============================================ */}
+        <VoiceOverlay
+          isOpen={mode === 'voice'}
+          connected={connected}
+          model={model}
+          isListening={isListening}
+          isRecording={isRecording}
+          isPlaying={isPlaying}
+          isLoading={isLoading}
+          volume={volume}
+          playbackVolume={playbackVolume}
+          interimTranscript={interimTranscript}
+          lastMessage={lastAssistantMessage}
+          streaming={streaming}
+          loadingText={loadingText}
+          isCameraActive={isCameraActive}
+          videoRef={videoRef}
+          cameraError={cameraError}
+          getFrequencyData={getFrequencyData}
+          getPlaybackFrequencyData={getPlaybackFrequencyData}
+          onMicToggle={handleVoiceMicToggle}
+          onStopSpeaking={stopSpeaking}
+          onStopGeneration={stopGeneration}
+          onInterruptAndListen={interruptAndListen}
+          onCameraToggle={handleCameraToggle}
+          onOpenSettings={() => setShowSettings(true)}
+          onClose={exitVoiceMode}
+        />
+
+        {/* ============================================ */}
+        {/* Draggable Camera - floating in chat mode */}
+        {/* ============================================ */}
+        <DraggableCamera
+          isActive={isCameraActive && mode === 'chat'}
+          videoRef={videoRef}
+          onClose={stopCamera}
         />
 
         {/* Settings Panel */}
@@ -818,8 +645,8 @@ export default function App() {
           kokoroVoices={kokoroVoices}
           wakeWord={wakeWord}
           wakeWordEnabled={wakeWordEnabled}
-          onSetWakeWord={setWakeWord}
-          onSetWakeWordEnabled={setWakeWordEnabled}
+          onSetWakeWord={handleSetWakeWord}
+          onSetWakeWordEnabled={handleSetWakeWordEnabled}
           systemPrompt={systemPrompt}
           isDefaultPrompt={isDefaultPrompt}
           onSetSystemPrompt={handleSetSystemPrompt}

@@ -28,36 +28,43 @@ export function MessageBubble({ message }: MessageBubbleProps) {
 
   const isUser = role === 'user'
 
+  const timeStr = timestamp?.toLocaleTimeString([], {
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+
   return (
-    <div className="space-y-3">
+    <div className={cn('space-y-3', isUser ? 'flex flex-col items-end' : 'flex flex-col items-start')}>
       {/* Message bubble */}
       <div
         className={cn(
-          'p-4 rounded-2xl backdrop-blur-sm',
-          'border transition-colors',
+          'p-4 transition-colors',
           isUser
-            ? 'bg-surface-2/80 border-border/50 ml-12'
-            : 'bg-surface/80 border-border/30 mr-12'
+            ? 'max-w-[80%] bg-cyan-500/15 border border-cyan-500/20 rounded-2xl rounded-br-md'
+            : 'max-w-[85%] glass-card rounded-2xl rounded-bl-md'
         )}
       >
-        <div className="flex justify-between items-center mb-2">
-          <p className={cn(
-            'text-xs font-medium',
-            isUser ? 'text-cyan-400' : 'text-emerald-400'
-          )}>
-            {isUser ? 'You' : 'Jarvis'}
-          </p>
-          <p className="text-xs text-text-muted/60">
-            {timestamp?.toLocaleTimeString([], {
-              hour: '2-digit',
-              minute: '2-digit',
-            })}
-          </p>
-        </div>
         {isUser ? (
-          <p className="whitespace-pre-wrap text-text leading-relaxed">{content}</p>
+          <>
+            <p className="whitespace-pre-wrap text-text leading-relaxed">{content}</p>
+            {/* Timestamp inline bottom-right */}
+            <div className="flex justify-end mt-1.5">
+              <span className="text-[10px] text-text-muted/50">{timeStr}</span>
+            </div>
+          </>
         ) : (
           <>
+            {/* Avatar + name header */}
+            <div className="flex items-center gap-2 mb-2">
+              <img
+                src="/jarvis.jpeg"
+                alt="Jarvis"
+                className="w-5 h-5 rounded-full object-cover"
+              />
+              <span className="text-xs font-medium text-emerald-400">Jarvis</span>
+              <span className="text-[10px] text-text-muted/50 ml-auto">{timeStr}</span>
+            </div>
+
             {/* Thinking block */}
             {thinking && (
               <ThinkingBlock content={thinking} duration={thinkingDuration} />
@@ -149,7 +156,9 @@ export function MessageBubble({ message }: MessageBubbleProps) {
 
       {/* Tool timeline */}
       {tools && tools.length > 0 && !isUser && (
-        <ToolTimeline tools={tools} />
+        <div className="max-w-[85%]">
+          <ToolTimeline tools={tools} />
+        </div>
       )}
     </div>
   )
@@ -161,7 +170,7 @@ interface ToolTimelineProps {
 
 function ToolTimeline({ tools }: ToolTimelineProps) {
   return (
-    <div className="p-4 rounded-2xl bg-background/50 border border-border/20 mr-12 backdrop-blur-sm">
+    <div className="p-4 rounded-2xl glass-card">
       <div className="flex items-center justify-between mb-3">
         <p className="text-xs text-text-muted uppercase tracking-wider font-medium">
           Tools

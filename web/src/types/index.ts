@@ -80,7 +80,7 @@ export interface OrbProps {
   volume: number
   playbackVolume: number
   onClick: () => void
-  size?: 'sm' | 'md' | 'lg'
+  size?: 'sm' | 'md' | 'lg' | 'xl'
 }
 
 // === File Upload Types ===

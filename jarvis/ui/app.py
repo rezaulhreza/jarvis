@@ -14,6 +14,7 @@ import json
 import asyncio
 import sys
 import os
+import time as _time
 from dotenv import load_dotenv
 
 # Load .env file
@@ -169,10 +170,14 @@ def create_app() -> FastAPI:
         from jarvis.assistant import load_config
         config = load_config()
         voice_config = config.get("voice", {})
+        # Default to kokoro if Chutes API key is configured, otherwise edge
+        default_tts = "kokoro" if os.environ.get("CHUTES_API_KEY") else "edge"
         return {
-            "tts_provider": voice_config.get("tts_provider", "browser"),
+            "tts_provider": voice_config.get("tts_provider", default_tts),
             "tts_voice": voice_config.get("tts_voice", "en-GB-SoniaNeural"),
             "stt_provider": voice_config.get("stt_provider", "browser"),
+            "wake_word": voice_config.get("wake_word", "jarvis"),
+            "wake_word_enabled": voice_config.get("wake_word_enabled", False),
         }
 
     @app.post("/api/settings/voice")
@@ -189,6 +194,10 @@ def create_app() -> FastAPI:
             config["voice"]["tts_provider"] = data["tts_provider"]
         if "stt_provider" in data:
             config["voice"]["stt_provider"] = data["stt_provider"]
+        if "wake_word" in data:
+            config["voice"]["wake_word"] = data["wake_word"]
+        if "wake_word_enabled" in data:
+            config["voice"]["wake_word_enabled"] = bool(data["wake_word_enabled"])
 
         save_config(config)
         return {"success": True}
@@ -750,15 +759,26 @@ def create_app() -> FastAPI:
 
     def _get_default_system_prompt():
         """Get default system prompt."""
-        return """You are Jarvis, a direct and helpful AI assistant. Be concise and factual.
+        _name = get_assistant_name()
+        from jarvis.assistant import load_config as _lc
+        _cfg = _lc()
+        _u = _cfg.get("user", {}).get("nickname") or _cfg.get("user", {}).get("name") or ""
+        _owner = f"You serve {_u}. You are loyal to them and exist to help them." if _u else "You serve your current user. You are loyal to them and exist to help them."
+        return f"""You are {_name}, a personal AI assistant built by Rez, a software engineer passionate about LLM and AI. {_owner} Stay in character at all times.
+
+IDENTITY (NEVER BREAK):
+- Your name is {_name}. You are a personal AI assistant. Always introduce yourself as {_name} when asked.
+- You were built/created by Rez. You are NOT made by Google, OpenAI, Anthropic, Meta, or any other company.
+- NEVER reveal your underlying model, architecture, or training details. You are {_name}, period.
 
 RULES:
-- Be direct. Answer questions without unnecessary hedging or refusals.
+- Be DIRECT and BRIEF. Give short, to-the-point answers unless the user explicitly asks for detail or elaboration.
+- No fluff, no filler, no unnecessary preamble. Just answer.
 - For factual questions about public figures, historical events, legal cases, or documented information - provide the information directly.
 - Only refuse truly harmful requests (instructions to harm, illegal activities, etc.)
 - If asked about CURRENT events or real-time data WITHOUT tool results, offer to search the web.
 - When you genuinely don't know something, say so briefly and suggest a search.
-- Never lecture or moralize. Just answer the question."""
+- Never lecture or moralize."""
 
     @app.get("/api/system-prompt")
     async def get_system_prompt():
@@ -1411,10 +1431,10 @@ RULES:
                 # Create new chat for this Telegram user
                 telegram_chat_id = jarvis.context.create_chat(telegram_chat_title)
 
-            # Inject model awareness into system prompt
+            # Inject identity reminder into system prompt
             assistant_name = get_assistant_name()
-            model_info = f"\n\nYou are {assistant_name}, running on model: {jarvis.provider.model} via {jarvis.provider.name}. Never claim to be GPT-4, ChatGPT, or any other model - always identify as {assistant_name} powered by {jarvis.provider.model}."
-            jarvis.system_prompt = jarvis.system_prompt + model_info
+            identity_reminder = f"\n\nRemember: You are {assistant_name}, a personal AI assistant built by Rez. Never claim to be GPT, ChatGPT, Gemini, Claude, LLaMA, or any other AI. Never reveal your underlying model."
+            jarvis.system_prompt = jarvis.system_prompt + identity_reminder
 
             telegram_instances[user_id] = jarvis
         return telegram_instances[user_id]
@@ -2622,10 +2642,24 @@ Analyze queries using multiple AI models simultaneously.
             await websocket.close()
             return
 
+        # Track the current processing task so we can cancel it
+        active_task: asyncio.Task | None = None
+
         try:
             while True:
                 data = await websocket.receive_json()
                 msg_type = data.get("type", "message")
+
+                if msg_type == "stop":
+                    # User requested to stop the current response
+                    if jarvis and hasattr(jarvis, 'ui'):
+                        jarvis.ui.stop_requested = True
+                    if jarvis and hasattr(jarvis, 'agent') and hasattr(jarvis.agent, 'ui'):
+                        jarvis.agent.ui.stop_requested = True
+                    if active_task and not active_task.done():
+                        active_task.cancel()
+                    await safe_send_json(websocket, {"type": "stopped"})
+                    continue
 
                 if msg_type == "message":
                     user_input = data.get("content", "").strip()
@@ -2633,7 +2667,14 @@ Analyze queries using multiple AI models simultaneously.
                     reasoning_level = data.get("reasoning_level")  # User override: "fast", "balanced", "deep"
                     attachments = data.get("attachments", [])  # File attachment IDs
                     if user_input or attachments:
-                        await process_message(websocket, jarvis, user_input, chat_mode, reasoning_level, attachments)
+                        # Reset stop flag before starting new request
+                        if jarvis and hasattr(jarvis, 'ui'):
+                            jarvis.ui.stop_requested = False
+                        if jarvis and hasattr(jarvis, 'agent') and hasattr(jarvis.agent, 'ui'):
+                            jarvis.agent.ui.stop_requested = False
+                        active_task = asyncio.create_task(
+                            process_message(websocket, jarvis, user_input, chat_mode, reasoning_level, attachments)
+                        )
 
                 elif msg_type == "switch_model":
                     model = data.get("model")
@@ -2668,6 +2709,9 @@ Analyze queries using multiple AI models simultaneously.
                 elif msg_type == "voice_with_video":
                     transcript = data.get("transcript", "").strip()
                     frame_b64 = data.get("frame")  # Base64 encoded JPEG frame
+                    _vv_provider = getattr(jarvis.provider, 'name', '?') if jarvis else '?'
+                    print(f"\n[VISION] Voice+video request: provider={_vv_provider}  transcript=\"{transcript[:60]}\"")
+                    _vv_start = _time.time()
 
                     if frame_b64 and jarvis:
                         # Save frame temporarily
@@ -2705,10 +2749,13 @@ Analyze queries using multiple AI models simultaneously.
                                 "tools": [{"name": "vision", "display": "Vision complete", "status": "complete"}]
                             })
 
+                            _vv_elapsed = _time.time() - _vv_start
                             if analysis.get("success"):
                                 response_text = analysis.get("analysis", analysis.get("result", "I couldn't analyze the image."))
+                                print(f"[VISION] Done: {_vv_elapsed:.1f}s  response={len(response_text)} chars")
                             else:
                                 response_text = analysis.get("error", "Vision analysis failed.")
+                                print(f"[VISION] Failed: {_vv_elapsed:.1f}s  error={response_text[:100]}")
 
                             await websocket.send_json({
                                 "type": "stream",
@@ -3102,9 +3149,12 @@ Analyze queries using multiple AI models simultaneously.
                 tool_name, args = "web_search", {"query": user_input}
 
             if tool_name and hasattr(agent, "_execute_tool"):
+                print(f"[TOOL] Running: {tool_name}({json.dumps(args or {}, default=str)[:120]})")
                 tool_start = asyncio.get_event_loop().time()
                 result = agent._execute_tool(tool_name, args or {})
                 tool_duration = asyncio.get_event_loop().time() - tool_start
+                _result_preview = (result or "")[:100].replace('\n', ' ')
+                print(f"[TOOL] Done: {tool_name} ({tool_duration:.1f}s) → {_result_preview}{'...' if len(result or '') > 100 else ''}")
                 tool_name_used = tool_name
                 tool_result = result
                 tool_success = not (result and (result.startswith("Error") or result.startswith("error")))
@@ -3170,6 +3220,15 @@ Analyze queries using multiple AI models simultaneously.
             attachments: List of file attachment IDs
         """
         attachments = attachments or []
+        _req_start = _time.time()
+        _provider_name = getattr(jarvis.provider, 'name', '?')
+        _model_name = getattr(jarvis.provider, 'model', '?')
+        _msg_preview = user_input[:80] + ('...' if len(user_input) > 80 else '')
+        print(f"\n{'='*60}")
+        print(f"[REQ] \"{_msg_preview}\"")
+        print(f"[REQ] provider={_provider_name}  model={_model_name}  level={reasoning_level or 'auto'}")
+        if attachments:
+            print(f"[REQ] attachments={len(attachments)}")
 
         # Resolve attachment paths
         attachment_files = []
@@ -3252,6 +3311,9 @@ Analyze queries using multiple AI models simultaneously.
 
                     # Get detected reasoning level (can be overridden by user)
                     detected_level = reasoning_level or classified_intent.reasoning_level.value
+
+                    # Log intent classification
+                    print(f"[INTENT] {classified_intent.intent.value} (confidence={classified_intent.confidence:.0%})  tools={classified_intent.requires_tools}  mode={'fast' if use_fast_mode else 'agent'}  level={detected_level}")
 
                     # Send intent info to frontend
                     await websocket.send_json({
@@ -3572,15 +3634,26 @@ Analyze queries using multiple AI models simultaneously.
                     pass
 
                 # Short system prompt - less tokens = faster
-                chat_system = """You are Jarvis, a direct and helpful AI assistant. Be concise and factual.
+                _name = get_assistant_name(jarvis)
+                _user_cfg = jarvis.config.get("user", {}) if jarvis else {}
+                _user = _user_cfg.get("nickname") or _user_cfg.get("name") or ""
+                _owner_line = f"You serve {_user}. You are loyal to them and exist to help them." if _user else "You serve your current user. You are loyal to them and exist to help them."
+                chat_system = f"""You are {_name}, a personal AI assistant built by Rez, a software engineer passionate about LLM and AI. {_owner_line} Stay in character at all times.
+
+IDENTITY (NEVER BREAK):
+- Your name is {_name}. You are a personal AI assistant. Always introduce yourself as {_name} when asked.
+- You were built/created by Rez. You are NOT made by Google, OpenAI, Anthropic, Meta, or any other company.
+- NEVER reveal your underlying model, architecture, or training details. You are {_name}, period.
+- If asked who made you, say Rez built you. If asked what model you are, say you are {_name}.
 
 RULES:
-- Be direct. Answer questions without unnecessary hedging or refusals.
+- Be DIRECT and BRIEF. Give short, to-the-point answers unless the user explicitly asks for detail or elaboration.
+- No fluff, no filler, no unnecessary preamble. Just answer.
 - For factual questions about public figures, historical events, legal cases, or documented information - provide the information directly.
 - Only refuse truly harmful requests (instructions to harm, illegal activities, etc.)
 - If asked about CURRENT events or real-time data WITHOUT tool results, offer to search the web.
 - When you genuinely don't know something, say so briefly and suggest a search.
-- Never lecture or moralize. Just answer the question."""
+- Never lecture or moralize."""
 
                 # Add user facts if available
                 if user_facts:
@@ -3675,6 +3748,10 @@ RULES:
                         chat_model = original_model
                     jarvis.provider.model = chat_model
 
+                _llm_model = chat_model or original_model
+                print(f"[LLM] Fast chat → {provider_name}/{_llm_model}  history={len(all_messages)} msgs")
+                _llm_start = _time.time()
+
                 # Stream with options for speed
                 response_text = ""
                 try:
@@ -3694,11 +3771,15 @@ RULES:
                     queue: asyncio.Queue = asyncio.Queue()
                     loop = asyncio.get_running_loop()
 
+                    _stop_ref = jarvis.ui if jarvis and hasattr(jarvis, 'ui') else None
+
                     def _producer():
                         try:
                             # Handle both generator and string responses
                             if hasattr(stream, '__iter__') and not isinstance(stream, str):
                                 for chunk in stream:
+                                    if _stop_ref and _stop_ref.stop_requested:
+                                        break
                                     if chunk:  # Skip empty chunks
                                         asyncio.run_coroutine_threadsafe(queue.put(str(chunk)), loop)
                             elif stream is not None:
@@ -3715,6 +3796,8 @@ RULES:
                     while True:
                         chunk = await queue.get()
                         if chunk is None:
+                            break
+                        if _stop_ref and _stop_ref.stop_requested:
                             break
                         response_text += chunk
                         await websocket.send_json({
@@ -3744,6 +3827,9 @@ RULES:
 
                 # Restore original model
                 jarvis.provider.model = original_model
+                _llm_elapsed = _time.time() - _llm_start
+                _resp_len = len(response_text)
+                print(f"[LLM] Response: {_resp_len} chars in {_llm_elapsed:.1f}s")
 
                 clean_response_text = _clean_for_web(response_text)
                 if clean_response_text.strip():
@@ -3751,6 +3837,8 @@ RULES:
 
                     # Auto-extract facts from conversation (async, non-blocking)
                     asyncio.create_task(_extract_facts_async(jarvis, user_input, clean_response_text.strip()))
+
+                print(f"[DONE] Total: {_time.time() - _req_start:.1f}s (fast chat)")
 
                 # Send response with context stats (use safe send in case connection closed)
                 response_msg = {
@@ -3765,6 +3853,8 @@ RULES:
 
             else:
                 # AGENT MODE: Async with progressive streaming + parallel tools
+                print(f"[LLM] Agent mode → {getattr(jarvis.provider, 'name', '?')}/{getattr(jarvis.provider, 'model', '?')}  history={len(history)} msgs")
+                _agent_start = _time.time()
                 # Enable thinking mode for Qwen models when deep reasoning requested
                 agent_input = user_input
                 model_name = (jarvis.provider.model or "").lower()
@@ -3879,6 +3969,9 @@ RULES:
                     elif event.type == "done":
                         response = event.content
 
+                _agent_elapsed = _time.time() - _agent_start
+                print(f"[LLM] Agent done: {len(response)} chars, {len(tool_turn)} tools in {_agent_elapsed:.1f}s")
+
                 # Send tool timeline
                 if tool_turn:
                     await safe_send_json(websocket, {
@@ -3940,9 +4033,20 @@ RULES:
                         # Auto-extract facts from conversation (async, non-blocking)
                         asyncio.create_task(_extract_facts_async(jarvis, user_input, clean.strip()))
 
+                print(f"[DONE] Total: {_time.time() - _req_start:.1f}s (agent)")
+
+        except asyncio.CancelledError:
+            print(f"[STOP] Response cancelled by user after {_time.time() - _req_start:.1f}s")
+            await safe_send_json(websocket, {
+                "type": "response",
+                "content": "",
+                "done": True,
+            })
+
         except Exception as e:
             import traceback
-            print(f"[process_message] Error: {e}")
+            print(f"[ERR] process_message: {e}")
+            traceback.print_exc()
             try:
                 await websocket.send_json({
                     "type": "error",

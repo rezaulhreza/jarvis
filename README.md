@@ -31,8 +31,14 @@
 - **Personas**: Switch between assistant modes (default, coder, researcher, creative, planner)
 - **Dynamic Skills**: Create new tools at runtime - Jarvis can build its own skills
 - **Multi-Model Analysis**: Run queries through multiple AI models simultaneously and combine insights
-- **Web UI**: Modern React-based browser interface with real-time WebSocket communication
+- **Web UI**: Modern dark glass-card interface with real-time WebSocket communication
+- **Light & Dark Mode**: Theme toggle with localStorage persistence and OS preference detection
+- **Stop Generation**: Interrupt any response mid-stream and immediately send a new prompt
+- **Voice Mode**: Full-screen voice overlay with waveform visualizer, real-time transcript, and interrupt controls
+- **Floating Mobile Orb**: Iron Man arc reactor style FAB for quick voice access on mobile
+- **Draggable Camera**: Resizable, draggable camera preview with edge snapping and position persistence
 - **Voice Input/Output**: Speech-to-text (Whisper/Chutes), text-to-speech (Browser/Edge/ElevenLabs/Kokoro)
+- **Strong Identity System**: Stays in character regardless of underlying model, per-user personalization
 - **Telegram Bot**: Full-featured Telegram integration with 20+ commands
 - **Project Context**: Auto-detects project type and loads JARVIS.md/CLAUDE.md instructions
 
@@ -236,6 +242,14 @@ jarvis --daemon    # Run as background daemon
 
 The web UI (`jarvis --dev`) includes:
 
+- **Dark Glass UI**: Glass-card design with backdrop blur, iridescent orb, and gradient accents
+- **Light & Dark Mode**: One-click theme toggle, persists across sessions, respects OS preference
+- **Voice Overlay**: Full-screen voice mode with XL orb, real-time waveform visualizer, live transcript display
+- **Stop Generation**: Click the stop button (or interrupt via voice) to halt any response mid-stream
+- **Floating Mobile Orb**: Arc reactor style floating action button for quick voice access on mobile
+- **Draggable Camera**: Resizable camera preview with drag-to-move, edge snapping, and localStorage persistence
+- **Empty State**: Welcome greeting with quick action cards (Start Conversation, Generate Image, Web Search, Write Code)
+- **Chat Bubbles**: Right-aligned user messages (cyan accent), left-aligned assistant messages (glass-card)
 - **Unified Smart Mode**: Auto-detects when to use fast chat vs full agent mode based on intent classification
 - **Reasoning Level Selector**: Fast (Zap) / Auto (Scale) / Deep (Brain) controls
 - **Tool Timeline**: Expandable panel showing each tool call, arguments, duration, and results
@@ -246,8 +260,8 @@ The web UI (`jarvis --dev`) includes:
 - **Provider Switching**: Change LLM provider and model on the fly
 - **Voice Input/Output**: Push-to-talk with multiple TTS/STT providers
 - **Dashboard Widgets**: Weather, time, system status, quick commands, voice control
-- **Settings Panel**: Provider configuration, voice settings, system instructions editor
-- **Animated Orb**: Visual feedback for idle/listening/speaking/thinking states
+- **Settings Panel**: Provider configuration, voice settings, memory management, system instructions editor
+- **Animated Orb**: Iridescent glass shader with volume-reactive sizing for idle/listening/speaking/thinking states
 
 ## CLI Commands
 
@@ -748,13 +762,15 @@ jarvis/
 │   ├── src/
 │   │   ├── App.tsx          # Main app (modes, settings, voice)
 │   │   ├── components/
-│   │   │   ├── chat/        # MessageBubble, MessageList, ThinkingBlock, ToolStatus
+│   │   │   ├── chat/        # MessageBubble, MessageList, ThinkingBlock, ToolStatus, EmptyState
 │   │   │   ├── input/       # UnifiedInput, FileUpload, FilePreview
-│   │   │   ├── settings/    # SettingsPanel, SystemInstructions
-│   │   │   ├── orb/         # Animated orb (idle/listening/thinking)
+│   │   │   ├── settings/    # SettingsPanel, SystemInstructions, MemoryPanel
+│   │   │   ├── orb/         # Animated orb, FloatingOrb, OrbRings
+│   │   │   ├── voice/       # VoiceOverlay, WaveformVisualizer
+│   │   │   ├── camera/      # DraggableCamera
 │   │   │   ├── dashboard/   # DashboardView, WidgetCard
 │   │   │   └── widgets/     # Weather, Time, Status, Voice, Commands
-│   │   ├── hooks/           # useWebSocket, useVoice, useFileUpload, useWakeWord
+│   │   ├── hooks/           # useWebSocket, useVoice, useFileUpload, useWakeWord, useCamera, useTheme, useDraggable
 │   │   └── types/           # TypeScript interfaces
 │   └── dist/                # Production build
 ├── config/                  # Default configuration templates

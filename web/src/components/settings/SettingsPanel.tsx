@@ -704,7 +704,7 @@ function IntegrationsTab() {
         const data = await res.json()
         setError(data.error || 'Failed to save token')
       }
-    } catch (err) {
+    } catch {
       setError('Network error')
     } finally {
       setSaving(false)
@@ -734,7 +734,7 @@ function IntegrationsTab() {
       } else {
         setError(data.error || data.description || 'Failed to setup webhook')
       }
-    } catch (err) {
+    } catch {
       setError('Network error')
     } finally {
       setSaving(false)
@@ -755,7 +755,7 @@ function IntegrationsTab() {
           setTelegramStatus(await statusRes.json())
         }
       }
-    } catch (err) {
+    } catch {
       setError('Network error')
     } finally {
       setSaving(false)
@@ -953,7 +953,7 @@ function CalendarIntegration() {
       } else {
         setError(data.error || 'Failed to connect')
       }
-    } catch (err) {
+    } catch {
       setError('Network error')
     } finally {
       setConnecting(false)

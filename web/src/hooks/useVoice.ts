@@ -14,7 +14,9 @@ export function useVoice(options: UseVoiceOptions = {}) {
   const [isPlaying, setIsPlaying] = useState(false)
   const [volume, setVolume] = useState(0)
   const [playbackVolume, setPlaybackVolume] = useState(0)
+  const [interimTranscript, setInterimTranscript] = useState('')
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Web Speech API has no TS definitions
   const recognition = useRef<any>(null)
   const mediaRecorder = useRef<MediaRecorder | null>(null)
   const audioChunks = useRef<Blob[]>([])
@@ -35,6 +37,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
   const silenceTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const speakingRef = useRef(false)
   const startingRef = useRef(false) // Guard against concurrent startListening calls
+  const autoListenRef = useRef(true) // Auto-resume after TTS; false when user manually stops
 
   // Keep refs in sync
   useEffect(() => {
@@ -53,6 +56,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
 
   // Initialize browser speech recognition
   useEffect(() => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Web Speech API
     const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
     if (!SpeechRecognition) {
       console.warn('Speech recognition not supported')
@@ -64,6 +68,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
     recog.interimResults = true
     recog.lang = 'en-US'
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- SpeechRecognitionEvent
     recog.onresult = (event: any) => {
       // IGNORE input while TTS is playing (prevents feedback loop)
       if (isPlayingRef.current) {
@@ -71,19 +76,26 @@ export function useVoice(options: UseVoiceOptions = {}) {
       }
 
       let finalTranscript = ''
+      let interim = ''
 
       for (let i = event.resultIndex; i < event.results.length; i++) {
         const result = event.results[i]
         if (result.isFinal) {
           finalTranscript += result[0].transcript
+        } else {
+          interim += result[0].transcript
         }
       }
+
+      // Update interim transcript for live display
+      setInterimTranscript(interim || finalTranscript)
 
       if (finalTranscript) {
         transcriptRef.current = finalTranscript.trim()
         if (transcriptRef.current && onSpeechEndRef.current) {
           onSpeechEndRef.current(transcriptRef.current)
           transcriptRef.current = ''
+          setInterimTranscript('')
         }
       }
 
@@ -96,6 +108,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
       setIsRecording(false)
     }
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- SpeechRecognitionErrorEvent
     recog.onerror = (event: any) => {
       if (event.error !== 'no-speech' && event.error !== 'aborted') {
         console.error('Speech recognition error:', event.error)
@@ -107,7 +120,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
       if (isListeningRef.current && sttProviderRef.current === 'browser' && !isPlayingRef.current) {
         try {
           recog.start()
-        } catch (e) {}
+        } catch { /* expected - ignore */ }
       }
     }
 
@@ -116,7 +129,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
     return () => {
       try {
         recog.stop()
-      } catch (e) {}
+      } catch { /* expected - ignore */ }
     }
   }, [])
 
@@ -178,6 +191,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
     }
 
     startingRef.current = true
+    autoListenRef.current = true
 
     try {
       console.log('[Voice] Requesting microphone access...')
@@ -295,9 +309,11 @@ export function useVoice(options: UseVoiceOptions = {}) {
 
   const stopListening = useCallback(() => {
     console.log('[Voice] stopListening called')
+    autoListenRef.current = false
     setIsListening(false)
     setIsRecording(false)
     setVolume(0)
+    setInterimTranscript('')
 
     if (silenceTimer.current) {
       clearTimeout(silenceTimer.current)
@@ -312,7 +328,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
     if (recognition.current) {
       try {
         recognition.current.stop()
-      } catch (e) {}
+      } catch { /* expected - ignore */ }
     }
 
     if (mediaRecorder.current?.state === 'recording') {
@@ -382,7 +398,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
         playbackAnimFrame.current = requestAnimationFrame(analyzePlayback)
       }
       analyzePlayback()
-    } catch (e) {
+    } catch {
       // Fallback: simulate volume with a pulse
       const pulse = () => {
         if (!isPlayingRef.current) {
@@ -416,12 +432,12 @@ export function useVoice(options: UseVoiceOptions = {}) {
     if (recognition.current && sttProviderRef.current === 'browser') {
       try {
         recognition.current.stop()
-      } catch (e) {}
+      } catch { /* expected - ignore */ }
     }
     if (mediaRecorder.current?.state === 'recording') {
       try {
         mediaRecorder.current.pause()
-      } catch (e) {}
+      } catch { /* expected - ignore */ }
     }
   }, [])
 
@@ -432,12 +448,12 @@ export function useVoice(options: UseVoiceOptions = {}) {
     if (sttProviderRef.current === 'browser' && recognition.current) {
       try {
         recognition.current.start()
-      } catch (e) {}
+      } catch { /* expected - ignore */ }
     }
     if (mediaRecorder.current?.state === 'paused') {
       try {
         mediaRecorder.current.resume()
-      } catch (e) {}
+      } catch { /* expected - ignore */ }
     }
   }, [])
 
@@ -462,9 +478,9 @@ export function useVoice(options: UseVoiceOptions = {}) {
       setIsPlaying(false)
       isPlayingRef.current = false
       speakingRef.current = false
-      // Resume listening after a short delay
+      // Resume listening after a short delay only if auto-listen is enabled
       setTimeout(() => {
-        if (isListeningRef.current) {
+        if (isListeningRef.current && autoListenRef.current) {
           resumeRecognition()
         }
       }, 300)
@@ -630,17 +646,50 @@ export function useVoice(options: UseVoiceOptions = {}) {
     stopCurrentAudio()
   }, [stopCurrentAudio])
 
+  // Get mic frequency data for waveform visualization
+  const getFrequencyData = useCallback((): Uint8Array | null => {
+    if (!analyser.current) return null
+    const dataArray = new Uint8Array(analyser.current.frequencyBinCount)
+    analyser.current.getByteFrequencyData(dataArray)
+    return dataArray
+  }, [])
+
+  // Get playback frequency data for TTS waveform visualization
+  const getPlaybackFrequencyData = useCallback((): Uint8Array | null => {
+    if (!playbackAnalyser.current) return null
+    const dataArray = new Uint8Array(playbackAnalyser.current.frequencyBinCount)
+    playbackAnalyser.current.getByteFrequencyData(dataArray)
+    return dataArray
+  }, [])
+
+  // Interrupt TTS and start listening
+  const interruptAndListen = useCallback(async () => {
+    stopCurrentAudio()
+    // Short delay to let audio stop cleanly
+    await new Promise(resolve => setTimeout(resolve, 100))
+    autoListenRef.current = true
+    if (!isListeningRef.current) {
+      await startListening()
+    } else {
+      resumeRecognition()
+    }
+  }, [stopCurrentAudio, startListening, resumeRecognition])
+
   return {
     isListening,
     isRecording,
     isPlaying,
     volume,
     playbackVolume,
+    interimTranscript,
     startListening,
     stopListening,
     startRecording,
     stopRecording,
     speak,
     stopSpeaking,
+    getFrequencyData,
+    getPlaybackFrequencyData,
+    interruptAndListen,
   }
 }

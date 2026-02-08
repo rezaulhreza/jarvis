@@ -61,6 +61,18 @@ export function OrbRings({ state, volume, playbackVolume }: OrbRingsProps) {
         )}
       />
 
+      {/* Iridescent conic gradient halo ring - visible during listening/speaking */}
+      {(isListening || isSpeaking) && (
+        <div
+          className="absolute -inset-3 rounded-full pointer-events-none animate-spin-slow"
+          style={{
+            background: 'conic-gradient(from 0deg, rgba(168,85,247,0.3), rgba(6,182,212,0.3), rgba(34,197,94,0.3), rgba(168,85,247,0.3))',
+            filter: 'blur(8px)',
+            opacity: isListening ? Math.min(volume * 5, 0.8) : Math.min(playbackVolume * 3, 0.8),
+          }}
+        />
+      )}
+
       {/* Thinking spinner overlay */}
       {isThinking && (
         <div className="absolute inset-0 rounded-full overflow-hidden pointer-events-none">

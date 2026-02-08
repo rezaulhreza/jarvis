@@ -546,6 +546,28 @@ def analyze_image(image_path: str, prompt: str = "Describe this image in detail.
         mime_types = {".jpg": "jpeg", ".jpeg": "jpeg", ".png": "png", ".gif": "gif", ".webp": "webp"}
         mime = mime_types.get(suffix, "jpeg")
 
+        # Detect if prompt asks for brevity and adjust response length
+        brief_keywords = ["brief", "short", "concise", "quick", "one sentence", "few words"]
+        is_brief = any(kw in prompt.lower() for kw in brief_keywords)
+        max_tokens = 200 if is_brief else 1024
+
+        messages = []
+        if is_brief:
+            messages.append({
+                "role": "system",
+                "content": "Respond concisely in 1-2 sentences. Be direct and brief unless otherwise specified."
+            })
+        messages.append({
+            "role": "user",
+            "content": [
+                {"type": "text", "text": prompt},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/{mime};base64,{img_data}"}
+                }
+            ]
+        })
+
         with httpx.Client(timeout=60.0) as client:
             response = client.post(
                 "https://llm.chutes.ai/v1/chat/completions",
@@ -555,17 +577,8 @@ def analyze_image(image_path: str, prompt: str = "Describe this image in detail.
                 },
                 json={
                     "model": "Qwen/Qwen2.5-VL-72B-Instruct-TEE",
-                    "messages": [{
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": prompt},
-                            {
-                                "type": "image_url",
-                                "image_url": {"url": f"data:image/{mime};base64,{img_data}"}
-                            }
-                        ]
-                    }],
-                    "max_tokens": 1024
+                    "messages": messages,
+                    "max_tokens": max_tokens
                 }
             )
 

@@ -2,6 +2,7 @@ import { useRef, useEffect, memo } from 'react'
 import { MessageBubble } from './MessageBubble'
 import { ThinkingBlock } from './ThinkingBlock'
 import { ToolStatus, type LiveToolStatus } from './ToolStatus'
+import { EmptyState } from './EmptyState'
 import type { Message } from '../../types'
 import { Loader2 } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
@@ -14,6 +15,8 @@ interface MessageListProps {
   isLoading: boolean
   loadingText?: string
   liveToolStatus?: LiveToolStatus[]
+  assistantName?: string
+  onQuickAction?: (prompt: string) => void
 }
 
 // Memoize completed messages to avoid re-renders during streaming
@@ -26,6 +29,8 @@ export function MessageList({
   isLoading,
   loadingText = 'Thinking...',
   liveToolStatus = [],
+  assistantName,
+  onQuickAction,
 }: MessageListProps) {
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
@@ -37,24 +42,12 @@ export function MessageList({
   return (
     <div className="flex-1 overflow-y-auto p-4 scrollbar-thin">
       <div className="max-w-3xl mx-auto space-y-4">
-        {/* Empty state */}
+        {/* Empty state with quick actions */}
         {messages.length === 0 && !streaming && !isLoading && (
-          <div className="flex flex-col items-center justify-center py-20 text-center">
-            <div className="w-20 h-20 rounded-full bg-surface-2/50 flex items-center justify-center mb-4">
-              <img
-                src="/jarvis.jpeg"
-                alt="Jarvis"
-                className="w-16 h-16 rounded-full object-cover"
-              />
-            </div>
-            <h2 className="text-xl font-medium text-text mb-2">
-              Hello, I'm Jarvis
-            </h2>
-            <p className="text-text-muted max-w-md">
-              Your personal AI assistant. Ask me anything, or use voice mode for
-              a hands-free experience.
-            </p>
-          </div>
+          <EmptyState
+            assistantName={assistantName}
+            onQuickAction={onQuickAction || (() => {})}
+          />
         )}
 
         {/* Message list - use memoized bubbles for completed messages */}
@@ -69,34 +62,44 @@ export function MessageList({
 
         {/* Streaming thinking */}
         {streamingThinking && !streaming && (
-          <div className="mr-12">
+          <div className="max-w-[85%]">
             <ThinkingBlock content={streamingThinking} isStreaming={true} />
           </div>
         )}
 
         {/* Streaming response */}
         {(streaming || streamingThinking) && (
-          <div className="p-4 rounded-2xl bg-surface/80 border border-border/30 mr-12 backdrop-blur-sm">
-            <p className="text-xs text-emerald-400 font-medium mb-2">Jarvis</p>
-
-            {/* Show thinking block while streaming response */}
-            {streamingThinking && streaming && (
-              <ThinkingBlock content={streamingThinking} isStreaming={!streaming} />
-            )}
-
-            {/* Response content */}
-            {streaming && (
-              <div className="prose prose-invert prose-sm max-w-none text-text leading-relaxed
-                prose-p:my-2 prose-p:leading-relaxed
-                prose-headings:text-text prose-headings:font-semibold
-                prose-code:text-cyan-400 prose-code:bg-surface-2 prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded prose-code:text-sm prose-code:before:content-none prose-code:after:content-none
-                prose-pre:bg-surface-2 prose-pre:border prose-pre:border-border/30 prose-pre:rounded-lg
-                prose-a:text-cyan-400 prose-ul:my-2 prose-ol:my-2 prose-li:my-0.5
-              ">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>{streaming}</ReactMarkdown>
-                <span className="inline-block w-2 ml-0.5 animate-pulse text-cyan-400">▍</span>
+          <div className="flex flex-col items-start">
+            <div className="max-w-[85%] p-4 rounded-2xl rounded-bl-md glass-card">
+              {/* Avatar + name header */}
+              <div className="flex items-center gap-2 mb-2">
+                <img
+                  src="/jarvis.jpeg"
+                  alt="Jarvis"
+                  className="w-5 h-5 rounded-full object-cover"
+                />
+                <span className="text-xs font-medium text-emerald-400">Jarvis</span>
               </div>
-            )}
+
+              {/* Show thinking block while streaming response */}
+              {streamingThinking && streaming && (
+                <ThinkingBlock content={streamingThinking} isStreaming={!streaming} />
+              )}
+
+              {/* Response content */}
+              {streaming && (
+                <div className="prose prose-invert prose-sm max-w-none text-text leading-relaxed
+                  prose-p:my-2 prose-p:leading-relaxed
+                  prose-headings:text-text prose-headings:font-semibold
+                  prose-code:text-cyan-400 prose-code:bg-surface-2 prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded prose-code:text-sm prose-code:before:content-none prose-code:after:content-none
+                  prose-pre:bg-surface-2 prose-pre:border prose-pre:border-border/30 prose-pre:rounded-lg
+                  prose-a:text-cyan-400 prose-ul:my-2 prose-ol:my-2 prose-li:my-0.5
+                ">
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{streaming}</ReactMarkdown>
+                  <span className="inline-block w-2 ml-0.5 animate-pulse text-cyan-400">▍</span>
+                </div>
+              )}
+            </div>
           </div>
         )}
 

@@ -6,6 +6,8 @@ interface Message {
   timestamp: Date
   tools?: ToolEvent[]
   media?: MediaInfo
+  thinking?: string
+  thinkingDuration?: number
 }
 
 interface MediaInfo {
@@ -100,49 +102,8 @@ export function useWebSocket() {
   const thinkingStartRef = useRef<number | null>(null)
   const isInsideThinkingRef = useRef(false)  // Track if currently inside <think> block
 
-  useEffect(() => {
-    let reconnectTimer: ReturnType<typeof setTimeout> | null = null
-    let isCleaningUp = false
-
-    const connect = () => {
-      if (isCleaningUp) return
-
-      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-      ws.current = new WebSocket(`${protocol}//${window.location.host}/ws`)
-
-      ws.current.onopen = () => {
-        if (!isCleaningUp) setConnected(true)
-      }
-
-      ws.current.onclose = () => {
-        if (!isCleaningUp) {
-          setConnected(false)
-          reconnectTimer = setTimeout(connect, 2000)
-        }
-      }
-
-      ws.current.onerror = () => {
-        // Suppress error logging - reconnect will handle it
-      }
-
-      ws.current.onmessage = (event) => {
-        const data: WSMessage = JSON.parse(event.data)
-        handleMessage(data)
-      }
-    }
-
-    connect()
-
-    return () => {
-      isCleaningUp = true
-      if (reconnectTimer) clearTimeout(reconnectTimer)
-      if (ws.current?.readyState === WebSocket.OPEN) {
-        ws.current.close()
-      }
-    }
-  }, [])
-
-  const handleMessage = (data: WSMessage) => {
+  // Define handleMessage before the effect that uses it
+  const handleMessage = useCallback((data: WSMessage) => {
     switch (data.type) {
       case 'connected':
         setModel(data.model || '')
@@ -160,7 +121,7 @@ export function useWebSocket() {
         setIsLoading(false)
         break
 
-      case 'stream':
+      case 'stream': {
         // Parse and separate thinking from response content using state tracking
         let chunk = data.content || ''
         let thinkingContent = ''
@@ -212,8 +173,9 @@ export function useWebSocket() {
         }
         setIsLoading(false)
         break
+      }
 
-      case 'response':
+      case 'response': {
         if (data.done) {
           // Update context stats if provided
           if (data.context) {
@@ -286,8 +248,9 @@ export function useWebSocket() {
         }
         setIsLoading(false)
         break
+      }
 
-      case 'error':
+      case 'error': {
         const errorMsg = data.error || data.message
         if (errorMsg) {
           setMessages((prev) => [...prev, { role: 'system', content: `Error: ${errorMsg}`, timestamp: new Date() }])
@@ -295,6 +258,7 @@ export function useWebSocket() {
         setIsLoading(false)
         setStreaming('')
         break
+      }
 
       case 'model_changed':
         setModel(data.model || '')
@@ -336,7 +300,7 @@ export function useWebSocket() {
         }
         break
 
-      case 'media':
+      case 'media': {
         // Handle generated media (image, video, audio)
         if (data.media_type && data.path) {
           const mediaInfo: MediaInfo = {
@@ -354,10 +318,20 @@ export function useWebSocket() {
           }])
         }
         break
+      }
 
       case 'status':
         // Status updates during long operations (e.g., "Generating image...")
-        // Could show as a toast or status indicator
+        break
+
+      case 'stopped':
+        // Server confirmed generation stopped
+        setIsLoading(false)
+        setStreaming('')
+        setStreamingThinking('')
+        setLiveToolStatus([])
+        thinkingStartRef.current = null
+        isInsideThinkingRef.current = false
         break
 
       case 'cleared':
@@ -373,7 +347,49 @@ export function useWebSocket() {
         isInsideThinkingRef.current = false
         break
     }
-  }
+  }, [])
+
+  useEffect(() => {
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+    let isCleaningUp = false
+
+    const connect = () => {
+      if (isCleaningUp) return
+
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+      ws.current = new WebSocket(`${protocol}//${window.location.host}/ws`)
+
+      ws.current.onopen = () => {
+        if (!isCleaningUp) setConnected(true)
+      }
+
+      ws.current.onclose = () => {
+        if (!isCleaningUp) {
+          setConnected(false)
+          reconnectTimer = setTimeout(connect, 2000)
+        }
+      }
+
+      ws.current.onerror = () => {
+        // Suppress error logging - reconnect will handle it
+      }
+
+      ws.current.onmessage = (event) => {
+        const data: WSMessage = JSON.parse(event.data)
+        handleMessage(data)
+      }
+    }
+
+    connect()
+
+    return () => {
+      isCleaningUp = true
+      if (reconnectTimer) clearTimeout(reconnectTimer)
+      if (ws.current?.readyState === WebSocket.OPEN) {
+        ws.current.close()
+      }
+    }
+  }, [handleMessage])
 
   const send = useCallback((content: string, chatMode: boolean = true, reasoningLevel: string | null = null, attachments: string[] = []) => {
     if (!ws.current || ws.current.readyState !== WebSocket.OPEN) return
@@ -446,6 +462,17 @@ export function useWebSocket() {
     ws.current.send(JSON.stringify({ type: 'clear' }))
   }, [])
 
+  const stopGeneration = useCallback(() => {
+    if (!ws.current || ws.current.readyState !== WebSocket.OPEN) return
+    ws.current.send(JSON.stringify({ type: 'stop' }))
+    setIsLoading(false)
+    setStreaming('')
+    setStreamingThinking('')
+    setLiveToolStatus([])
+    thinkingStartRef.current = null
+    isInsideThinkingRef.current = false
+  }, [])
+
   return {
     connected,
     messages,
@@ -466,5 +493,6 @@ export function useWebSocket() {
     switchModel,
     switchProvider,
     clear,
+    stopGeneration,
   }
 }
