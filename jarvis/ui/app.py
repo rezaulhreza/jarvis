@@ -2681,24 +2681,30 @@ Analyze queries using multiple AI models simultaneously.
                         with open(frame_path, 'wb') as f:
                             f.write(frame_data)
 
-                        # Build prompt with visual context
-                        vision_prompt = (
-                            f"The user said: '{transcript}'. "
-                            "They are showing you their camera. "
-                            "Describe what you see and respond to what they said. "
-                            "Be conversational and brief."
-                        ) if transcript else (
-                            "The user is showing you their camera. "
-                            "Describe what you see briefly and conversationally."
-                        )
+                        # Send immediate status so user knows it's working
+                        await websocket.send_json({
+                            "type": "tool_status",
+                            "tools": [{"name": "vision", "display": "Analyzing camera...", "status": "running"}]
+                        })
 
-                        # Use vision analysis
+                        # Short prompt for speed
+                        vision_prompt = (
+                            f"{transcript}\n\nDescribe what you see. Be brief."
+                        ) if transcript else "What do you see? Be brief."
+
+                        # Run vision in thread to not block event loop
                         try:
                             from jarvis.skills.media_gen import analyze_image
-                            analysis = analyze_image(frame_path, vision_prompt)
+                            analysis = await asyncio.to_thread(analyze_image, frame_path, vision_prompt)
+
+                            # Clear tool status
+                            await websocket.send_json({
+                                "type": "tool_status",
+                                "tools": [{"name": "vision", "display": "Vision complete", "status": "complete"}]
+                            })
 
                             if analysis.get("success"):
-                                response_text = analysis.get("analysis", analysis.get("result", "I can see your camera feed but couldn't analyze the image."))
+                                response_text = analysis.get("analysis", analysis.get("result", "I couldn't analyze the image."))
                             else:
                                 response_text = analysis.get("error", "Vision analysis failed.")
 

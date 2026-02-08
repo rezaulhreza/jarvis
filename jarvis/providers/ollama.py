@@ -42,12 +42,13 @@ class OllamaProvider(BaseProvider):
 
     # Vision-capable models (ordered by preference)
     VISION_MODELS = [
-        "llama3.2-vision",  # Best quality
-        "llava-llama3",     # Good quality
-        "minicpm-v",        # Good balance
-        "llava",            # Classic
-        "moondream",        # Fast/small
-        "bakllava",         # Alternative
+        "granite3.2-vision",  # Fast, small (2.4GB)
+        "minicpm-v",          # Good balance
+        "moondream",          # Fast/small
+        "llava",              # Classic
+        "llava-llama3",       # Good quality
+        "llama3.2-vision",    # Best quality but slow
+        "bakllava",           # Alternative
     ]
 
     def __init__(self, model: str = None, **kwargs):
@@ -336,7 +337,7 @@ class OllamaProvider(BaseProvider):
 
         # Create a client with longer timeout for vision (models can be slow)
         import httpx
-        vision_timeout = timeout or 300.0  # 5 minutes default for vision
+        vision_timeout = timeout or 60.0  # 1 minute default for vision
         vision_client = self.ollama.Client(
             host=self.base_url,
             timeout=httpx.Timeout(vision_timeout, connect=30.0),
