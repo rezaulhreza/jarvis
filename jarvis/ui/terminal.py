@@ -789,7 +789,7 @@ class TerminalUI:
             return None
 
         choices = []
-        for m in models[:20]:
+        for m in models:
             if m == current:
                 choices.append(f"● {m} (current)")
             else:
@@ -841,7 +841,7 @@ class TerminalUI:
 
     def print_models(self, models: list, current: str):
         self.console.print()
-        for model in models[:15]:
+        for model in models:
             marker = " [cyan]●[/cyan]" if model == current else "  "
             self.console.print(f"{marker} {model}")
         self.console.print()
