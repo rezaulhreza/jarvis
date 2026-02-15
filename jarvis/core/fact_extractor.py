@@ -28,7 +28,8 @@ class FactExtractor:
         Extract facts from a conversation using the LLM.
 
         Args:
-            messages: List of message dicts with 'role' and 'content'
+            messages: List of message dicts with 'role' and 'content',
+                      or Message objects with .role and .content attributes
             provider: LLM provider to use for extraction
 
         Returns:
@@ -37,10 +38,36 @@ class FactExtractor:
         if not messages or len(messages) < 2:
             return []
 
+        # Safely extract role and content from mixed message types
+        # (dict, Message objects, or other formats from tool-calling conversations)
+        def _get_role(m):
+            if isinstance(m, dict):
+                return m.get("role", "unknown")
+            return getattr(m, "role", "unknown")
+
+        def _get_content(m):
+            if isinstance(m, dict):
+                c = m.get("content", "")
+            else:
+                c = getattr(m, "content", "")
+            if not isinstance(c, str):
+                c = str(c) if c else ""
+            return c
+
+        # Filter to user/assistant messages only (skip tool messages)
+        filtered = [
+            m for m in messages[-10:]
+            if _get_role(m) in ("user", "assistant")
+            and _get_content(m).strip()
+        ]
+
+        if len(filtered) < 2:
+            return []
+
         # Build conversation text
         conversation = "\n".join([
-            f"{m['role'].upper()}: {m['content'][:500]}"
-            for m in messages[-10:]  # Last 10 messages max
+            f"{_get_role(m).upper()}: {_get_content(m)[:500]}"
+            for m in filtered
         ])
 
         # Prompt for fact extraction

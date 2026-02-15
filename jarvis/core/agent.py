@@ -29,6 +29,8 @@ from .tools import (
     calculate, save_memory, recall_memory, github_search,
     # Task management
     task_create, task_update, task_list, task_get,
+    # PR
+    create_pr, update_pr,
 )
 # Media generation (lazy import to avoid startup delays)
 def _get_media_tools():
@@ -60,13 +62,22 @@ class AgentEvent:
 class Agent:
     """Agent with tool calling - native or prompt-based."""
 
-    def __init__(self, provider, project_root: Path, ui=None, config: dict | None = None):
+    # Tools blocked in plan mode (write/destructive operations)
+    PLAN_BLOCKED_TOOLS = {
+        "write_file", "edit_file", "run_command", "apply_patch",
+        "git_commit", "git_add", "git_stash", "git_branch",
+        "save_memory", "create_pr", "update_pr",
+    }
+
+    def __init__(self, provider, project_root: Path, ui=None, config: dict | None = None, permissions=None):
         self.provider = provider
         self.project_root = project_root
         self.ui = ui
         self.config = config or {}
         self.max_iterations = 15
         self.last_streamed = False
+        self.plan_mode = False
+        self.permissions = permissions
         set_project_root(project_root)
         set_ui(ui)  # Pass UI to tools for confirmations
 
@@ -232,6 +243,10 @@ class Agent:
             return "web_search", {"query": msg}
 
         elif intent.intent == Intent.SEARCH:
+            # Check if message contains a URL/domain → use web_fetch
+            url = self._extract_url_from_message(msg)
+            if url:
+                return "web_fetch", {"url": url}
             # Extract search query
             for prefix in ["search for ", "look up ", "find online ", "google ", "search the web for "]:
                 if msg_lower.startswith(prefix):
@@ -300,7 +315,7 @@ class Agent:
         msg = user_message.lower()
         explicit_search = [
             "web search", "search web", "search the web", "google", "look up",
-            "find online", "search for", "browse"
+            "find online", "search for", "browse the web", "browse online"
         ]
         if any(s in msg for s in explicit_search):
             return True
@@ -339,13 +354,27 @@ class Agent:
             "file", "repo", "project", "codebase", "function", "class",
             "line", "stack trace", "traceback", "error", "bug", "fix",
             "refactor", "edit", "update", "read", "open", "search",
-            "commit", "branch", "git", "push", "pull", "merge"
+            "commit", "branch", "git", "push", "pull", "merge",
+            "find", "where", "defined", "definition", "locate", "show me",
+            "list all", "list the", "create", "write", "delete", "remove",
+            "run", "execute", "test", "install", "build", "deploy",
+            "directory", "folder", "path", "import", "module", "variable",
         ]
         if any(s in msg for s in file_signals):
             return True
 
+        # Path-like patterns (e.g. "jarvis/core/tools.py")
+        if re.search(r'\b[\w-]+/[\w.-]+', msg):
+            return True
+
         # File extensions hinting code questions
         if re.search(r"\.(py|js|ts|tsx|jsx|go|rs|java|cpp|c|rb|php|yaml|yml|json)\b", msg):
+            return True
+
+        # URLs and bare domains need web_fetch
+        if re.search(r'https?://\S', msg):
+            return True
+        if re.search(r'\b[\w-]+\.(?:co\.uk|com\.au|com|org|net|io|dev|app|ai|me)\b', msg, re.IGNORECASE):
             return True
 
         return False
@@ -358,6 +387,19 @@ class Agent:
 
         msg = (user_message or "").strip()
         msg_lower = msg.lower()
+
+        # Guard: if the message is clearly about file/code operations, don't auto-route
+        # to web_search. Let the agent handle it via tool calling instead.
+        file_op_signals = [
+            "write to file", "write file", "save to file", "save file",
+            "create file", "create a file", "add to file", "append to file",
+            "edit file", "modify file", "update file", "delete file", "remove file",
+            "read file", "open file", "write to ", "save to ", "add to ",
+            "markdown file", ".md file", ".txt file", ".json file", ".py file",
+            "output to file", "output to a file", "put in file", "put in a file",
+        ]
+        if any(s in msg_lower for s in file_op_signals):
+            return None
 
         # Weather
         if agent_cfg.get("auto_weather", True) and "weather" in msg_lower:
@@ -509,6 +551,12 @@ class Agent:
                     if "weather" in msg_lower:
                         return None
                     return "web_search", {"query": msg}
+
+        # === URL/DOMAIN DETECTION ===
+        # If message contains a URL or bare domain, use web_fetch
+        url = self._extract_url_from_message(msg)
+        if url:
+            return "web_fetch", {"url": url}
 
         # === MULTIMODAL GENERATION ===
         # Image generation
@@ -679,6 +727,8 @@ GIT:
   git_commit      - {"tool": "git_commit", "message": "commit message"}
   git_branch      - {"tool": "git_branch", "name": "branch-name", "create": true}
   git_stash       - {"tool": "git_stash", "action": "push"}
+  create_pr       - {"tool": "create_pr", "title": "PR title", "body": "description", "base": "main", "draft": false}
+  update_pr       - {"tool": "update_pr", "title": "New title", "body": "New description", "pr_number": 3}
 
 WEB & INFO:
   web_search      - {"tool": "web_search", "query": "search query"}
@@ -708,53 +758,228 @@ RULES:
 2. For code questions: read_file FIRST, never guess
 3. For writing files: USE write_file or edit_file
 4. Output ONLY valid JSON when calling a tool - no explanation before/after
+
+TOOL ORDERING RULES:
+- ALWAYS call read_file BEFORE edit_file or write_file on existing files. The tool will REJECT edits to unread files.
+- For refactoring: read the file first, then use edit_file for targeted changes (NOT write_file for the whole file).
+- You CAN browse websites with web_fetch and search the web with web_search.
+- You can call multiple tools in sequence. After each tool result, decide whether to call another tool or answer.
 '''
+
+    # Known tool names for function-call-style text parsing
+    _KNOWN_TOOL_NAMES = {
+        "read_file", "list_files", "search_files", "write_file", "edit_file",
+        "get_project_structure", "glob_files", "grep",
+        "apply_patch", "find_definition", "find_references", "run_tests", "get_project_overview",
+        "git_status", "git_diff", "git_log", "git_commit", "git_add", "git_branch", "git_stash",
+        "run_command", "web_search", "web_fetch", "get_current_news", "get_gold_price",
+        "get_weather", "get_current_time", "calculate", "save_memory", "recall_memory",
+        "task_create", "task_update", "task_list", "task_get", "github_search",
+        "generate_image", "generate_video", "generate_music", "analyze_image",
+        "create_pr", "update_pr",
+    }
+
+    def _has_tool_call_syntax(self, text: str) -> bool:
+        """Check if text contains tool call syntax (JSON, function-call, or name+JSON)."""
+        if not text:
+            return False
+        # JSON-style: {"name": "tool", ...}
+        if any(k in text for k in ('"name"', '"tool"', '"function"', '"action"')):
+            return True
+        _tool_pattern = r'\b(' + '|'.join(re.escape(t) for t in self._KNOWN_TOOL_NAMES) + r')'
+        # Function-call style: tool_name(...) matching a known tool
+        if re.search(_tool_pattern + r'\s*\(', text):
+            return True
+        # Name+JSON style: tool_name\n{"key": ...} or tool_name {"key": ...}
+        if re.search(_tool_pattern + r'\s*\{', text):
+            return True
+        return False
+
+    def _extract_url_from_message(self, message: str) -> Optional[str]:
+        """Extract URL from message, normalizing bare domains to https://.
+
+        Returns the first URL found or None.
+        """
+        if not message:
+            return None
+        # Match full URLs first (https://... or http://...)
+        full_url = re.search(r'(https?://\S+)', message, re.IGNORECASE)
+        if full_url:
+            return full_url.group(1).rstrip('.,;:!?)')
+        # Match bare domains with multi-part TLDs (e.g. example.co.uk)
+        multi_tld = re.search(
+            r'\b([\w-]+\.(?:co\.uk|com\.au|org\.uk|co\.nz|co\.za|co\.in|com\.br)(?:/\S*)?)\b',
+            message, re.IGNORECASE
+        )
+        if multi_tld:
+            return 'https://' + multi_tld.group(1).rstrip('.,;:!?)')
+        # Match bare domains with single TLDs (e.g. google.com, anthropic.ai)
+        single_tld = re.search(
+            r'\b([\w-]+\.(?:com|org|net|io|dev|app|ai|me|xyz|info|biz|edu|uk|de|fr|jp|ru|cn|in|br|au|ca|it|es|nl|se|no|fi|dk|pl|cz|ch|at|be|pt|ie|co)(?:/\S*)?)\b',
+            message, re.IGNORECASE
+        )
+        if single_tld:
+            return 'https://' + single_tld.group(1).rstrip('.,;:!?)')
+        return None
+
+    def _parse_function_call_syntax(self, text: str) -> tuple:
+        """Parse Python-style function calls like tool_name('arg') or tool_name(key='value')."""
+        if not text:
+            return None, None
+
+        # Match: tool_name( ... )  where tool_name is a known tool
+        pattern = r'\b(' + '|'.join(re.escape(t) for t in self._KNOWN_TOOL_NAMES) + r')\s*\(([^)]*)\)'
+        match = re.search(pattern, text, re.DOTALL)
+        if not match:
+            return None, None
+
+        tool_name = match.group(1)
+        raw_args = match.group(2).strip()
+
+        if not raw_args:
+            return tool_name, {}
+
+        args = {}
+        # Try keyword arguments: key="value" or key='value'
+        kw_pattern = r"""(\w+)\s*=\s*(?:"([^"]*?)"|'([^']*?)'|(\[.*?\]|\{.*?\}|[\w.]+))"""
+        kw_matches = re.findall(kw_pattern, raw_args, re.DOTALL)
+        if kw_matches:
+            for key, dq, sq, other in kw_matches:
+                value = dq or sq or other
+                # Try parsing JSON-like values (lists, dicts, numbers, booleans)
+                if value in ("True", "true"):
+                    args[key] = True
+                elif value in ("False", "false"):
+                    args[key] = False
+                elif value in ("None", "null"):
+                    args[key] = None
+                else:
+                    try:
+                        args[key] = json.loads(value)
+                    except (json.JSONDecodeError, ValueError):
+                        args[key] = value
+            return tool_name, args
+
+        # Positional arguments: infer parameter name from tool signature
+        # Strip quotes from positional arg
+        positional = raw_args.strip().strip("'\"")
+        # Map common tools to their first positional parameter
+        first_param = {
+            "web_search": "query", "web_fetch": "url", "read_file": "path",
+            "write_file": "path", "search_files": "query", "list_files": "path",
+            "glob_files": "pattern", "grep": "pattern", "run_command": "command",
+            "calculate": "expression", "get_weather": "city", "get_current_time": "timezone",
+            "get_gold_price": "currency", "get_current_news": "topic",
+            "save_memory": "content", "recall_memory": "query",
+            "find_definition": "symbol", "find_references": "symbol",
+            "generate_image": "prompt", "generate_video": "prompt",
+            "generate_music": "prompt", "github_search": "query",
+            "create_pr": "title",
+            "update_pr": "title",
+        }.get(tool_name, "query")
+        args[first_param] = positional
+        return tool_name, args
+
+    def _try_parse_json_tool_call(self, text: str) -> tuple:
+        """Scan all top-level JSON objects in text and return the last one that looks like a tool call.
+
+        Models often embed tool calls at the END of a long text response,
+        so scanning only the first '{' fails when code blocks contain braces earlier.
+        """
+        candidates = []
+        pos = 0
+        while pos < len(text):
+            start = text.find('{', pos)
+            if start == -1:
+                break
+            # Find matching closing brace
+            depth = 0
+            end = start
+            for i, char in enumerate(text[start:], start):
+                if char == '{':
+                    depth += 1
+                elif char == '}':
+                    depth -= 1
+                    if depth == 0:
+                        end = i + 1
+                        break
+            if depth != 0:
+                break
+            candidates.append((start, end))
+            pos = end
+
+        # Try candidates from LAST to FIRST (tool calls usually at the end)
+        for start, end in reversed(candidates):
+            json_str = text[start:end]
+            try:
+                data = json.loads(json_str)
+                if not isinstance(data, dict):
+                    continue
+
+                # Handle nested: {"function": {"name": "...", "arguments": {...}}}
+                if "function" in data and isinstance(data["function"], dict):
+                    nested = data["function"]
+                    tool_name = nested.get("name", "")
+                    args = nested.get("arguments", {})
+                    if isinstance(args, str):
+                        try:
+                            args = json.loads(args)
+                        except json.JSONDecodeError:
+                            pass
+                    if tool_name:
+                        return tool_name, args
+
+                # Flat format: {"name": "tool", "arguments": {...}}
+                tool_name = (
+                    data.get("tool") or data.get("name") or data.get("function")
+                    or data.get("action") or data.get("tool_name")
+                )
+                if isinstance(tool_name, dict):
+                    tool_name = tool_name.get("name")
+
+                if tool_name and tool_name in self._KNOWN_TOOL_NAMES:
+                    args = (
+                        data.get("arguments") or data.get("params")
+                        or data.get("parameters") or data.get("args") or {}
+                    )
+                    if isinstance(args, str):
+                        try:
+                            args = json.loads(args)
+                        except json.JSONDecodeError:
+                            pass
+                    if not args:
+                        args = {k: v for k, v in data.items()
+                                if k not in ["tool", "name", "function", "action", "tool_name",
+                                            "arguments", "params", "parameters", "args"]}
+                    return tool_name, args
+
+                # Name+JSON: tool_name\n{"key": "value"} — tool name before JSON
+                if start > 0:
+                    prefix = text[:start].strip()
+                    for known in self._KNOWN_TOOL_NAMES:
+                        if prefix == known or prefix.endswith(known):
+                            return known, data
+            except json.JSONDecodeError:
+                continue
+
+        return None, None
 
     def _parse_tool_call_from_text(self, text: str) -> tuple:
         """Try to extract a tool call from model's text output."""
         if not text:
             return None, None
 
-        # Try to find JSON object with balanced braces
-        # Start from first { and find matching }
-        start = text.find('{')
-        if start == -1:
-            return None, None
+        # --- Try JSON parsing — scan ALL top-level {} blocks, last match wins ---
+        # Models often put tool calls at the END of a long text response,
+        # so we try from the end backwards.
+        result = self._try_parse_json_tool_call(text)
+        if result[0]:
+            return result
 
-        # Count braces to find the matching closing brace
-        depth = 0
-        end = start
-        for i, char in enumerate(text[start:], start):
-            if char == '{':
-                depth += 1
-            elif char == '}':
-                depth -= 1
-                if depth == 0:
-                    end = i + 1
-                    break
-
-        if depth != 0:
-            return None, None
-
-        json_str = text[start:end]
-
-        try:
-            data = json.loads(json_str)
-            tool_name = data.get("tool") or data.get("name")
-            if tool_name:
-                # Get arguments - could be in "arguments" or directly in data
-                args = data.get("arguments", {})
-                # Handle case where arguments is a JSON string
-                if isinstance(args, str):
-                    try:
-                        args = json.loads(args)
-                    except json.JSONDecodeError:
-                        pass
-                if not args:
-                    args = {k: v for k, v in data.items() if k not in ["tool", "name", "arguments"]}
-                return tool_name, args
-        except json.JSONDecodeError:
-            pass
+        # --- Fallback: try function-call syntax like web_fetch('url') ---
+        result = self._parse_function_call_syntax(text)
+        if result[0]:
+            return result
 
         return None, None
 
@@ -939,7 +1164,106 @@ RULES:
             task_id = args.get("task_id", "")
             return f"Get task #{task_id}"
 
+        elif tool_name == "create_pr":
+            title = args.get("title", "")[:40]
+            draft = " (draft)" if args.get("draft") else ""
+            return f"Create PR: {title}{draft}"
+
+        elif tool_name == "update_pr":
+            parts = []
+            if args.get("title"):
+                parts.append(f"title='{args['title'][:30]}'")
+            if args.get("body"):
+                parts.append("description")
+            pr_num = args.get("pr_number", "current")
+            return f"Update PR #{pr_num}: {', '.join(parts) if parts else 'no changes'}"
+
         return f"{tool_name}()"
+
+    def _format_timing_stats(self, elapsed: float, tool_count: int, input_tokens: int = 0, output_tokens: int = 0) -> str:
+        """Format timing stats footer."""
+        if elapsed < 60:
+            time_str = f"{elapsed:.1f}s"
+        else:
+            mins = int(elapsed // 60)
+            secs = elapsed % 60
+            time_str = f"{mins}m {secs:.0f}s"
+        stats = f"\n[dim]({time_str}"
+        if tool_count > 0:
+            stats += f" · {tool_count} tool{'s' if tool_count > 1 else ''}"
+        total_tokens = input_tokens + output_tokens
+        if total_tokens > 0:
+            if total_tokens >= 1000:
+                stats += f" · {total_tokens / 1000:.1f}k tokens"
+            else:
+                stats += f" · {total_tokens:,} tokens"
+        stats += ")[/dim]"
+        return stats
+
+    def _format_tool_feedback(self, tool_name: str, args: dict, result: str, success: bool) -> str:
+        """Format tool result feedback with tool-specific guidance for the LLM.
+
+        Success paths give synthesis instructions.
+        Error paths give recovery guidance.
+        """
+        if not result:
+            result = "(empty result)"
+
+        # --- Error paths with recovery guidance ---
+        if not success or (result and result.startswith("Error")):
+            result_lower = result.lower()
+            path = args.get("path", args.get("url", ""))
+
+            if "must read_file" in result_lower or "read the file" in result_lower:
+                return (
+                    f"Tool error:\n{result}\n\n"
+                    f"RECOVERY: Call read_file('{path}') first, then retry your edit/write."
+                )
+            elif "could not find the text to replace" in result_lower:
+                return (
+                    f"Tool error:\n{result}\n\n"
+                    f"RECOVERY: Call read_file('{path}') again and use the EXACT text from the file as old_string. "
+                    "Copy it character-for-character including whitespace."
+                )
+            elif "file not found" in result_lower:
+                return (
+                    f"Tool error:\n{result}\n\n"
+                    f"RECOVERY: Use glob_files() or search_files() to find the correct file path, then retry."
+                )
+            elif "search failed" in result_lower or "no results" in result_lower:
+                return (
+                    f"Tool error:\n{result}\n\n"
+                    "RECOVERY: Try different search keywords, or use web_fetch() with a specific URL."
+                )
+            else:
+                return f"Tool error:\n{result}\n\nTry a different approach or different arguments."
+
+        # --- Success paths ---
+        if tool_name in ("web_search", "get_current_news"):
+            return (
+                f"Tool result:\n{result}\n\n"
+                "Synthesize a helpful answer from these results. "
+                "Include 1-2 source URLs when available. Answer the original question directly."
+            )
+        elif tool_name == "web_fetch":
+            return (
+                f"Tool result:\n{result}\n\n"
+                "Summarize the key information from this page that answers the user's question."
+            )
+        elif tool_name == "read_file":
+            return f"Tool result:\n{result}"
+        elif tool_name in ("edit_file", "write_file"):
+            return (
+                f"Tool result:\n{result}\n\n"
+                "The file has been updated. Briefly confirm what was changed."
+            )
+        elif tool_name == "run_command":
+            return (
+                f"Tool result:\n{result}\n\n"
+                "Report the command output. If there are errors, explain them."
+            )
+        else:
+            return f"Tool result:\n{result}"
 
     def _validate_tool_call(self, tool_name: str, args: dict) -> tuple[bool, str]:
         """Validate tool call before execution."""
@@ -973,6 +1297,8 @@ RULES:
             "find_references": {"required": ["symbol"], "types": {"symbol": str}},
             "run_tests": {"required": [], "types": {"test_path": str, "framework": str}},
             "get_project_overview": {"required": [], "types": {}},
+            "create_pr": {"required": ["title"], "types": {"title": str, "body": str, "base": str}},
+            "update_pr": {"required": [], "types": {"title": str, "body": str, "pr_number": int}},
         }
 
         schema = tool_schemas.get(tool_name)
@@ -998,6 +1324,14 @@ RULES:
 
     def _execute_tool(self, tool_name: str, args: dict) -> str:
         """Execute a tool by name."""
+        # Plan mode: block write operations
+        if self.plan_mode and tool_name in self.PLAN_BLOCKED_TOOLS:
+            return f"[Plan mode] {tool_name} blocked. Include this in your plan instead."
+
+        # Permission check
+        if self.permissions and not self.permissions.check(tool_name, args or {}, self.ui):
+            return "Tool execution denied by user."
+
         # Validate tool call
         valid, error = self._validate_tool_call(tool_name, args or {})
         if not valid:
@@ -1055,6 +1389,9 @@ RULES:
             "task_get": task_get,
             # GitHub
             "github_search": github_search,
+            # PR
+            "create_pr": create_pr,
+            "update_pr": update_pr,
         }
 
         # Add media tools (lazy loaded)
@@ -1113,6 +1450,50 @@ RULES:
             print(f"[TOOL] ERROR: {tool_name} failed: {e}")
             return f"Error: {e}"
 
+    @staticmethod
+    def _normalize_tool_calls(tool_calls) -> list:
+        """Normalize tool_calls to OpenAI-compatible format for API round-trips.
+
+        Ensures arguments is a JSON string and each call has type='function'.
+        """
+        if not tool_calls:
+            return tool_calls
+        normalized = []
+        for call in tool_calls:
+            if hasattr(call, 'function'):
+                # SDK object — convert to dict
+                args = call.function.arguments
+                if isinstance(args, dict):
+                    args = json.dumps(args)
+                elif args is None:
+                    args = "{}"
+                normalized.append({
+                    "id": getattr(call, "id", None) or "",
+                    "type": "function",
+                    "function": {
+                        "name": call.function.name,
+                        "arguments": args,
+                    }
+                })
+            elif isinstance(call, dict):
+                func = call.get("function", {})
+                args = func.get("arguments", {})
+                if isinstance(args, dict):
+                    args = json.dumps(args)
+                elif args is None:
+                    args = "{}"
+                normalized.append({
+                    "id": call.get("id", ""),
+                    "type": "function",
+                    "function": {
+                        "name": func.get("name", ""),
+                        "arguments": args,
+                    }
+                })
+            else:
+                normalized.append(call)
+        return normalized
+
     def _call_model_with_timeout(self, messages, system_prompt, tools, timeout=120):
         """Call model with timeout using threading."""
         import threading
@@ -1157,6 +1538,10 @@ RULES:
         if self.ui and hasattr(self.ui, "begin_turn"):
             self.ui.begin_turn()
 
+        # Multi-step tracking
+        _last_tool_call = None  # (tool_name, args_str) for duplicate detection
+        _consecutive_failures = 0
+
         # Check if model supports native tools
         use_native = self._supports_native_tools()
         auto_tool_done = False
@@ -1167,11 +1552,19 @@ RULES:
             system_prompt = system_prompt + "\n\n" + self._get_tools_prompt()
 
         msg_lower = user_message.lower()
+        # Guard: skip web search shortcut when message is about file operations
+        _file_op_guard = [
+            "write to file", "write file", "save to file", "save file",
+            "create file", "add to file", "append to file", "edit file",
+            "markdown file", ".md file", ".txt file", ".json file",
+            "output to file", "output to a file",
+        ]
+        _is_file_op = any(s in msg_lower for s in _file_op_guard)
         explicit_search = [
             "web search", "search web", "search the web", "google", "look up",
-            "find online", "search for", "browse"
+            "find online", "search for", "browse the web", "browse online"
         ]
-        if any(s in msg_lower for s in explicit_search):
+        if not _is_file_op and any(s in msg_lower for s in explicit_search):
             try:
                 tool_start = time.time()
                 result = web_search(user_message, max_results=5)
@@ -1188,14 +1581,20 @@ RULES:
                             result=result,
                             success=tool_success,
                         )
-                return result
+                elapsed = time.time() - start_time
+                stats = self._format_timing_stats(elapsed, 1)
+                return result + stats
             except Exception:
-                return "Search failed: unexpected error."
+                elapsed = time.time() - start_time
+                stats = self._format_timing_stats(elapsed, 0)
+                return "Search failed: unexpected error." + stats
 
         if "gold" in msg_lower and "price" in msg_lower:
             import os
             if not (os.getenv("GOLDAPI_KEY") or os.getenv("GOLD_API_KEY")):
-                return "Error: GOLDAPI_KEY not configured. Please set it in .env to fetch live gold prices."
+                elapsed = time.time() - start_time
+                stats = self._format_timing_stats(elapsed, 0)
+                return "Error: GOLDAPI_KEY not configured. Please set it in .env to fetch live gold prices." + stats
 
         messages = []
         if history:
@@ -1209,12 +1608,18 @@ RULES:
 
         iteration = 0
         final_response = ""
+        _tool_spinner = None  # Persistent spinner for tool activity display
 
         while iteration < self.max_iterations:
             iteration += 1
 
-            if self.ui and self.ui.stop_requested:
-                return "[dim]Stopped[/dim]"
+            if self.ui:
+                if self.ui.stop_requested:
+                    return "[dim]Stopped[/dim]"
+                # Check ESC key between iterations
+                if hasattr(self.ui, "check_escape_pressed") and self.ui.check_escape_pressed():
+                    self.ui.stop_requested = True
+                    return "[dim]Stopped[/dim]"
 
             try:
                 # Auto-run tools for current info, time, weather, etc.
@@ -1240,18 +1645,8 @@ RULES:
                                     result=result,
                                     success=tool_success
                                 )
-                        messages.append({
-                            "role": "user",
-                            "content": (
-                                f"Tool result:\n{result}\n\n"
-                                "Instructions:\n"
-                                "1. If the result contains search results with titles/URLs/descriptions, synthesize a helpful answer from them.\n"
-                                "2. If the result starts with 'Error:' or 'Search failed:', acknowledge the error briefly.\n"
-                                "3. If you see 'No results found', say so briefly and suggest the user try a different query.\n"
-                                "4. Include 1-2 source URLs when available.\n"
-                                "5. Answer the original question directly and concisely."
-                            )
-                        })
+                        feedback = self._format_tool_feedback(tool_name, args, result, tool_success)
+                        messages.append({"role": "user", "content": feedback})
                         # If web search completely failed, return the error directly
                         if tool_name == "web_search" and result and (
                             result.startswith("Search failed")
@@ -1261,15 +1656,25 @@ RULES:
 
                 # If auto-tool already ran, just get LLM to synthesize - no more tools needed
                 if auto_tool_done:
+                    _synth_spinner = None
                     try:
                         from jarvis.providers import Message
                         synth_messages = [Message(role=m["role"], content=m["content"]) for m in messages]
                         synth_system = system_prompt + "\n\nAnswer the user's question based on the tool result above. Do NOT call any tools."
+
+                        if self.ui and hasattr(self.ui, "show_spinner"):
+                            _synth_spinner = self.ui.show_spinner("Generating response")
+                            _synth_spinner.start()
+
                         reply = self.provider.chat(
                             messages=synth_messages,
                             system=synth_system,
                             stream=True
                         )
+
+                        if _synth_spinner:
+                            _synth_spinner.stop()
+                            _synth_spinner = None
 
                         content_parts = []
                         if hasattr(reply, "__iter__") and not isinstance(reply, (str, dict)):
@@ -1288,39 +1693,124 @@ RULES:
                         final_response = self._clean_content("".join(content_parts))
                         break
                     except Exception as e:
-                        print(f"[agent] Synthesis error: {e}")
+                        if _synth_spinner:
+                            _synth_spinner.stop()
+                        import logging
+                        logging.getLogger("jarvis.agent").debug(f"Synthesis error: {e}")
                         pass
 
                 # Optional fast path when tools are unlikely
                 if agent_cfg.get("fast_no_tools", True) and not self._likely_needs_tools(user_message):
                     try:
+                        import threading
                         from jarvis.providers import Message
                         fast_messages = [Message(role=m["role"], content=m["content"]) for m in messages]
-                        reply = self.provider.chat(
-                            messages=fast_messages,
-                            system=system_prompt,
-                            stream=True
-                        )
 
-                        # Stream output live
+                        # Show spinner while waiting for first token
+                        spinner = None
+                        if self.ui and hasattr(self.ui, "show_spinner"):
+                            spinner = self.ui.show_spinner("Thinking")
+                            spinner.start()
+
+                        # Run chat in thread with timeout to prevent hanging
+                        _fast_result = {"reply": None, "error": None}
+                        def _fast_call():
+                            try:
+                                _fast_result["reply"] = self.provider.chat(
+                                    messages=fast_messages,
+                                    system=system_prompt,
+                                    stream=True
+                                )
+                            except Exception as e:
+                                _fast_result["error"] = e
+
+                        _fast_thread = threading.Thread(target=_fast_call)
+                        _fast_thread.daemon = True
+                        _fast_thread.start()
+
+                        timeout = self._get_timeout()
+                        _fast_start = time.time()
+                        while _fast_thread.is_alive():
+                            if self.ui and self.ui.stop_requested:
+                                break
+                            if self.ui and hasattr(self.ui, "check_escape_pressed") and self.ui.check_escape_pressed():
+                                if self.ui:
+                                    self.ui.stop_requested = True
+                                break
+                            if time.time() - _fast_start > timeout:
+                                break
+                            _fast_thread.join(timeout=0.5)
+
+                        if _fast_result["error"]:
+                            raise _fast_result["error"]
+                        reply = _fast_result["reply"]
+                        if reply is None:
+                            if spinner:
+                                spinner.stop()
+                            # Timed out or interrupted — fall through to tool-capable path
+                            raise TimeoutError("Fast path timed out")
+
+                        # Buffer initial tokens to detect tool-call syntax before streaming
                         content_parts = []
                         if hasattr(reply, "__iter__") and not isinstance(reply, (str, dict)):
+                            buffer = []
+                            buffer_len = 0
+                            streaming = False
+
                             for chunk in reply:
-                                # Check for stop (Ctrl+C or ESC)
                                 if self.ui:
                                     if self.ui.stop_requested:
                                         break
                                     if hasattr(self.ui, "check_escape_pressed") and self.ui.check_escape_pressed():
                                         self.ui.stop_requested = True
                                         break
+
                                 content_parts.append(chunk)
-                                if self.ui and hasattr(self.ui, "stream_text"):
-                                    self.ui.stream_text(chunk)
-                            if self.ui and hasattr(self.ui, "stream_done"):
-                                self.ui.stream_done()
+
+                                if not streaming:
+                                    # Buffer first ~80 chars to check for tool syntax
+                                    buffer.append(chunk)
+                                    buffer_len += len(chunk)
+                                    if buffer_len >= 80:
+                                        buffered = "".join(buffer)
+                                        if self._has_tool_call_syntax(buffered):
+                                            # Tool call detected — stop spinner, fall through
+                                            if spinner:
+                                                spinner.stop()
+                                                spinner = None
+                                            break
+                                        # Safe to stream — stop spinner, flush buffer
+                                        if spinner:
+                                            spinner.stop()
+                                            spinner = None
+                                        streaming = True
+                                        if self.ui and hasattr(self.ui, "stream_text"):
+                                            self.ui.stream_text(buffered)
+                                else:
+                                    if self.ui and hasattr(self.ui, "stream_text"):
+                                        self.ui.stream_text(chunk)
+
+                            # Handle short responses that never hit buffer threshold
+                            if not streaming and buffer:
+                                buffered = "".join(buffer)
+                                if spinner:
+                                    spinner.stop()
+                                    spinner = None
+                                if not self._has_tool_call_syntax(buffered):
+                                    if self.ui and hasattr(self.ui, "stream_text"):
+                                        self.ui.stream_text(buffered)
+                                    streaming = True
+
+                            if streaming:
+                                if self.ui and hasattr(self.ui, "stream_done"):
+                                    self.ui.stream_done()
+                                self.last_streamed = True
+
                             content = "".join(content_parts)
-                            self.last_streamed = True
                         else:
+                            if spinner:
+                                spinner.stop()
+                                spinner = None
                             # Non-stream reply fallback
                             content = None
                             if isinstance(reply, str):
@@ -1342,9 +1832,19 @@ RULES:
                                 self.ui.stream_done()
                                 self.last_streamed = True
 
+                        if spinner:
+                            spinner.stop()
+
                         final_response = self._clean_content(content if content is not None else "")
-                        break
+                        # If tool-call syntax detected (from buffer or full), fall through to agent loop
+                        if self._has_tool_call_syntax(final_response):
+                            final_response = ""
+                            self.last_streamed = False
+                        else:
+                            break
                     except Exception:
+                        if spinner:
+                            spinner.stop()
                         # Fall back to tool-capable path
                         pass
 
@@ -1358,21 +1858,29 @@ RULES:
                     tools = None
 
                 # Call model with timeout (interruptible)
-                if self.ui:
-                    self.ui.console.print("[dim]  Thinking...[/dim]", end="\r")
+                if _tool_spinner:
+                    _tool_spinner.stop()
+                    _tool_spinner = None
+                if self.ui and hasattr(self.ui, "show_spinner"):
+                    _tool_spinner = self.ui.show_spinner("Thinking")
+                    _tool_spinner.start()
 
                 timeout = self._get_timeout()
                 response = self._call_model_with_timeout(messages, system_prompt, tools, timeout=timeout)
 
-                # Clear the "Thinking..." line
-                if self.ui:
-                    self.ui.console.print("             ", end="\r")
-
                 if response is None:
+                    if _tool_spinner:
+                        _tool_spinner.stop()
                     return "[dim]Stopped[/dim]"
 
-                if self.ui and self.ui.stop_requested:
-                    return "[dim]Stopped[/dim]"
+                if self.ui:
+                    # Check ESC after model call
+                    if hasattr(self.ui, "check_escape_pressed") and self.ui.check_escape_pressed():
+                        self.ui.stop_requested = True
+                    if self.ui.stop_requested:
+                        if _tool_spinner:
+                            _tool_spinner.stop()
+                        return "[dim]Stopped[/dim]"
 
                 # Parse response
                 msg = response.message if hasattr(response, 'message') else response.get('message', {})
@@ -1381,10 +1889,12 @@ RULES:
 
                 # For native tool calling
                 if use_native and tool_calls:
-                    messages.append({"role": "assistant", "content": content, "tool_calls": tool_calls})
+                    messages.append({"role": "assistant", "content": content, "tool_calls": self._normalize_tool_calls(tool_calls)})
 
                     for call in tool_calls:
                         if self.ui and self.ui.stop_requested:
+                            if _tool_spinner:
+                                _tool_spinner.stop()
                             return "[dim]Stopped[/dim]"
 
                         tool_call_id = None
@@ -1404,12 +1914,20 @@ RULES:
                             except json.JSONDecodeError:
                                 args = {}
 
+                        # Update spinner to show tool activity
+                        if _tool_spinner and hasattr(_tool_spinner, "update_tool"):
+                            _tool_spinner.update_tool(tool_name, args)
+
                         tool_start = time.time()
                         result = self._execute_tool(tool_name, args)
                         tool_duration = time.time() - tool_start
                         tool_count += 1
                         # Check if tool failed
                         tool_success = not (result and (result.startswith("Error") or result.startswith("error")))
+
+                        # Stop spinner briefly to print tool result, then restart
+                        if _tool_spinner:
+                            _tool_spinner.stop()
                         if self.ui:
                             self.ui.print_tool(self._format_tool_display(tool_name, args, result), success=tool_success)
                             if hasattr(self.ui, "record_tool"):
@@ -1427,65 +1945,80 @@ RULES:
                             tool_msg["tool_call_id"] = tool_call_id
                         messages.append(tool_msg)
 
-                    # Stream the final response after tool execution
-                    try:
-                        from jarvis.providers import Message
-                        followup_system = system_prompt + "\n\nAnswer the user now. Do not call tools."
-                        stream_messages = [Message(role=m["role"], content=m["content"]) for m in messages]
-                        stream = self.provider.chat(
-                            messages=stream_messages,
-                            system=followup_system,
-                            stream=True
-                        )
-                        parts = []
-                        for chunk in stream:
-                            # Check for stop (Ctrl+C or ESC)
-                            if self.ui:
-                                if self.ui.stop_requested:
-                                    break
-                                if hasattr(self.ui, "check_escape_pressed") and self.ui.check_escape_pressed():
-                                    self.ui.stop_requested = True
-                                    break
-                            parts.append(chunk)
-                            if self.ui and hasattr(self.ui, "stream_text"):
-                                self.ui.stream_text(chunk)
-                        if self.ui and hasattr(self.ui, "stream_done"):
-                            self.ui.stream_done()
-                        self.last_streamed = True
-                        final_response = self._clean_content("".join(parts))
-                        if self.ui and hasattr(self.ui, "print_tool_section"):
-                            self.ui.print_tool_section()
-                        break
-                    except Exception:
-                        # Fall back to normal loop if streaming fails
-                        pass
+                    # Multi-step: let the loop continue so model can make more tool calls
+                    # Duplicate-call detection
+                    for call in tool_calls:
+                        if hasattr(call, 'function'):
+                            c_name = call.function.name
+                            c_args = str(call.function.arguments or {})
+                        else:
+                            c_name = call.get('function', {}).get('name', '')
+                            c_args = str(call.get('function', {}).get('arguments', {}))
+                        call_sig = (c_name, c_args)
+                        if call_sig == _last_tool_call:
+                            messages.append({
+                                "role": "user",
+                                "content": "You just called the same tool with the same arguments. Try a different approach or answer the user."
+                            })
+                        _last_tool_call = call_sig
 
-                # Check if content contains JSON tool call (fallback for models that output JSON as text)
-                elif content and ('"name"' in content or '"tool"' in content):
+                    # Track consecutive failures
+                    any_failed = any(
+                        r.startswith("Error") or r.startswith("error")
+                        for m in messages[-len(tool_calls):]
+                        if m.get("role") == "tool" and (r := m.get("content", ""))
+                    )
+                    if any_failed:
+                        _consecutive_failures += 1
+                    else:
+                        _consecutive_failures = 0
+
+                    if _consecutive_failures >= 3:
+                        messages.append({
+                            "role": "user",
+                            "content": "Multiple tool calls have failed. Reconsider your approach or answer with what you know."
+                        })
+
+                    continue  # Let model decide: more tools or final text response
+
+                # Check if content contains tool call syntax (JSON or function-call style)
+                elif content and self._has_tool_call_syntax(content):
                     tool_name, args = self._parse_tool_call_from_text(content)
 
                     if tool_name:
+                        # Update spinner to show tool activity
+                        if _tool_spinner and hasattr(_tool_spinner, "update_tool"):
+                            _tool_spinner.update_tool(tool_name, args)
+
                         result = self._execute_tool(tool_name, args)
                         tool_count += 1
-                        if self.ui:
-                            self.ui.print_tool(self._format_tool_display(tool_name, args, result))
+                        tool_success = not (result and (result.startswith("Error") or result.startswith("error")))
 
+                        # Stop spinner to print tool result
+                        if _tool_spinner:
+                            _tool_spinner.stop()
+                        if self.ui:
+                            self.ui.print_tool(self._format_tool_display(tool_name, args, result), success=tool_success)
+
+                        feedback = self._format_tool_feedback(tool_name, args, result, tool_success)
                         messages.append({"role": "assistant", "content": content})
-                        messages.append({
-                            "role": "user",
-                            "content": (
-                                f"Tool result:\n{result}\n\n"
-                                "Instructions:\n"
-                                "1. If the result contains search results with titles/URLs/descriptions, synthesize a helpful answer from them.\n"
-                                "2. If the result starts with 'Error:' or 'Search failed:', acknowledge the error briefly.\n"
-                                "3. If you see 'No results found', say so briefly and suggest the user try a different query.\n"
-                                "4. Include 1-2 source URLs when available.\n"
-                                "5. Answer the original question directly and concisely."
-                            )
-                        })
+                        messages.append({"role": "user", "content": feedback})
+
+                        # Track failures for text-parse path too
+                        if not tool_success:
+                            _consecutive_failures += 1
+                        else:
+                            _consecutive_failures = 0
+                        if _consecutive_failures >= 3:
+                            messages.append({
+                                "role": "user",
+                                "content": "Multiple tool calls have failed. Reconsider your approach or answer with what you know."
+                            })
+
                     else:
+                        if _tool_spinner:
+                            _tool_spinner.stop()
                         # Couldn't parse JSON - remove JSON blob and return rest, or show error
-                        # Find and remove the JSON object (handles nested braces)
                         clean = content
                         start = content.find('{')
                         if start != -1:
@@ -1509,36 +2042,32 @@ RULES:
 
                 # No tool calls - final response
                 elif content:
+                    if _tool_spinner:
+                        _tool_spinner.stop()
                     final_response = self._clean_content(content)
                     if self.ui and hasattr(self.ui, "print_tool_section"):
                         self.ui.print_tool_section()
                     break
 
                 else:
+                    if _tool_spinner:
+                        _tool_spinner.stop()
                     break
 
             except Exception as e:
-                return f"[red]Error: {e}[/red]"
+                if _tool_spinner:
+                    _tool_spinner.stop()
+                elapsed = time.time() - start_time
+                stats = self._format_timing_stats(elapsed, tool_count)
+                return f"[red]Error: {e}[/red]" + stats
 
+        if _tool_spinner:
+            _tool_spinner.stop()
         if iteration >= self.max_iterations:
             final_response += "\n[dim](max iterations)[/dim]"
 
-        # Calculate elapsed time
         elapsed = time.time() - start_time
-
-        # Format timing info
-        if elapsed < 60:
-            time_str = f"{elapsed:.1f}s"
-        else:
-            mins = int(elapsed // 60)
-            secs = elapsed % 60
-            time_str = f"{mins}m {secs:.0f}s"
-
-        # Add stats footer
-        stats = f"\n[dim]({time_str}"
-        if tool_count > 0:
-            stats += f" · {tool_count} tool{'s' if tool_count > 1 else ''}"
-        stats += ")[/dim]"
+        stats = self._format_timing_stats(elapsed, tool_count)
 
         response = final_response if final_response else "[dim]No response[/dim]"
         return response + stats
@@ -1581,6 +2110,8 @@ RULES:
             "task_list": task_list,
             "task_get": task_get,
             "github_search": github_search,
+            "create_pr": create_pr,
+            "update_pr": update_pr,
         }
         return tool_map
 
@@ -1610,6 +2141,10 @@ RULES:
         start_time = time.time()
         tool_count = 0
         self.last_streamed = False
+
+        # Multi-step tracking
+        _last_tool_call = None
+        _consecutive_failures = 0
 
         use_native = self._supports_native_tools()
         auto_tool_done = False
@@ -1683,17 +2218,8 @@ RULES:
                             display=self._format_tool_display(tool_name, args, result.result),
                         )
 
-                        messages.append({
-                            "role": "user",
-                            "content": (
-                                f"Tool result:\n{result.result}\n\n"
-                                "Instructions:\n"
-                                "1. If the result contains search results, synthesize a helpful answer.\n"
-                                "2. If the result starts with 'Error:', acknowledge the error briefly.\n"
-                                "3. Include 1-2 source URLs when available.\n"
-                                "4. Answer the original question directly and concisely."
-                            )
-                        })
+                        feedback = self._format_tool_feedback(tool_name, args, result.result, result.success)
+                        messages.append({"role": "user", "content": feedback})
 
                         if tool_name == "web_search" and result.result and (
                             result.result.startswith("Search failed") or
@@ -1749,7 +2275,12 @@ RULES:
                         else:
                             content_parts = [str(reply) if isinstance(reply, str) else ""]
                         final_response = self._clean_content("".join(content_parts))
-                        break
+                        # Safety net: if LLM output tool-call syntax, discard and fall through to agent loop
+                        if self._has_tool_call_syntax(final_response):
+                            final_response = ""
+                            self.last_streamed = False
+                        else:
+                            break
                     except Exception:
                         pass
 
@@ -1783,7 +2314,7 @@ RULES:
 
                 # Native tool calling with parallel execution
                 if use_native and tool_calls:
-                    messages.append({"role": "assistant", "content": content, "tool_calls": tool_calls})
+                    messages.append({"role": "assistant", "content": content, "tool_calls": self._normalize_tool_calls(tool_calls)})
 
                     # Parse all tool calls
                     parsed_calls = []
@@ -1871,39 +2402,38 @@ RULES:
                             tool_msg["tool_call_id"] = tool_result.tool_call_id
                         messages.append(tool_msg)
 
-                    # Stream synthesis response
-                    try:
-                        from jarvis.providers import Message
-                        followup_system = system_prompt + "\n\nAnswer the user now. Do not call tools."
-                        stream_messages = [Message(role=m["role"], content=m["content"]) for m in messages]
-                        stream = self.provider.chat(
-                            messages=stream_messages,
-                            system=followup_system,
-                            stream=True
-                        )
-                        parts = []
+                    # Multi-step: let the loop continue so model can make more tool calls
+                    # Duplicate-call detection
+                    for pc in parsed_calls:
+                        call_sig = (pc["tool_name"], str(pc["args"]))
+                        if call_sig == _last_tool_call:
+                            messages.append({
+                                "role": "user",
+                                "content": "You just called the same tool with the same arguments. Try a different approach or answer the user."
+                            })
+                        _last_tool_call = call_sig
 
-                        def _stream_producer():
-                            """Run streaming in thread."""
-                            result_parts = []
-                            if hasattr(stream, '__iter__') and not isinstance(stream, (str, dict)):
-                                for chunk in stream:
-                                    if self.ui and self.ui.stop_requested:
-                                        break
-                                    result_parts.append(chunk)
-                            return result_parts
+                    # Track consecutive failures
+                    any_failed = any(
+                        r.startswith("Error") or r.startswith("error")
+                        for m in messages[-len(parsed_calls):]
+                        if m.get("role") == "tool" and (r := m.get("content", ""))
+                    )
+                    if any_failed:
+                        _consecutive_failures += 1
+                    else:
+                        _consecutive_failures = 0
 
-                        parts = await asyncio.to_thread(_stream_producer)
-                        for chunk in parts:
-                            yield AgentEvent(type="stream", content=chunk)
-                        self.last_streamed = True
-                        final_response = self._clean_content("".join(parts))
-                        break
-                    except Exception:
-                        pass
+                    if _consecutive_failures >= 3:
+                        messages.append({
+                            "role": "user",
+                            "content": "Multiple tool calls have failed. Reconsider your approach or answer with what you know."
+                        })
 
-                # Prompt-based fallback (text contains JSON tool call)
-                elif content and ('"name"' in content or '"tool"' in content):
+                    continue  # Let model decide: more tools or final text response
+
+                # Prompt-based fallback (text contains JSON or function-call tool syntax)
+                elif content and self._has_tool_call_syntax(content):
                     tool_name, args = self._parse_tool_call_from_text(content)
                     if tool_name:
                         yield AgentEvent(
@@ -1925,14 +2455,20 @@ RULES:
                             display=self._format_tool_display(tool_name, args or {}, result.result),
                         )
 
+                        feedback = self._format_tool_feedback(tool_name, args or {}, result.result, result.success)
                         messages.append({"role": "assistant", "content": content})
-                        messages.append({
-                            "role": "user",
-                            "content": (
-                                f"Tool result:\n{result.result}\n\n"
-                                "Answer the original question directly and concisely."
-                            )
-                        })
+                        messages.append({"role": "user", "content": feedback})
+
+                        # Track failures
+                        if not result.success:
+                            _consecutive_failures += 1
+                        else:
+                            _consecutive_failures = 0
+                        if _consecutive_failures >= 3:
+                            messages.append({
+                                "role": "user",
+                                "content": "Multiple tool calls have failed. Reconsider your approach or answer with what you know."
+                            })
                     else:
                         clean = content
                         start = content.find('{')
@@ -1964,17 +2500,7 @@ RULES:
             final_response += "\n[dim](max iterations)[/dim]"
 
         elapsed = time.time() - start_time
-        if elapsed < 60:
-            time_str = f"{elapsed:.1f}s"
-        else:
-            mins = int(elapsed // 60)
-            secs = elapsed % 60
-            time_str = f"{mins}m {secs:.0f}s"
-
-        stats = f"\n[dim]({time_str}"
-        if tool_count > 0:
-            stats += f" · {tool_count} tool{'s' if tool_count > 1 else ''}"
-        stats += ")[/dim]"
+        stats = self._format_timing_stats(elapsed, tool_count)
 
         response = final_response if final_response else "[dim]No response[/dim]"
         yield AgentEvent(type="done", content=response + stats)

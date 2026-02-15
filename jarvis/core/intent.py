@@ -135,7 +135,16 @@ Output JSON only, no explanation:'''
                          r'\.(py|js|ts|go|rs|java|cpp|c|rb|php|yaml|yml|json|md|txt)\b'],
         Intent.GIT: [r'\bgit\s', r'\bcommit\b', r'\bpush\b', r'\bpull\b', r'\bbranch\b', r'\bmerge\b'],
         Intent.SHELL: [r'\brun\s+command\b', r'\bexecute\b', r'\bnpm\s', r'\bpip\s', r'\bpython\s'],
-        Intent.SEARCH: [r'\bsearch\b', r'\bgoogle\b', r'\blook\s*up\b', r'\bfind\s+online\b'],
+        Intent.SEARCH: [r'\bsearch\b', r'\bgoogle\b', r'\blook\s*up\b', r'\bfind\s+online\b',
+                        r'\bbrowse\b', r'\bvisit\b', r'\bcheck\s+(out|this|the)\b',
+                        r'\bgo\s+to\b', r'\bopen\s+(the\s+)?(url|link|site|website|page)\b',
+                        r'https?://', r'\bwww\.', r'\bwebsite\b', r'\bwebpage\b',
+                        # Bare domains with multi-part TLDs
+                        r'\b[\w-]+\.(?:co\.uk|com\.au|org\.uk|co\.nz|co\.za|co\.in|com\.br)\b',
+                        # Bare domains with single TLDs
+                        r'\b[\w-]+\.(?:com|org|net|io|dev|app|ai|me|xyz|info|biz|edu)\b',
+                        # "check <domain-like>"
+                        r'\bcheck\s+\S+\.\w{2,}'],
         Intent.NEWS: [r'\bnews\b', r'\bheadline\b', r'\bbreaking\b'],
         Intent.FINANCE: [r'\bprice\b', r'\bstock\b', r'\bgold\b', r'\bsilver\b', r'\bbitcoin\b', r'\bbtc\b',
                          r'\bcrypto\b', r'\bmarket\b', r'\bforex\b'],
@@ -163,7 +172,7 @@ Output JSON only, no explanation:'''
         Intent.FILE_OP: ["read_file", "write_file", "edit_file", "list_files", "search_files"],
         Intent.GIT: ["git_status", "git_diff", "git_log", "git_commit", "git_add", "git_branch"],
         Intent.SHELL: ["run_command"],
-        Intent.SEARCH: ["web_search"],
+        Intent.SEARCH: ["web_search", "web_fetch"],
         Intent.NEWS: ["get_current_news", "web_search"],
         Intent.FINANCE: ["get_gold_price", "web_search"],
         Intent.CODE: ["read_file", "write_file", "edit_file", "search_files", "get_project_structure"],
@@ -194,8 +203,9 @@ Output JSON only, no explanation:'''
         """
         self.provider = provider
         self.config = config or {}
-        self._cache: Dict[str, ClassifiedIntent] = {}
+        self._cache: Dict[str, tuple] = {}  # key -> (timestamp, result)
         self._cache_ttl = self.config.get("intent", {}).get("cache_ttl", 300)
+        self._cache_max = 500  # Max entries before eviction
 
     def _get_context_section(self, context: List[dict] = None) -> str:
         """Build context section for the prompt if context is provided."""
@@ -239,10 +249,15 @@ Output JSON only, no explanation:'''
                 requires_tools=False
             )
 
-        # Check cache first
+        # Check cache first (with TTL)
+        import time as _time
         cache_key = message.lower().strip()
         if cache_key in self._cache:
-            return self._cache[cache_key]
+            ts, cached_result = self._cache[cache_key]
+            if _time.time() - ts < self._cache_ttl:
+                return cached_result
+            else:
+                del self._cache[cache_key]
 
         # Use fast heuristic classification by default (instant)
         result = self._classify_heuristic(message)
@@ -260,7 +275,11 @@ Output JSON only, no explanation:'''
                 except Exception as e:
                     print(f"[IntentClassifier] LLM classification failed: {e}")
 
-        self._cache[cache_key] = result
+        # Evict oldest entries if cache is full
+        if len(self._cache) >= self._cache_max:
+            oldest_key = min(self._cache, key=lambda k: self._cache[k][0])
+            del self._cache[oldest_key]
+        self._cache[cache_key] = (_time.time(), result)
         return result
 
     def classify_sync(self, message: str, context: List[dict] = None) -> ClassifiedIntent:
@@ -270,14 +289,22 @@ Output JSON only, no explanation:'''
         Always uses fast heuristic classification for instant results.
         This is the preferred method for UI responsiveness.
         """
-        # Check cache first
+        # Check cache first (with TTL)
+        import time as _time
         cache_key = message.lower().strip()
         if cache_key in self._cache:
-            return self._cache[cache_key]
+            ts, cached_result = self._cache[cache_key]
+            if _time.time() - ts < self._cache_ttl:
+                return cached_result
+            else:
+                del self._cache[cache_key]
 
         # Use heuristic classification (instant, no LLM call)
         result = self._classify_heuristic(message)
-        self._cache[cache_key] = result
+        if len(self._cache) >= self._cache_max:
+            oldest_key = min(self._cache, key=lambda k: self._cache[k][0])
+            del self._cache[oldest_key]
+        self._cache[cache_key] = (_time.time(), result)
         return result
 
     async def _classify_with_llm(self, message: str, context: List[dict] = None) -> ClassifiedIntent:

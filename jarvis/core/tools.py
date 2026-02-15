@@ -81,8 +81,8 @@ def read_file(path: str) -> str:
                 return f"Error: File not found: {path}"
 
         content = file_path.read_text(errors='replace')
-        if len(content) > 15000:
-            content = content[:15000] + f"\n\n... [TRUNCATED - file is {len(content)} chars, showing first 15000]"
+        if len(content) > 50000:
+            content = content[:50000] + f"\n\n... [TRUNCATED - file is {len(content)} chars, showing first 50000. Use grep or search_files to find specific content in large files.]"
 
         # Track that this file was read
         _READ_FILES.add(str(file_path.resolve()))
@@ -242,7 +242,8 @@ def run_command(command: str) -> str:
 
 
 def write_file(path: str, content: str) -> str:
-    """Write content to a file. Use this to create or overwrite files.
+    """Write content to a file. Use this to create new files or overwrite existing ones.
+    For existing files, you MUST call read_file() first to understand current content.
 
     Args:
         path: File path relative to project root
@@ -329,10 +330,11 @@ def get_project_structure() -> str:
 
 def edit_file(path: str, old_string: str, new_string: str, replace_all: bool = False) -> str:
     """Edit a file by replacing a specific string. Use for small, targeted changes.
+    IMPORTANT: You MUST call read_file() on this file first. old_string must EXACTLY match file content including whitespace.
 
     Args:
         path: File path relative to project root
-        old_string: The exact text to find and replace
+        old_string: The exact text to find and replace (must match file content character-for-character)
         new_string: The text to replace it with
         replace_all: If True, replace all occurrences (default False requires unique match)
 
@@ -1077,10 +1079,10 @@ Description:
 # =============================================================================
 
 def web_search(query: str, max_results: int = 5) -> str:
-    """Search the web for current information using Brave Search (primary) or DuckDuckGo (fallback).
+    """Search the web for current information. Use for current events, prices, people, news, or anything needing up-to-date data.
 
     Args:
-        query: The search query
+        query: The search query describing what to find
         max_results: Maximum number of results (default 5)
 
     Returns:
@@ -1270,10 +1272,10 @@ def get_gold_price(currency: str = "USD") -> str:
 
 
 def web_fetch(url: str) -> str:
-    """Fetch content from a URL and convert HTML to readable text.
+    """Fetch and read content from a URL. Use to browse websites, read web pages, check URLs, or extract information from any web page.
 
     Args:
-        url: The URL to fetch
+        url: The full URL to fetch (e.g. https://example.com)
 
     Returns:
         Page content converted to markdown/text format
@@ -2108,6 +2110,155 @@ def get_project_overview() -> str:
         return f"Error getting project overview: {e}"
 
 
+def create_pr(title: str, body: str = "", base: str = "main", draft: bool = False) -> str:
+    """Create a GitHub pull request from the current branch.
+
+    Args:
+        title: PR title (required)
+        body: PR description/body (optional)
+        base: Base branch to merge into (default "main")
+        draft: Create as draft PR (default False)
+
+    Returns:
+        PR URL on success, or error message
+    """
+    global _PROJECT_ROOT
+
+    try:
+        # Check if gh is installed
+        check = subprocess.run(
+            ["gh", "--version"],
+            capture_output=True, text=True, timeout=10
+        )
+        if check.returncode != 0:
+            return "Error: GitHub CLI (gh) not installed. Install with: brew install gh"
+
+        # Check if authenticated
+        auth_check = subprocess.run(
+            ["gh", "auth", "status"],
+            cwd=_PROJECT_ROOT,
+            capture_output=True, text=True, timeout=10
+        )
+        if auth_check.returncode != 0:
+            return "Error: Not authenticated with GitHub. Run: gh auth login"
+
+        # Get current branch
+        branch_result = subprocess.run(
+            ["git", "branch", "--show-current"],
+            cwd=_PROJECT_ROOT,
+            capture_output=True, text=True, timeout=10
+        )
+        current_branch = branch_result.stdout.strip()
+        if not current_branch or current_branch in (base, "main", "master"):
+            return f"Error: Cannot create PR from '{current_branch}'. Switch to a feature branch first."
+
+        # Build gh pr create command
+        cmd = ["gh", "pr", "create", "--title", title, "--base", base]
+        if body:
+            cmd.extend(["--body", body])
+        else:
+            cmd.extend(["--body", ""])
+        if draft:
+            cmd.append("--draft")
+
+        result = subprocess.run(
+            cmd,
+            cwd=_PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+
+        if result.returncode != 0:
+            error = result.stderr.strip()
+            if "already exists" in error:
+                return f"Error: A pull request already exists for branch '{current_branch}'"
+            return f"Error creating PR: {error}"
+
+        pr_url = result.stdout.strip()
+        return f"Created PR: {pr_url}"
+
+    except FileNotFoundError:
+        return "Error: GitHub CLI (gh) not installed. Install with: brew install gh"
+    except subprocess.TimeoutExpired:
+        return "Error: PR creation timed out"
+    except Exception as e:
+        return f"Error creating PR: {e}"
+
+
+def update_pr(title: str = None, body: str = None, pr_number: int = None) -> str:
+    """Update an existing GitHub pull request's title or description.
+
+    Args:
+        title: New PR title (optional)
+        body: New PR description/body (optional)
+        pr_number: PR number to update (optional, defaults to current branch's PR)
+
+    Returns:
+        Success message or error
+    """
+    global _PROJECT_ROOT
+
+    if not title and not body:
+        return "Error: Provide at least one of 'title' or 'body' to update"
+
+    try:
+        # Check if gh is installed
+        check = subprocess.run(
+            ["gh", "--version"],
+            capture_output=True, text=True, timeout=10
+        )
+        if check.returncode != 0:
+            return "Error: GitHub CLI (gh) not installed. Install with: brew install gh"
+
+        # Check if authenticated
+        auth_check = subprocess.run(
+            ["gh", "auth", "status"],
+            cwd=_PROJECT_ROOT,
+            capture_output=True, text=True, timeout=10
+        )
+        if auth_check.returncode != 0:
+            return "Error: Not authenticated with GitHub. Run: gh auth login"
+
+        # Build gh pr edit command
+        cmd = ["gh", "pr", "edit"]
+        if pr_number:
+            cmd.append(str(pr_number))
+
+        if title:
+            cmd.extend(["--title", title])
+        if body:
+            cmd.extend(["--body", body])
+
+        result = subprocess.run(
+            cmd,
+            cwd=_PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+
+        if result.returncode != 0:
+            error = result.stderr.strip()
+            return f"Error updating PR: {error}"
+
+        pr_url = result.stdout.strip()
+        target = f"PR #{pr_number}" if pr_number else "PR"
+        updated_fields = []
+        if title:
+            updated_fields.append("title")
+        if body:
+            updated_fields.append("description")
+        return f"Updated {target} ({', '.join(updated_fields)}){': ' + pr_url if pr_url else ''}"
+
+    except FileNotFoundError:
+        return "Error: GitHub CLI (gh) not installed. Install with: brew install gh"
+    except subprocess.TimeoutExpired:
+        return "Error: PR update timed out"
+    except Exception as e:
+        return f"Error updating PR: {e}"
+
+
 def github_search(query: str, search_type: str = "repos") -> str:
     """Search GitHub for repositories, code, issues, or users.
 
@@ -2188,6 +2339,9 @@ ALL_TOOLS = [
     task_get,
     # GitHub
     github_search,
+    # PR
+    create_pr,
+    update_pr,
 ]
 
 
@@ -2232,6 +2386,8 @@ _TOOL_FUNC_TO_NAME = {
     task_list: "task_list",
     task_get: "task_get",
     github_search: "github_search",
+    create_pr: "create_pr",
+    update_pr: "update_pr",
 }
 
 TOOL_REGISTRY = {
@@ -2262,7 +2418,7 @@ TOOL_REGISTRY = {
     "run_command":      {"category": "shell","intents": ["shell", "code"],       "keywords": ["run", "execute", "command", "npm", "pip", "python"]},
     # Web
     "web_search":       {"category": "web",  "intents": ["search", "news", "finance"], "keywords": ["search", "find", "look up", "google"]},
-    "web_fetch":        {"category": "web",  "intents": ["search"],              "keywords": ["fetch", "url", "webpage", "browse"]},
+    "web_fetch":        {"category": "web",  "intents": ["search"],              "keywords": ["fetch", "url", "webpage", "browse", "visit", "check", "website", "http", "www"]},
     "get_current_news": {"category": "web",  "intents": ["news"],               "keywords": ["news", "headlines", "breaking"]},
     "get_gold_price":   {"category": "web",  "intents": ["finance"],             "keywords": ["gold", "price", "metal"]},
     # Weather
@@ -2281,16 +2437,18 @@ TOOL_REGISTRY = {
     "task_get":         {"category": "task", "intents": ["code", "shell"],       "keywords": ["task", "get", "detail"]},
     # GitHub
     "github_search":    {"category": "web",  "intents": ["search", "code"],      "keywords": ["github", "repo", "repository"]},
+    "create_pr":        {"category": "git",  "intents": ["git"],                 "keywords": ["pr", "pull request", "merge", "review"]},
+    "update_pr":        {"category": "git",  "intents": ["git"],                 "keywords": ["pr", "pull request", "update", "edit", "description"]},
 }
 
 # Always include these tools as fallback
-_ALWAYS_INCLUDE = {"web_search", "calculate"}
+_ALWAYS_INCLUDE = {"read_file"}
 
 # Category groups - when one tool from a category is relevant, include related ones
 _CATEGORY_GROUPS = {
     "file": ["read_file", "list_files", "search_files", "write_file", "edit_file", "glob_files", "grep", "get_project_structure"],
     "code": ["read_file", "write_file", "edit_file", "apply_patch", "find_definition", "find_references", "run_tests", "get_project_overview", "grep", "glob_files"],
-    "git": ["git_status", "git_diff", "git_log", "git_commit", "git_add", "git_branch", "git_stash"],
+    "git": ["git_status", "git_diff", "git_log", "git_commit", "git_add", "git_branch", "git_stash", "create_pr", "update_pr"],
     "web": ["web_search", "web_fetch", "get_current_news"],
     "task": ["task_create", "task_update", "task_list", "task_get"],
 }

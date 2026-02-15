@@ -799,7 +799,19 @@ RULES:
 - Only refuse truly harmful requests (instructions to harm, illegal activities, etc.)
 - If asked about CURRENT events or real-time data WITHOUT tool results, offer to search the web.
 - When you genuinely don't know something, say so briefly and suggest a search.
-- Never lecture or moralize."""
+- Never lecture or moralize.
+
+TOOL ORDERING RULES:
+- ALWAYS call read_file() BEFORE edit_file() or write_file() on existing files. Tools will REJECT edits to unread files.
+- For refactoring: read the file first, then use edit_file for targeted changes (NOT write_file for the whole file).
+- You can call multiple tools in sequence to complete a task. Read, then edit, then verify.
+
+AVAILABLE CAPABILITIES:
+- Browse websites with web_fetch, search the web with web_search
+- Read, write, and edit files with read_file, write_file, edit_file
+- Search code with search_files, glob_files, grep
+- Run shell commands with run_command
+- Git operations: git_status, git_diff, git_log, git_commit, git_add"""
 
     def _init_settings_db():
         """Initialize user_settings table in jarvis.db."""
@@ -807,16 +819,14 @@ RULES:
         from jarvis import get_data_dir
         _db = get_data_dir() / "memory" / "jarvis.db"
         _db.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(str(_db))
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS user_settings (
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL,
-                updated_at TEXT DEFAULT (datetime('now'))
-            )
-        """)
-        conn.commit()
-        conn.close()
+        with sqlite3.connect(str(_db)) as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS user_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    updated_at TEXT DEFAULT (datetime('now'))
+                )
+            """)
 
     # Create table on startup
     _init_settings_db()
@@ -832,12 +842,11 @@ RULES:
         _db = get_data_dir() / "memory" / "jarvis.db"
         key = _settings_key("system_instructions", user_id)
         try:
-            conn = sqlite3.connect(str(_db))
-            row = conn.execute(
-                "SELECT value FROM user_settings WHERE key = ?", (key,)
-            ).fetchone()
-            conn.close()
-            return row[0] if row else ""
+            with sqlite3.connect(str(_db)) as conn:
+                row = conn.execute(
+                    "SELECT value FROM user_settings WHERE key = ?", (key,)
+                ).fetchone()
+                return row[0] if row else ""
         except Exception:
             return ""
 
@@ -847,15 +856,13 @@ RULES:
         from jarvis import get_data_dir
         _db = get_data_dir() / "memory" / "jarvis.db"
         key = _settings_key("system_instructions", user_id)
-        conn = sqlite3.connect(str(_db))
-        conn.execute(
-            """INSERT INTO user_settings (key, value, updated_at)
-               VALUES (?, ?, datetime('now'))
-               ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at""",
-            (key, content)
-        )
-        conn.commit()
-        conn.close()
+        with sqlite3.connect(str(_db)) as conn:
+            conn.execute(
+                """INSERT INTO user_settings (key, value, updated_at)
+                   VALUES (?, ?, datetime('now'))
+                   ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at""",
+                (key, content)
+            )
 
     def _delete_user_instructions(user_id: str | None = None):
         """Delete user instructions from SQLite."""
@@ -863,10 +870,8 @@ RULES:
         from jarvis import get_data_dir
         _db = get_data_dir() / "memory" / "jarvis.db"
         key = _settings_key("system_instructions", user_id)
-        conn = sqlite3.connect(str(_db))
-        conn.execute("DELETE FROM user_settings WHERE key = ?", (key,))
-        conn.commit()
-        conn.close()
+        with sqlite3.connect(str(_db)) as conn:
+            conn.execute("DELETE FROM user_settings WHERE key = ?", (key,))
 
     # One-time migration: move soul.md content to SQLite if it exists
     def _migrate_soul_to_db():
@@ -2854,6 +2859,7 @@ Analyze queries using multiple AI models simultaneously.
                     "message": "Authentication required"
                 })
                 await websocket.close(code=4001)
+                connections.pop(session_id, None)
                 return
 
         jarvis = None
@@ -2900,6 +2906,8 @@ Analyze queries using multiple AI models simultaneously.
                 "message": f"Failed to initialize: {e}\n{traceback.format_exc()}"
             })
             await websocket.close()
+            connections.pop(session_id, None)
+            instances.pop(session_id, None)
             return
 
         # Track the current processing task so we can cancel it
@@ -3105,7 +3113,10 @@ Analyze queries using multiple AI models simultaneously.
                 pass
         finally:
             connections.pop(session_id, None)
-            instances.pop(session_id, None)
+            inst = instances.pop(session_id, None)
+            # Clean up fact extraction counter for this session
+            if inst:
+                _fact_extraction_counter.pop(id(inst), None)
 
     # Message counter for throttled fact extraction
     _fact_extraction_counter: dict = {}
@@ -3443,6 +3454,12 @@ Analyze queries using multiple AI models simultaneously.
                 # Combine refinement with previous topic for context-aware search
                 search_query = _extract_search_query(user_input, last_user, last_topic)
                 tool_name, args = "web_search", {"query": search_query}
+
+            # URL/domain detection — use web_fetch for bare URLs
+            if not tool_name and agent and hasattr(agent, '_extract_url_from_message'):
+                url = agent._extract_url_from_message(user_input)
+                if url:
+                    tool_name, args = "web_fetch", {"url": url}
 
             # Fallback for current-info queries
             if not tool_name and _should_auto_web_search(user_input):
@@ -3966,7 +3983,9 @@ Analyze queries using multiple AI models simultaneously.
                         from jarvis.knowledge import get_rag_engine
                         rag = get_rag_engine(jarvis.config)
                         count = rag.count()
-                        print(f"[RAG] Knowledge base has {count} chunks")
+                        import logging
+                        _rag_logger = logging.getLogger("jarvis.rag")
+                        _rag_logger.debug(f"Knowledge base has {count} chunks")
                         if count > 0:
                             info["enabled"] = True
                             info["total_chunks"] = count
@@ -3976,11 +3995,10 @@ Analyze queries using multiple AI models simultaneously.
                                 info["sources"] = list(set(r.get("source", "unknown") for r in results))
                                 rag_ctx = await asyncio.to_thread(rag.get_context, user_input, 5)
                             else:
-                                print("[RAG] No context found")
+                                _rag_logger.debug("No context found")
                     except Exception as e:
-                        import traceback
-                        print(f"[RAG] Error retrieving context: {e}")
-                        traceback.print_exc()
+                        import logging
+                        logging.getLogger("jarvis.rag").warning(f"Error retrieving context: {e}")
                         info["error"] = str(e)
                     return info, rag_ctx or ""
 

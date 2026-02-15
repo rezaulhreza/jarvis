@@ -244,7 +244,8 @@ class ContextManager:
                 # Use ~60% of context for history (rest for system prompt, tools, response)
                 self.max_tokens = int(ctx_len * 0.6)
                 self._model_context_length = ctx_len
-                print(f"[Context] Model context: {ctx_len:,} tokens, history budget: {self.max_tokens:,}")
+                import logging
+                logging.getLogger("jarvis.context").debug(f"Model context: {ctx_len:,} tokens, history budget: {self.max_tokens:,}")
         except Exception:
             pass  # Keep default max_tokens
 
