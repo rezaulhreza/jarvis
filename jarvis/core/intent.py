@@ -135,7 +135,16 @@ Output JSON only, no explanation:'''
                          r'\.(py|js|ts|go|rs|java|cpp|c|rb|php|yaml|yml|json|md|txt)\b'],
         Intent.GIT: [r'\bgit\s', r'\bcommit\b', r'\bpush\b', r'\bpull\b', r'\bbranch\b', r'\bmerge\b'],
         Intent.SHELL: [r'\brun\s+command\b', r'\bexecute\b', r'\bnpm\s', r'\bpip\s', r'\bpython\s'],
-        Intent.SEARCH: [r'\bsearch\b', r'\bgoogle\b', r'\blook\s*up\b', r'\bfind\s+online\b'],
+        Intent.SEARCH: [r'\bsearch\b', r'\bgoogle\b', r'\blook\s*up\b', r'\bfind\s+online\b',
+                        r'\bbrowse\b', r'\bvisit\b', r'\bcheck\s+(out|this|the)\b',
+                        r'\bgo\s+to\b', r'\bopen\s+(the\s+)?(url|link|site|website|page)\b',
+                        r'https?://', r'\bwww\.', r'\bwebsite\b', r'\bwebpage\b',
+                        # Bare domains with multi-part TLDs
+                        r'\b[\w-]+\.(?:co\.uk|com\.au|org\.uk|co\.nz|co\.za|co\.in|com\.br)\b',
+                        # Bare domains with single TLDs
+                        r'\b[\w-]+\.(?:com|org|net|io|dev|app|ai|me|xyz|info|biz|edu)\b',
+                        # "check <domain-like>"
+                        r'\bcheck\s+\S+\.\w{2,}'],
         Intent.NEWS: [r'\bnews\b', r'\bheadline\b', r'\bbreaking\b'],
         Intent.FINANCE: [r'\bprice\b', r'\bstock\b', r'\bgold\b', r'\bsilver\b', r'\bbitcoin\b', r'\bbtc\b',
                          r'\bcrypto\b', r'\bmarket\b', r'\bforex\b'],
@@ -163,7 +172,7 @@ Output JSON only, no explanation:'''
         Intent.FILE_OP: ["read_file", "write_file", "edit_file", "list_files", "search_files"],
         Intent.GIT: ["git_status", "git_diff", "git_log", "git_commit", "git_add", "git_branch"],
         Intent.SHELL: ["run_command"],
-        Intent.SEARCH: ["web_search"],
+        Intent.SEARCH: ["web_search", "web_fetch"],
         Intent.NEWS: ["get_current_news", "web_search"],
         Intent.FINANCE: ["get_gold_price", "web_search"],
         Intent.CODE: ["read_file", "write_file", "edit_file", "search_files", "get_project_structure"],

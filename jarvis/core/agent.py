@@ -232,6 +232,10 @@ class Agent:
             return "web_search", {"query": msg}
 
         elif intent.intent == Intent.SEARCH:
+            # Check if message contains a URL/domain → use web_fetch
+            url = self._extract_url_from_message(msg)
+            if url:
+                return "web_fetch", {"url": url}
             # Extract search query
             for prefix in ["search for ", "look up ", "find online ", "google ", "search the web for "]:
                 if msg_lower.startswith(prefix):
@@ -300,7 +304,7 @@ class Agent:
         msg = user_message.lower()
         explicit_search = [
             "web search", "search web", "search the web", "google", "look up",
-            "find online", "search for", "browse"
+            "find online", "search for", "browse the web", "browse online"
         ]
         if any(s in msg for s in explicit_search):
             return True
@@ -348,6 +352,12 @@ class Agent:
         if re.search(r"\.(py|js|ts|tsx|jsx|go|rs|java|cpp|c|rb|php|yaml|yml|json)\b", msg):
             return True
 
+        # URLs and bare domains need web_fetch
+        if re.search(r'https?://\S', msg):
+            return True
+        if re.search(r'\b[\w-]+\.(?:co\.uk|com\.au|com|org|net|io|dev|app|ai|me)\b', msg, re.IGNORECASE):
+            return True
+
         return False
 
     def _detect_auto_tool(self, user_message: str) -> Optional[Tuple[str, dict]]:
@@ -358,6 +368,19 @@ class Agent:
 
         msg = (user_message or "").strip()
         msg_lower = msg.lower()
+
+        # Guard: if the message is clearly about file/code operations, don't auto-route
+        # to web_search. Let the agent handle it via tool calling instead.
+        file_op_signals = [
+            "write to file", "write file", "save to file", "save file",
+            "create file", "create a file", "add to file", "append to file",
+            "edit file", "modify file", "update file", "delete file", "remove file",
+            "read file", "open file", "write to ", "save to ", "add to ",
+            "markdown file", ".md file", ".txt file", ".json file", ".py file",
+            "output to file", "output to a file", "put in file", "put in a file",
+        ]
+        if any(s in msg_lower for s in file_op_signals):
+            return None
 
         # Weather
         if agent_cfg.get("auto_weather", True) and "weather" in msg_lower:
@@ -509,6 +532,12 @@ class Agent:
                     if "weather" in msg_lower:
                         return None
                     return "web_search", {"query": msg}
+
+        # === URL/DOMAIN DETECTION ===
+        # If message contains a URL or bare domain, use web_fetch
+        url = self._extract_url_from_message(msg)
+        if url:
+            return "web_fetch", {"url": url}
 
         # === MULTIMODAL GENERATION ===
         # Image generation
@@ -708,53 +737,191 @@ RULES:
 2. For code questions: read_file FIRST, never guess
 3. For writing files: USE write_file or edit_file
 4. Output ONLY valid JSON when calling a tool - no explanation before/after
+
+TOOL ORDERING RULES:
+- ALWAYS call read_file BEFORE edit_file or write_file on existing files. The tool will REJECT edits to unread files.
+- For refactoring: read the file first, then use edit_file for targeted changes (NOT write_file for the whole file).
+- You CAN browse websites with web_fetch and search the web with web_search.
+- You can call multiple tools in sequence. After each tool result, decide whether to call another tool or answer.
 '''
+
+    # Known tool names for function-call-style text parsing
+    _KNOWN_TOOL_NAMES = {
+        "read_file", "list_files", "search_files", "write_file", "edit_file",
+        "get_project_structure", "glob_files", "grep",
+        "apply_patch", "find_definition", "find_references", "run_tests", "get_project_overview",
+        "git_status", "git_diff", "git_log", "git_commit", "git_add", "git_branch", "git_stash",
+        "run_command", "web_search", "web_fetch", "get_current_news", "get_gold_price",
+        "get_weather", "get_current_time", "calculate", "save_memory", "recall_memory",
+        "task_create", "task_update", "task_list", "task_get", "github_search",
+        "generate_image", "generate_video", "generate_music", "analyze_image",
+    }
+
+    def _has_tool_call_syntax(self, text: str) -> bool:
+        """Check if text contains tool call syntax (JSON or function-call style)."""
+        if not text:
+            return False
+        # JSON-style: {"name": "tool", ...}
+        if any(k in text for k in ('"name"', '"tool"', '"function"', '"action"')):
+            return True
+        # Function-call style: tool_name(...) matching a known tool
+        if re.search(r'\b(' + '|'.join(re.escape(t) for t in self._KNOWN_TOOL_NAMES) + r')\s*\(', text):
+            return True
+        return False
+
+    def _extract_url_from_message(self, message: str) -> Optional[str]:
+        """Extract URL from message, normalizing bare domains to https://.
+
+        Returns the first URL found or None.
+        """
+        if not message:
+            return None
+        # Match full URLs first (https://... or http://...)
+        full_url = re.search(r'(https?://\S+)', message, re.IGNORECASE)
+        if full_url:
+            return full_url.group(1).rstrip('.,;:!?)')
+        # Match bare domains with multi-part TLDs (e.g. example.co.uk)
+        multi_tld = re.search(
+            r'\b([\w-]+\.(?:co\.uk|com\.au|org\.uk|co\.nz|co\.za|co\.in|com\.br)(?:/\S*)?)\b',
+            message, re.IGNORECASE
+        )
+        if multi_tld:
+            return 'https://' + multi_tld.group(1).rstrip('.,;:!?)')
+        # Match bare domains with single TLDs (e.g. google.com, anthropic.ai)
+        single_tld = re.search(
+            r'\b([\w-]+\.(?:com|org|net|io|dev|app|ai|me|xyz|info|biz|edu|uk|de|fr|jp|ru|cn|in|br|au|ca|it|es|nl|se|no|fi|dk|pl|cz|ch|at|be|pt|ie|co)(?:/\S*)?)\b',
+            message, re.IGNORECASE
+        )
+        if single_tld:
+            return 'https://' + single_tld.group(1).rstrip('.,;:!?)')
+        return None
+
+    def _parse_function_call_syntax(self, text: str) -> tuple:
+        """Parse Python-style function calls like tool_name('arg') or tool_name(key='value')."""
+        if not text:
+            return None, None
+
+        # Match: tool_name( ... )  where tool_name is a known tool
+        pattern = r'\b(' + '|'.join(re.escape(t) for t in self._KNOWN_TOOL_NAMES) + r')\s*\(([^)]*)\)'
+        match = re.search(pattern, text, re.DOTALL)
+        if not match:
+            return None, None
+
+        tool_name = match.group(1)
+        raw_args = match.group(2).strip()
+
+        if not raw_args:
+            return tool_name, {}
+
+        args = {}
+        # Try keyword arguments: key="value" or key='value'
+        kw_pattern = r"""(\w+)\s*=\s*(?:"([^"]*?)"|'([^']*?)'|(\[.*?\]|\{.*?\}|[\w.]+))"""
+        kw_matches = re.findall(kw_pattern, raw_args, re.DOTALL)
+        if kw_matches:
+            for key, dq, sq, other in kw_matches:
+                value = dq or sq or other
+                # Try parsing JSON-like values (lists, dicts, numbers, booleans)
+                if value in ("True", "true"):
+                    args[key] = True
+                elif value in ("False", "false"):
+                    args[key] = False
+                elif value in ("None", "null"):
+                    args[key] = None
+                else:
+                    try:
+                        args[key] = json.loads(value)
+                    except (json.JSONDecodeError, ValueError):
+                        args[key] = value
+            return tool_name, args
+
+        # Positional arguments: infer parameter name from tool signature
+        # Strip quotes from positional arg
+        positional = raw_args.strip().strip("'\"")
+        # Map common tools to their first positional parameter
+        first_param = {
+            "web_search": "query", "web_fetch": "url", "read_file": "path",
+            "write_file": "path", "search_files": "query", "list_files": "path",
+            "glob_files": "pattern", "grep": "pattern", "run_command": "command",
+            "calculate": "expression", "get_weather": "city", "get_current_time": "timezone",
+            "get_gold_price": "currency", "get_current_news": "topic",
+            "save_memory": "content", "recall_memory": "query",
+            "find_definition": "symbol", "find_references": "symbol",
+            "generate_image": "prompt", "generate_video": "prompt",
+            "generate_music": "prompt", "github_search": "query",
+        }.get(tool_name, "query")
+        args[first_param] = positional
+        return tool_name, args
 
     def _parse_tool_call_from_text(self, text: str) -> tuple:
         """Try to extract a tool call from model's text output."""
         if not text:
             return None, None
 
-        # Try to find JSON object with balanced braces
-        # Start from first { and find matching }
+        # --- Try JSON parsing first ---
         start = text.find('{')
-        if start == -1:
-            return None, None
+        if start != -1:
+            # Count braces to find the matching closing brace
+            depth = 0
+            end = start
+            for i, char in enumerate(text[start:], start):
+                if char == '{':
+                    depth += 1
+                elif char == '}':
+                    depth -= 1
+                    if depth == 0:
+                        end = i + 1
+                        break
 
-        # Count braces to find the matching closing brace
-        depth = 0
-        end = start
-        for i, char in enumerate(text[start:], start):
-            if char == '{':
-                depth += 1
-            elif char == '}':
-                depth -= 1
-                if depth == 0:
-                    end = i + 1
-                    break
+            if depth == 0:
+                json_str = text[start:end]
+                try:
+                    data = json.loads(json_str)
 
-        if depth != 0:
-            return None, None
+                    # Handle nested function call format: {"function": {"name": "...", "arguments": {...}}}
+                    if "function" in data and isinstance(data["function"], dict):
+                        nested = data["function"]
+                        tool_name = nested.get("name", "")
+                        args = nested.get("arguments", {})
+                        if isinstance(args, str):
+                            try:
+                                args = json.loads(args)
+                            except json.JSONDecodeError:
+                                pass
+                        if tool_name:
+                            return tool_name, args
 
-        json_str = text[start:end]
+                    # Flat format: try multiple key names
+                    tool_name = (
+                        data.get("tool") or data.get("name") or data.get("function")
+                        or data.get("action") or data.get("tool_name")
+                    )
+                    # If "function" resolved to a dict above, skip it
+                    if isinstance(tool_name, dict):
+                        tool_name = tool_name.get("name")
 
-        try:
-            data = json.loads(json_str)
-            tool_name = data.get("tool") or data.get("name")
-            if tool_name:
-                # Get arguments - could be in "arguments" or directly in data
-                args = data.get("arguments", {})
-                # Handle case where arguments is a JSON string
-                if isinstance(args, str):
-                    try:
-                        args = json.loads(args)
-                    except json.JSONDecodeError:
-                        pass
-                if not args:
-                    args = {k: v for k, v in data.items() if k not in ["tool", "name", "arguments"]}
-                return tool_name, args
-        except json.JSONDecodeError:
-            pass
+                    if tool_name:
+                        # Get arguments - try multiple key names
+                        args = (
+                            data.get("arguments") or data.get("params")
+                            or data.get("parameters") or data.get("args") or {}
+                        )
+                        if isinstance(args, str):
+                            try:
+                                args = json.loads(args)
+                            except json.JSONDecodeError:
+                                pass
+                        if not args:
+                            args = {k: v for k, v in data.items()
+                                    if k not in ["tool", "name", "function", "action", "tool_name",
+                                                "arguments", "params", "parameters", "args"]}
+                        return tool_name, args
+                except json.JSONDecodeError:
+                    pass
+
+        # --- Fallback: try function-call syntax like web_fetch('url') ---
+        result = self._parse_function_call_syntax(text)
+        if result[0]:
+            return result
 
         return None, None
 
@@ -941,6 +1108,85 @@ RULES:
 
         return f"{tool_name}()"
 
+    def _format_timing_stats(self, elapsed: float, tool_count: int) -> str:
+        """Format timing stats footer."""
+        if elapsed < 60:
+            time_str = f"{elapsed:.1f}s"
+        else:
+            mins = int(elapsed // 60)
+            secs = elapsed % 60
+            time_str = f"{mins}m {secs:.0f}s"
+        stats = f"\n[dim]({time_str}"
+        if tool_count > 0:
+            stats += f" · {tool_count} tool{'s' if tool_count > 1 else ''}"
+        stats += ")[/dim]"
+        return stats
+
+    def _format_tool_feedback(self, tool_name: str, args: dict, result: str, success: bool) -> str:
+        """Format tool result feedback with tool-specific guidance for the LLM.
+
+        Success paths give synthesis instructions.
+        Error paths give recovery guidance.
+        """
+        if not result:
+            result = "(empty result)"
+
+        # --- Error paths with recovery guidance ---
+        if not success or (result and result.startswith("Error")):
+            result_lower = result.lower()
+            path = args.get("path", args.get("url", ""))
+
+            if "must read_file" in result_lower or "read the file" in result_lower:
+                return (
+                    f"Tool error:\n{result}\n\n"
+                    f"RECOVERY: Call read_file('{path}') first, then retry your edit/write."
+                )
+            elif "could not find the text to replace" in result_lower:
+                return (
+                    f"Tool error:\n{result}\n\n"
+                    f"RECOVERY: Call read_file('{path}') again and use the EXACT text from the file as old_string. "
+                    "Copy it character-for-character including whitespace."
+                )
+            elif "file not found" in result_lower:
+                return (
+                    f"Tool error:\n{result}\n\n"
+                    f"RECOVERY: Use glob_files() or search_files() to find the correct file path, then retry."
+                )
+            elif "search failed" in result_lower or "no results" in result_lower:
+                return (
+                    f"Tool error:\n{result}\n\n"
+                    "RECOVERY: Try different search keywords, or use web_fetch() with a specific URL."
+                )
+            else:
+                return f"Tool error:\n{result}\n\nTry a different approach or different arguments."
+
+        # --- Success paths ---
+        if tool_name in ("web_search", "get_current_news"):
+            return (
+                f"Tool result:\n{result}\n\n"
+                "Synthesize a helpful answer from these results. "
+                "Include 1-2 source URLs when available. Answer the original question directly."
+            )
+        elif tool_name == "web_fetch":
+            return (
+                f"Tool result:\n{result}\n\n"
+                "Summarize the key information from this page that answers the user's question."
+            )
+        elif tool_name == "read_file":
+            return f"Tool result:\n{result}"
+        elif tool_name in ("edit_file", "write_file"):
+            return (
+                f"Tool result:\n{result}\n\n"
+                "The file has been updated. Briefly confirm what was changed."
+            )
+        elif tool_name == "run_command":
+            return (
+                f"Tool result:\n{result}\n\n"
+                "Report the command output. If there are errors, explain them."
+            )
+        else:
+            return f"Tool result:\n{result}"
+
     def _validate_tool_call(self, tool_name: str, args: dict) -> tuple[bool, str]:
         """Validate tool call before execution."""
         # Schema for required parameters and types
@@ -1113,6 +1359,50 @@ RULES:
             print(f"[TOOL] ERROR: {tool_name} failed: {e}")
             return f"Error: {e}"
 
+    @staticmethod
+    def _normalize_tool_calls(tool_calls) -> list:
+        """Normalize tool_calls to OpenAI-compatible format for API round-trips.
+
+        Ensures arguments is a JSON string and each call has type='function'.
+        """
+        if not tool_calls:
+            return tool_calls
+        normalized = []
+        for call in tool_calls:
+            if hasattr(call, 'function'):
+                # SDK object — convert to dict
+                args = call.function.arguments
+                if isinstance(args, dict):
+                    args = json.dumps(args)
+                elif args is None:
+                    args = "{}"
+                normalized.append({
+                    "id": getattr(call, "id", None) or "",
+                    "type": "function",
+                    "function": {
+                        "name": call.function.name,
+                        "arguments": args,
+                    }
+                })
+            elif isinstance(call, dict):
+                func = call.get("function", {})
+                args = func.get("arguments", {})
+                if isinstance(args, dict):
+                    args = json.dumps(args)
+                elif args is None:
+                    args = "{}"
+                normalized.append({
+                    "id": call.get("id", ""),
+                    "type": "function",
+                    "function": {
+                        "name": func.get("name", ""),
+                        "arguments": args,
+                    }
+                })
+            else:
+                normalized.append(call)
+        return normalized
+
     def _call_model_with_timeout(self, messages, system_prompt, tools, timeout=120):
         """Call model with timeout using threading."""
         import threading
@@ -1157,6 +1447,10 @@ RULES:
         if self.ui and hasattr(self.ui, "begin_turn"):
             self.ui.begin_turn()
 
+        # Multi-step tracking
+        _last_tool_call = None  # (tool_name, args_str) for duplicate detection
+        _consecutive_failures = 0
+
         # Check if model supports native tools
         use_native = self._supports_native_tools()
         auto_tool_done = False
@@ -1167,11 +1461,19 @@ RULES:
             system_prompt = system_prompt + "\n\n" + self._get_tools_prompt()
 
         msg_lower = user_message.lower()
+        # Guard: skip web search shortcut when message is about file operations
+        _file_op_guard = [
+            "write to file", "write file", "save to file", "save file",
+            "create file", "add to file", "append to file", "edit file",
+            "markdown file", ".md file", ".txt file", ".json file",
+            "output to file", "output to a file",
+        ]
+        _is_file_op = any(s in msg_lower for s in _file_op_guard)
         explicit_search = [
             "web search", "search web", "search the web", "google", "look up",
-            "find online", "search for", "browse"
+            "find online", "search for", "browse the web", "browse online"
         ]
-        if any(s in msg_lower for s in explicit_search):
+        if not _is_file_op and any(s in msg_lower for s in explicit_search):
             try:
                 tool_start = time.time()
                 result = web_search(user_message, max_results=5)
@@ -1188,14 +1490,20 @@ RULES:
                             result=result,
                             success=tool_success,
                         )
-                return result
+                elapsed = time.time() - start_time
+                stats = self._format_timing_stats(elapsed, 1)
+                return result + stats
             except Exception:
-                return "Search failed: unexpected error."
+                elapsed = time.time() - start_time
+                stats = self._format_timing_stats(elapsed, 0)
+                return "Search failed: unexpected error." + stats
 
         if "gold" in msg_lower and "price" in msg_lower:
             import os
             if not (os.getenv("GOLDAPI_KEY") or os.getenv("GOLD_API_KEY")):
-                return "Error: GOLDAPI_KEY not configured. Please set it in .env to fetch live gold prices."
+                elapsed = time.time() - start_time
+                stats = self._format_timing_stats(elapsed, 0)
+                return "Error: GOLDAPI_KEY not configured. Please set it in .env to fetch live gold prices." + stats
 
         messages = []
         if history:
@@ -1240,18 +1548,8 @@ RULES:
                                     result=result,
                                     success=tool_success
                                 )
-                        messages.append({
-                            "role": "user",
-                            "content": (
-                                f"Tool result:\n{result}\n\n"
-                                "Instructions:\n"
-                                "1. If the result contains search results with titles/URLs/descriptions, synthesize a helpful answer from them.\n"
-                                "2. If the result starts with 'Error:' or 'Search failed:', acknowledge the error briefly.\n"
-                                "3. If you see 'No results found', say so briefly and suggest the user try a different query.\n"
-                                "4. Include 1-2 source URLs when available.\n"
-                                "5. Answer the original question directly and concisely."
-                            )
-                        })
+                        feedback = self._format_tool_feedback(tool_name, args, result, tool_success)
+                        messages.append({"role": "user", "content": feedback})
                         # If web search completely failed, return the error directly
                         if tool_name == "web_search" and result and (
                             result.startswith("Search failed")
@@ -1343,7 +1641,12 @@ RULES:
                                 self.last_streamed = True
 
                         final_response = self._clean_content(content if content is not None else "")
-                        break
+                        # Safety net: if LLM output tool-call syntax, discard and fall through to agent loop
+                        if self._has_tool_call_syntax(final_response):
+                            final_response = ""
+                            self.last_streamed = False
+                        else:
+                            break
                     except Exception:
                         # Fall back to tool-capable path
                         pass
@@ -1381,7 +1684,7 @@ RULES:
 
                 # For native tool calling
                 if use_native and tool_calls:
-                    messages.append({"role": "assistant", "content": content, "tool_calls": tool_calls})
+                    messages.append({"role": "assistant", "content": content, "tool_calls": self._normalize_tool_calls(tool_calls)})
 
                     for call in tool_calls:
                         if self.ui and self.ui.stop_requested:
@@ -1427,65 +1730,69 @@ RULES:
                             tool_msg["tool_call_id"] = tool_call_id
                         messages.append(tool_msg)
 
-                    # Stream the final response after tool execution
-                    try:
-                        from jarvis.providers import Message
-                        followup_system = system_prompt + "\n\nAnswer the user now. Do not call tools."
-                        stream_messages = [Message(role=m["role"], content=m["content"]) for m in messages]
-                        stream = self.provider.chat(
-                            messages=stream_messages,
-                            system=followup_system,
-                            stream=True
-                        )
-                        parts = []
-                        for chunk in stream:
-                            # Check for stop (Ctrl+C or ESC)
-                            if self.ui:
-                                if self.ui.stop_requested:
-                                    break
-                                if hasattr(self.ui, "check_escape_pressed") and self.ui.check_escape_pressed():
-                                    self.ui.stop_requested = True
-                                    break
-                            parts.append(chunk)
-                            if self.ui and hasattr(self.ui, "stream_text"):
-                                self.ui.stream_text(chunk)
-                        if self.ui and hasattr(self.ui, "stream_done"):
-                            self.ui.stream_done()
-                        self.last_streamed = True
-                        final_response = self._clean_content("".join(parts))
-                        if self.ui and hasattr(self.ui, "print_tool_section"):
-                            self.ui.print_tool_section()
-                        break
-                    except Exception:
-                        # Fall back to normal loop if streaming fails
-                        pass
+                    # Multi-step: let the loop continue so model can make more tool calls
+                    # Duplicate-call detection
+                    for call in tool_calls:
+                        if hasattr(call, 'function'):
+                            c_name = call.function.name
+                            c_args = str(call.function.arguments or {})
+                        else:
+                            c_name = call.get('function', {}).get('name', '')
+                            c_args = str(call.get('function', {}).get('arguments', {}))
+                        call_sig = (c_name, c_args)
+                        if call_sig == _last_tool_call:
+                            messages.append({
+                                "role": "user",
+                                "content": "You just called the same tool with the same arguments. Try a different approach or answer the user."
+                            })
+                        _last_tool_call = call_sig
 
-                # Check if content contains JSON tool call (fallback for models that output JSON as text)
-                elif content and ('"name"' in content or '"tool"' in content):
+                    # Track consecutive failures
+                    any_failed = any(
+                        r.startswith("Error") or r.startswith("error")
+                        for m in messages[-len(tool_calls):]
+                        if m.get("role") == "tool" and (r := m.get("content", ""))
+                    )
+                    if any_failed:
+                        _consecutive_failures += 1
+                    else:
+                        _consecutive_failures = 0
+
+                    if _consecutive_failures >= 3:
+                        messages.append({
+                            "role": "user",
+                            "content": "Multiple tool calls have failed. Reconsider your approach or answer with what you know."
+                        })
+
+                    continue  # Let model decide: more tools or final text response
+
+                # Check if content contains tool call syntax (JSON or function-call style)
+                elif content and self._has_tool_call_syntax(content):
                     tool_name, args = self._parse_tool_call_from_text(content)
 
                     if tool_name:
                         result = self._execute_tool(tool_name, args)
                         tool_count += 1
+                        tool_success = not (result and (result.startswith("Error") or result.startswith("error")))
                         if self.ui:
-                            self.ui.print_tool(self._format_tool_display(tool_name, args, result))
+                            self.ui.print_tool(self._format_tool_display(tool_name, args, result), success=tool_success)
 
+                        feedback = self._format_tool_feedback(tool_name, args, result, tool_success)
                         messages.append({"role": "assistant", "content": content})
-                        messages.append({
-                            "role": "user",
-                            "content": (
-                                f"Tool result:\n{result}\n\n"
-                                "Instructions:\n"
-                                "1. If the result contains search results with titles/URLs/descriptions, synthesize a helpful answer from them.\n"
-                                "2. If the result starts with 'Error:' or 'Search failed:', acknowledge the error briefly.\n"
-                                "3. If you see 'No results found', say so briefly and suggest the user try a different query.\n"
-                                "4. Include 1-2 source URLs when available.\n"
-                                "5. Answer the original question directly and concisely."
-                            )
-                        })
+                        messages.append({"role": "user", "content": feedback})
+
+                        # Track failures for text-parse path too
+                        if not tool_success:
+                            _consecutive_failures += 1
+                        else:
+                            _consecutive_failures = 0
+                        if _consecutive_failures >= 3:
+                            messages.append({
+                                "role": "user",
+                                "content": "Multiple tool calls have failed. Reconsider your approach or answer with what you know."
+                            })
                     else:
                         # Couldn't parse JSON - remove JSON blob and return rest, or show error
-                        # Find and remove the JSON object (handles nested braces)
                         clean = content
                         start = content.find('{')
                         if start != -1:
@@ -1518,27 +1825,15 @@ RULES:
                     break
 
             except Exception as e:
-                return f"[red]Error: {e}[/red]"
+                elapsed = time.time() - start_time
+                stats = self._format_timing_stats(elapsed, tool_count)
+                return f"[red]Error: {e}[/red]" + stats
 
         if iteration >= self.max_iterations:
             final_response += "\n[dim](max iterations)[/dim]"
 
-        # Calculate elapsed time
         elapsed = time.time() - start_time
-
-        # Format timing info
-        if elapsed < 60:
-            time_str = f"{elapsed:.1f}s"
-        else:
-            mins = int(elapsed // 60)
-            secs = elapsed % 60
-            time_str = f"{mins}m {secs:.0f}s"
-
-        # Add stats footer
-        stats = f"\n[dim]({time_str}"
-        if tool_count > 0:
-            stats += f" · {tool_count} tool{'s' if tool_count > 1 else ''}"
-        stats += ")[/dim]"
+        stats = self._format_timing_stats(elapsed, tool_count)
 
         response = final_response if final_response else "[dim]No response[/dim]"
         return response + stats
@@ -1610,6 +1905,10 @@ RULES:
         start_time = time.time()
         tool_count = 0
         self.last_streamed = False
+
+        # Multi-step tracking
+        _last_tool_call = None
+        _consecutive_failures = 0
 
         use_native = self._supports_native_tools()
         auto_tool_done = False
@@ -1683,17 +1982,8 @@ RULES:
                             display=self._format_tool_display(tool_name, args, result.result),
                         )
 
-                        messages.append({
-                            "role": "user",
-                            "content": (
-                                f"Tool result:\n{result.result}\n\n"
-                                "Instructions:\n"
-                                "1. If the result contains search results, synthesize a helpful answer.\n"
-                                "2. If the result starts with 'Error:', acknowledge the error briefly.\n"
-                                "3. Include 1-2 source URLs when available.\n"
-                                "4. Answer the original question directly and concisely."
-                            )
-                        })
+                        feedback = self._format_tool_feedback(tool_name, args, result.result, result.success)
+                        messages.append({"role": "user", "content": feedback})
 
                         if tool_name == "web_search" and result.result and (
                             result.result.startswith("Search failed") or
@@ -1749,7 +2039,12 @@ RULES:
                         else:
                             content_parts = [str(reply) if isinstance(reply, str) else ""]
                         final_response = self._clean_content("".join(content_parts))
-                        break
+                        # Safety net: if LLM output tool-call syntax, discard and fall through to agent loop
+                        if self._has_tool_call_syntax(final_response):
+                            final_response = ""
+                            self.last_streamed = False
+                        else:
+                            break
                     except Exception:
                         pass
 
@@ -1783,7 +2078,7 @@ RULES:
 
                 # Native tool calling with parallel execution
                 if use_native and tool_calls:
-                    messages.append({"role": "assistant", "content": content, "tool_calls": tool_calls})
+                    messages.append({"role": "assistant", "content": content, "tool_calls": self._normalize_tool_calls(tool_calls)})
 
                     # Parse all tool calls
                     parsed_calls = []
@@ -1871,39 +2166,38 @@ RULES:
                             tool_msg["tool_call_id"] = tool_result.tool_call_id
                         messages.append(tool_msg)
 
-                    # Stream synthesis response
-                    try:
-                        from jarvis.providers import Message
-                        followup_system = system_prompt + "\n\nAnswer the user now. Do not call tools."
-                        stream_messages = [Message(role=m["role"], content=m["content"]) for m in messages]
-                        stream = self.provider.chat(
-                            messages=stream_messages,
-                            system=followup_system,
-                            stream=True
-                        )
-                        parts = []
+                    # Multi-step: let the loop continue so model can make more tool calls
+                    # Duplicate-call detection
+                    for pc in parsed_calls:
+                        call_sig = (pc["tool_name"], str(pc["args"]))
+                        if call_sig == _last_tool_call:
+                            messages.append({
+                                "role": "user",
+                                "content": "You just called the same tool with the same arguments. Try a different approach or answer the user."
+                            })
+                        _last_tool_call = call_sig
 
-                        def _stream_producer():
-                            """Run streaming in thread."""
-                            result_parts = []
-                            if hasattr(stream, '__iter__') and not isinstance(stream, (str, dict)):
-                                for chunk in stream:
-                                    if self.ui and self.ui.stop_requested:
-                                        break
-                                    result_parts.append(chunk)
-                            return result_parts
+                    # Track consecutive failures
+                    any_failed = any(
+                        r.startswith("Error") or r.startswith("error")
+                        for m in messages[-len(parsed_calls):]
+                        if m.get("role") == "tool" and (r := m.get("content", ""))
+                    )
+                    if any_failed:
+                        _consecutive_failures += 1
+                    else:
+                        _consecutive_failures = 0
 
-                        parts = await asyncio.to_thread(_stream_producer)
-                        for chunk in parts:
-                            yield AgentEvent(type="stream", content=chunk)
-                        self.last_streamed = True
-                        final_response = self._clean_content("".join(parts))
-                        break
-                    except Exception:
-                        pass
+                    if _consecutive_failures >= 3:
+                        messages.append({
+                            "role": "user",
+                            "content": "Multiple tool calls have failed. Reconsider your approach or answer with what you know."
+                        })
 
-                # Prompt-based fallback (text contains JSON tool call)
-                elif content and ('"name"' in content or '"tool"' in content):
+                    continue  # Let model decide: more tools or final text response
+
+                # Prompt-based fallback (text contains JSON or function-call tool syntax)
+                elif content and self._has_tool_call_syntax(content):
                     tool_name, args = self._parse_tool_call_from_text(content)
                     if tool_name:
                         yield AgentEvent(
@@ -1925,14 +2219,20 @@ RULES:
                             display=self._format_tool_display(tool_name, args or {}, result.result),
                         )
 
+                        feedback = self._format_tool_feedback(tool_name, args or {}, result.result, result.success)
                         messages.append({"role": "assistant", "content": content})
-                        messages.append({
-                            "role": "user",
-                            "content": (
-                                f"Tool result:\n{result.result}\n\n"
-                                "Answer the original question directly and concisely."
-                            )
-                        })
+                        messages.append({"role": "user", "content": feedback})
+
+                        # Track failures
+                        if not result.success:
+                            _consecutive_failures += 1
+                        else:
+                            _consecutive_failures = 0
+                        if _consecutive_failures >= 3:
+                            messages.append({
+                                "role": "user",
+                                "content": "Multiple tool calls have failed. Reconsider your approach or answer with what you know."
+                            })
                     else:
                         clean = content
                         start = content.find('{')
@@ -1964,17 +2264,7 @@ RULES:
             final_response += "\n[dim](max iterations)[/dim]"
 
         elapsed = time.time() - start_time
-        if elapsed < 60:
-            time_str = f"{elapsed:.1f}s"
-        else:
-            mins = int(elapsed // 60)
-            secs = elapsed % 60
-            time_str = f"{mins}m {secs:.0f}s"
-
-        stats = f"\n[dim]({time_str}"
-        if tool_count > 0:
-            stats += f" · {tool_count} tool{'s' if tool_count > 1 else ''}"
-        stats += ")[/dim]"
+        stats = self._format_timing_stats(elapsed, tool_count)
 
         response = final_response if final_response else "[dim]No response[/dim]"
         yield AgentEvent(type="done", content=response + stats)

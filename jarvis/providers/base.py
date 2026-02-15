@@ -1,8 +1,10 @@
 """Base provider interface for LLM backends."""
 
+import inspect
+import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Generator, Optional, List, Dict, Any
+from typing import Generator, Optional, List, Dict, Any, Callable
 
 
 @dataclass
@@ -187,3 +189,113 @@ class BaseProvider(ABC):
         tasks.update(task_models.keys())
 
         return sorted(tasks)
+
+    # === Unified Tool Schema Generation ===
+
+    # Prerequisite warnings appended to tool descriptions
+    TOOL_CONSTRAINTS = {
+        "edit_file": "IMPORTANT: You MUST call read_file() on this file first. old_string must EXACTLY match file content.",
+        "write_file": "For existing files, you MUST call read_file() first to understand current content.",
+    }
+
+    @staticmethod
+    def _parse_docstring(func: Callable) -> Dict[str, Any]:
+        """Parse a Google-style docstring into structured parts.
+
+        Returns:
+            Dict with 'description', 'params' (name->description), 'returns'
+        """
+        doc = inspect.getdoc(func) or ""
+        if not doc:
+            return {"description": f"Function {func.__name__}", "params": {}, "returns": ""}
+
+        lines = doc.split("\n")
+        description_lines = []
+        params = {}
+        returns = ""
+        section = "description"
+
+        for line in lines:
+            stripped = line.strip()
+
+            # Detect section headers
+            if stripped.lower() in ("args:", "arguments:", "parameters:", "params:"):
+                section = "args"
+                continue
+            elif stripped.lower() in ("returns:", "return:"):
+                section = "returns"
+                continue
+            elif stripped.lower() in ("raises:", "examples:", "note:", "notes:"):
+                section = "other"
+                continue
+
+            if section == "description":
+                description_lines.append(stripped)
+            elif section == "args":
+                # Parse "param_name: description" or "param_name (type): description"
+                match = re.match(r'^(\w+)\s*(?:\([^)]*\))?\s*:\s*(.+)', stripped)
+                if match:
+                    params[match.group(1)] = match.group(2).strip()
+            elif section == "returns":
+                if stripped:
+                    returns = stripped
+
+        description = " ".join(l for l in description_lines if l).strip()
+        # Use first paragraph only for the schema description
+        description = description.split("\n\n")[0] if "\n\n" in description else description
+
+        return {"description": description, "params": params, "returns": returns}
+
+    def convert_tools_to_schema(self, tools: List[Callable]) -> List[dict]:
+        """Convert Python functions to OpenAI-compatible tool schema.
+
+        Uses docstring parsing for rich descriptions and parameter docs.
+        Falls back to basic type inference if parsing fails.
+        """
+        tool_schemas = []
+        for func in tools:
+            sig = inspect.signature(func)
+            parsed = self._parse_docstring(func)
+            params = {}
+            required = []
+
+            for name, param in sig.parameters.items():
+                param_type = "string"
+                if param.annotation != inspect.Parameter.empty:
+                    if param.annotation == int:
+                        param_type = "integer"
+                    elif param.annotation == bool:
+                        param_type = "boolean"
+                    elif param.annotation == float:
+                        param_type = "number"
+
+                # Use parsed docstring description, fall back to generic
+                param_desc = parsed["params"].get(name, f"The {name} parameter")
+                params[name] = {
+                    "type": param_type,
+                    "description": param_desc,
+                }
+
+                if param.default == inspect.Parameter.empty:
+                    required.append(name)
+
+            # Build description from docstring + constraints
+            description = parsed["description"] or f"Function {func.__name__}"
+            constraint = self.TOOL_CONSTRAINTS.get(func.__name__)
+            if constraint:
+                description = f"{description}\n{constraint}"
+
+            tool_schemas.append({
+                "type": "function",
+                "function": {
+                    "name": func.__name__,
+                    "description": description,
+                    "parameters": {
+                        "type": "object",
+                        "properties": params,
+                        "required": required,
+                    }
+                }
+            })
+
+        return tool_schemas

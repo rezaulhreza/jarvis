@@ -242,7 +242,8 @@ def run_command(command: str) -> str:
 
 
 def write_file(path: str, content: str) -> str:
-    """Write content to a file. Use this to create or overwrite files.
+    """Write content to a file. Use this to create new files or overwrite existing ones.
+    For existing files, you MUST call read_file() first to understand current content.
 
     Args:
         path: File path relative to project root
@@ -329,10 +330,11 @@ def get_project_structure() -> str:
 
 def edit_file(path: str, old_string: str, new_string: str, replace_all: bool = False) -> str:
     """Edit a file by replacing a specific string. Use for small, targeted changes.
+    IMPORTANT: You MUST call read_file() on this file first. old_string must EXACTLY match file content including whitespace.
 
     Args:
         path: File path relative to project root
-        old_string: The exact text to find and replace
+        old_string: The exact text to find and replace (must match file content character-for-character)
         new_string: The text to replace it with
         replace_all: If True, replace all occurrences (default False requires unique match)
 
@@ -1077,10 +1079,10 @@ Description:
 # =============================================================================
 
 def web_search(query: str, max_results: int = 5) -> str:
-    """Search the web for current information using Brave Search (primary) or DuckDuckGo (fallback).
+    """Search the web for current information. Use for current events, prices, people, news, or anything needing up-to-date data.
 
     Args:
-        query: The search query
+        query: The search query describing what to find
         max_results: Maximum number of results (default 5)
 
     Returns:
@@ -1270,10 +1272,10 @@ def get_gold_price(currency: str = "USD") -> str:
 
 
 def web_fetch(url: str) -> str:
-    """Fetch content from a URL and convert HTML to readable text.
+    """Fetch and read content from a URL. Use to browse websites, read web pages, check URLs, or extract information from any web page.
 
     Args:
-        url: The URL to fetch
+        url: The full URL to fetch (e.g. https://example.com)
 
     Returns:
         Page content converted to markdown/text format
@@ -2262,7 +2264,7 @@ TOOL_REGISTRY = {
     "run_command":      {"category": "shell","intents": ["shell", "code"],       "keywords": ["run", "execute", "command", "npm", "pip", "python"]},
     # Web
     "web_search":       {"category": "web",  "intents": ["search", "news", "finance"], "keywords": ["search", "find", "look up", "google"]},
-    "web_fetch":        {"category": "web",  "intents": ["search"],              "keywords": ["fetch", "url", "webpage", "browse"]},
+    "web_fetch":        {"category": "web",  "intents": ["search"],              "keywords": ["fetch", "url", "webpage", "browse", "visit", "check", "website", "http", "www"]},
     "get_current_news": {"category": "web",  "intents": ["news"],               "keywords": ["news", "headlines", "breaking"]},
     "get_gold_price":   {"category": "web",  "intents": ["finance"],             "keywords": ["gold", "price", "metal"]},
     # Weather
@@ -2284,7 +2286,7 @@ TOOL_REGISTRY = {
 }
 
 # Always include these tools as fallback
-_ALWAYS_INCLUDE = {"web_search", "calculate"}
+_ALWAYS_INCLUDE = {"read_file"}
 
 # Category groups - when one tool from a category is relevant, include related ones
 _CATEGORY_GROUPS = {

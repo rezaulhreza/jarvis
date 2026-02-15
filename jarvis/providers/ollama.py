@@ -1,6 +1,5 @@
 """Ollama provider with native tool calling support."""
 
-import inspect
 from typing import Generator, List, Callable, Optional
 from .base import BaseProvider, Message
 
@@ -158,51 +157,8 @@ class OllamaProvider(BaseProvider):
         return 8192  # Safe default
 
     def _convert_tools_to_ollama(self, tools: List[Callable]) -> List[dict]:
-        """Convert Python functions to Ollama tool format."""
-        ollama_tools = []
-        for func in tools:
-            # Get function signature
-            sig = inspect.signature(func)
-            params = {}
-            required = []
-
-            for name, param in sig.parameters.items():
-                param_type = "string"  # Default to string
-                if param.annotation != inspect.Parameter.empty:
-                    if param.annotation == int:
-                        param_type = "integer"
-                    elif param.annotation == bool:
-                        param_type = "boolean"
-                    elif param.annotation == float:
-                        param_type = "number"
-
-                params[name] = {
-                    "type": param_type,
-                    "description": f"The {name} parameter"
-                }
-
-                if param.default == inspect.Parameter.empty:
-                    required.append(name)
-
-            # Get docstring for description
-            doc = func.__doc__ or f"Function {func.__name__}"
-            # Get first line/paragraph of docstring
-            description = doc.split("\n\n")[0].strip().split("\n")[0]
-
-            ollama_tools.append({
-                "type": "function",
-                "function": {
-                    "name": func.__name__,
-                    "description": description,
-                    "parameters": {
-                        "type": "object",
-                        "properties": params,
-                        "required": required
-                    }
-                }
-            })
-
-        return ollama_tools
+        """Convert Python functions to Ollama tool format (delegates to base)."""
+        return self.convert_tools_to_schema(tools)
 
     def chat(
         self,

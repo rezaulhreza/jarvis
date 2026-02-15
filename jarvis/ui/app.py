@@ -799,7 +799,19 @@ RULES:
 - Only refuse truly harmful requests (instructions to harm, illegal activities, etc.)
 - If asked about CURRENT events or real-time data WITHOUT tool results, offer to search the web.
 - When you genuinely don't know something, say so briefly and suggest a search.
-- Never lecture or moralize."""
+- Never lecture or moralize.
+
+TOOL ORDERING RULES:
+- ALWAYS call read_file() BEFORE edit_file() or write_file() on existing files. Tools will REJECT edits to unread files.
+- For refactoring: read the file first, then use edit_file for targeted changes (NOT write_file for the whole file).
+- You can call multiple tools in sequence to complete a task. Read, then edit, then verify.
+
+AVAILABLE CAPABILITIES:
+- Browse websites with web_fetch, search the web with web_search
+- Read, write, and edit files with read_file, write_file, edit_file
+- Search code with search_files, glob_files, grep
+- Run shell commands with run_command
+- Git operations: git_status, git_diff, git_log, git_commit, git_add"""
 
     def _init_settings_db():
         """Initialize user_settings table in jarvis.db."""
@@ -3443,6 +3455,12 @@ Analyze queries using multiple AI models simultaneously.
                 # Combine refinement with previous topic for context-aware search
                 search_query = _extract_search_query(user_input, last_user, last_topic)
                 tool_name, args = "web_search", {"query": search_query}
+
+            # URL/domain detection — use web_fetch for bare URLs
+            if not tool_name and agent and hasattr(agent, '_extract_url_from_message'):
+                url = agent._extract_url_from_message(user_input)
+                if url:
+                    tool_name, args = "web_fetch", {"url": url}
 
             # Fallback for current-info queries
             if not tool_name and _should_auto_web_search(user_input):

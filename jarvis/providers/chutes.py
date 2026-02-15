@@ -33,7 +33,6 @@ Music Generation:
 
 import os
 import json
-import inspect
 from typing import Generator, List, Callable
 from .base import BaseProvider, Message
 
@@ -210,45 +209,8 @@ class ChutesProvider(BaseProvider):
             self.client = None
 
     def _convert_tools_to_openai(self, tools: List[Callable]) -> List[dict]:
-        """Convert Python functions to OpenAI tool format."""
-        openai_tools = []
-        for func in tools:
-            sig = inspect.signature(func)
-            params = {}
-            required = []
-
-            for name, param in sig.parameters.items():
-                param_type = "string"
-                if param.annotation != inspect.Parameter.empty:
-                    if param.annotation == int:
-                        param_type = "integer"
-                    elif param.annotation == bool:
-                        param_type = "boolean"
-                    elif param.annotation == float:
-                        param_type = "number"
-
-                params[name] = {"type": param_type, "description": f"The {name} parameter"}
-
-                if param.default == inspect.Parameter.empty:
-                    required.append(name)
-
-            doc = func.__doc__ or f"Function {func.__name__}"
-            description = doc.split("\n\n")[0].strip()
-
-            openai_tools.append({
-                "type": "function",
-                "function": {
-                    "name": func.__name__,
-                    "description": description,
-                    "parameters": {
-                        "type": "object",
-                        "properties": params,
-                        "required": required
-                    }
-                }
-            })
-
-        return openai_tools
+        """Convert Python functions to OpenAI tool format (delegates to base)."""
+        return self.convert_tools_to_schema(tools)
 
     def chat(
         self,
@@ -267,7 +229,11 @@ class ChutesProvider(BaseProvider):
         msg_list = []
         if system:
             msg_list.append({"role": "system", "content": system})
-        msg_list.extend([{"role": m.role, "content": m.content} for m in messages])
+        for m in messages:
+            if isinstance(m, dict):
+                msg_list.append(m)
+            else:
+                msg_list.append({"role": m.role, "content": m.content})
 
         if stream:
             return self._chat_streaming(msg_list)

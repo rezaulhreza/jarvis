@@ -360,6 +360,20 @@ class Jarvis:
             "8. NEVER just output code in your response when asked to write it. USE THE TOOL.",
             "9. For small changes: use edit_file with old_string and new_string.",
             "10. For rewrites or new files: use write_file with the full content.",
+            "",
+            "TOOL ORDERING RULES:",
+            "- ALWAYS call read_file() BEFORE edit_file() or write_file() on existing files. Tools will REJECT edits to unread files.",
+            "- For refactoring: read the file first, then use edit_file for targeted changes (NOT write_file for the whole file).",
+            "- You can call multiple tools in sequence to complete a task. Read, then edit, then verify.",
+            "",
+            "AVAILABLE CAPABILITIES:",
+            "- Browse websites with web_fetch, search the web with web_search",
+            "- When asked to check/visit/fetch a URL or website: ALWAYS use web_fetch. NEVER output tool call syntax as text.",
+            "- When you need to use a tool: EXECUTE it. Never describe the call or ask the user to wait.",
+            "- Read, write, and edit files with read_file, write_file, edit_file",
+            "- Search code with search_files, glob_files, grep",
+            "- Run shell commands with run_command",
+            "- Git operations: git_status, git_diff, git_log, git_commit, git_add",
         ])
 
         # Project context
