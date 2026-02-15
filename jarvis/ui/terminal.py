@@ -815,10 +815,12 @@ class TerminalUI:
             return None
 
         choices = []
+        provider_names = []
         for name, info in providers.items():
             status = "✓" if info.get("configured") else "✗"
-            marker = "●" if name == current else " "
-            choices.append(f"{marker} {name} [{status}]")
+            marker = " [✓]" if name == current else ""
+            choices.append(f"{name}{marker}")
+            provider_names.append(name)
 
         try:
             result = questionary.select(
@@ -828,8 +830,11 @@ class TerminalUI:
             ).ask()
 
             if result:
-                parts = result.split()
-                return parts[1] if len(parts) > 1 else None
+                # Extract provider name (strip any suffix like " [✓]")
+                for name in provider_names:
+                    if result.startswith(name):
+                        return name
+                return None
         except Exception:
             pass
         return None

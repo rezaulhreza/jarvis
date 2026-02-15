@@ -880,15 +880,19 @@ TOOL ORDERING RULES:
         args[first_param] = positional
         return tool_name, args
 
-    def _parse_tool_call_from_text(self, text: str) -> tuple:
-        """Try to extract a tool call from model's text output."""
-        if not text:
-            return None, None
+    def _try_parse_json_tool_call(self, text: str) -> tuple:
+        """Scan all top-level JSON objects in text and return the last one that looks like a tool call.
 
-        # --- Try JSON parsing first ---
-        start = text.find('{')
-        if start != -1:
-            # Count braces to find the matching closing brace
+        Models often embed tool calls at the END of a long text response,
+        so scanning only the first '{' fails when code blocks contain braces earlier.
+        """
+        candidates = []
+        pos = 0
+        while pos < len(text):
+            start = text.find('{', pos)
+            if start == -1:
+                break
+            # Find matching closing brace
             depth = 0
             end = start
             for i, char in enumerate(text[start:], start):
@@ -899,62 +903,78 @@ TOOL ORDERING RULES:
                     if depth == 0:
                         end = i + 1
                         break
+            if depth != 0:
+                break
+            candidates.append((start, end))
+            pos = end
 
-            if depth == 0:
-                json_str = text[start:end]
-                try:
-                    data = json.loads(json_str)
+        # Try candidates from LAST to FIRST (tool calls usually at the end)
+        for start, end in reversed(candidates):
+            json_str = text[start:end]
+            try:
+                data = json.loads(json_str)
+                if not isinstance(data, dict):
+                    continue
 
-                    # Handle nested function call format: {"function": {"name": "...", "arguments": {...}}}
-                    if "function" in data and isinstance(data["function"], dict):
-                        nested = data["function"]
-                        tool_name = nested.get("name", "")
-                        args = nested.get("arguments", {})
-                        if isinstance(args, str):
-                            try:
-                                args = json.loads(args)
-                            except json.JSONDecodeError:
-                                pass
-                        if tool_name:
-                            return tool_name, args
-
-                    # Flat format: try multiple key names
-                    tool_name = (
-                        data.get("tool") or data.get("name") or data.get("function")
-                        or data.get("action") or data.get("tool_name")
-                    )
-                    # If "function" resolved to a dict above, skip it
-                    if isinstance(tool_name, dict):
-                        tool_name = tool_name.get("name")
-
+                # Handle nested: {"function": {"name": "...", "arguments": {...}}}
+                if "function" in data and isinstance(data["function"], dict):
+                    nested = data["function"]
+                    tool_name = nested.get("name", "")
+                    args = nested.get("arguments", {})
+                    if isinstance(args, str):
+                        try:
+                            args = json.loads(args)
+                        except json.JSONDecodeError:
+                            pass
                     if tool_name:
-                        # Get arguments - try multiple key names
-                        args = (
-                            data.get("arguments") or data.get("params")
-                            or data.get("parameters") or data.get("args") or {}
-                        )
-                        if isinstance(args, str):
-                            try:
-                                args = json.loads(args)
-                            except json.JSONDecodeError:
-                                pass
-                        if not args:
-                            args = {k: v for k, v in data.items()
-                                    if k not in ["tool", "name", "function", "action", "tool_name",
-                                                "arguments", "params", "parameters", "args"]}
                         return tool_name, args
 
-                    # Name+JSON format: tool_name\n{"key": "value"} or tool_name {"key": ...}
-                    # Tool name appears BEFORE the JSON, not inside it
-                    if start > 0:
-                        prefix = text[:start].strip()
-                        # Check if the prefix ends with a known tool name
-                        for known in self._KNOWN_TOOL_NAMES:
-                            if prefix == known or prefix.endswith(known):
-                                return known, data
+                # Flat format: {"name": "tool", "arguments": {...}}
+                tool_name = (
+                    data.get("tool") or data.get("name") or data.get("function")
+                    or data.get("action") or data.get("tool_name")
+                )
+                if isinstance(tool_name, dict):
+                    tool_name = tool_name.get("name")
 
-                except json.JSONDecodeError:
-                    pass
+                if tool_name and tool_name in self._KNOWN_TOOL_NAMES:
+                    args = (
+                        data.get("arguments") or data.get("params")
+                        or data.get("parameters") or data.get("args") or {}
+                    )
+                    if isinstance(args, str):
+                        try:
+                            args = json.loads(args)
+                        except json.JSONDecodeError:
+                            pass
+                    if not args:
+                        args = {k: v for k, v in data.items()
+                                if k not in ["tool", "name", "function", "action", "tool_name",
+                                            "arguments", "params", "parameters", "args"]}
+                    return tool_name, args
+
+                # Name+JSON: tool_name\n{"key": "value"} — tool name before JSON
+                if start > 0:
+                    prefix = text[:start].strip()
+                    for known in self._KNOWN_TOOL_NAMES:
+                        if prefix == known or prefix.endswith(known):
+                            return known, data
+            except json.JSONDecodeError:
+                continue
+
+        return None, None
+
+    def _parse_tool_call_from_text(self, text: str) -> tuple:
+        """Try to extract a tool call from model's text output."""
+        if not text:
+            return None, None
+
+        # --- Try JSON parsing — scan ALL top-level {} blocks, last match wins ---
+        # Models often put tool calls at the END of a long text response,
+        # so we try from the end backwards.
+        result = self._try_parse_json_tool_call(text)
+        if result[0]:
+            return result
 
         # --- Fallback: try function-call syntax like web_fetch('url') ---
         result = self._parse_function_call_syntax(text)
@@ -1682,6 +1702,7 @@ TOOL ORDERING RULES:
                 # Optional fast path when tools are unlikely
                 if agent_cfg.get("fast_no_tools", True) and not self._likely_needs_tools(user_message):
                     try:
+                        import threading
                         from jarvis.providers import Message
                         fast_messages = [Message(role=m["role"], content=m["content"]) for m in messages]
 
@@ -1691,11 +1712,43 @@ TOOL ORDERING RULES:
                             spinner = self.ui.show_spinner("Thinking")
                             spinner.start()
 
-                        reply = self.provider.chat(
-                            messages=fast_messages,
-                            system=system_prompt,
-                            stream=True
-                        )
+                        # Run chat in thread with timeout to prevent hanging
+                        _fast_result = {"reply": None, "error": None}
+                        def _fast_call():
+                            try:
+                                _fast_result["reply"] = self.provider.chat(
+                                    messages=fast_messages,
+                                    system=system_prompt,
+                                    stream=True
+                                )
+                            except Exception as e:
+                                _fast_result["error"] = e
+
+                        _fast_thread = threading.Thread(target=_fast_call)
+                        _fast_thread.daemon = True
+                        _fast_thread.start()
+
+                        timeout = self._get_timeout()
+                        _fast_start = time.time()
+                        while _fast_thread.is_alive():
+                            if self.ui and self.ui.stop_requested:
+                                break
+                            if self.ui and hasattr(self.ui, "check_escape_pressed") and self.ui.check_escape_pressed():
+                                if self.ui:
+                                    self.ui.stop_requested = True
+                                break
+                            if time.time() - _fast_start > timeout:
+                                break
+                            _fast_thread.join(timeout=0.5)
+
+                        if _fast_result["error"]:
+                            raise _fast_result["error"]
+                        reply = _fast_result["reply"]
+                        if reply is None:
+                            if spinner:
+                                spinner.stop()
+                            # Timed out or interrupted — fall through to tool-capable path
+                            raise TimeoutError("Fast path timed out")
 
                         # Buffer initial tokens to detect tool-call syntax before streaming
                         content_parts = []

@@ -819,16 +819,14 @@ AVAILABLE CAPABILITIES:
         from jarvis import get_data_dir
         _db = get_data_dir() / "memory" / "jarvis.db"
         _db.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(str(_db))
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS user_settings (
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL,
-                updated_at TEXT DEFAULT (datetime('now'))
-            )
-        """)
-        conn.commit()
-        conn.close()
+        with sqlite3.connect(str(_db)) as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS user_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    updated_at TEXT DEFAULT (datetime('now'))
+                )
+            """)
 
     # Create table on startup
     _init_settings_db()
@@ -844,12 +842,11 @@ AVAILABLE CAPABILITIES:
         _db = get_data_dir() / "memory" / "jarvis.db"
         key = _settings_key("system_instructions", user_id)
         try:
-            conn = sqlite3.connect(str(_db))
-            row = conn.execute(
-                "SELECT value FROM user_settings WHERE key = ?", (key,)
-            ).fetchone()
-            conn.close()
-            return row[0] if row else ""
+            with sqlite3.connect(str(_db)) as conn:
+                row = conn.execute(
+                    "SELECT value FROM user_settings WHERE key = ?", (key,)
+                ).fetchone()
+                return row[0] if row else ""
         except Exception:
             return ""
 
@@ -859,15 +856,13 @@ AVAILABLE CAPABILITIES:
         from jarvis import get_data_dir
         _db = get_data_dir() / "memory" / "jarvis.db"
         key = _settings_key("system_instructions", user_id)
-        conn = sqlite3.connect(str(_db))
-        conn.execute(
-            """INSERT INTO user_settings (key, value, updated_at)
-               VALUES (?, ?, datetime('now'))
-               ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at""",
-            (key, content)
-        )
-        conn.commit()
-        conn.close()
+        with sqlite3.connect(str(_db)) as conn:
+            conn.execute(
+                """INSERT INTO user_settings (key, value, updated_at)
+                   VALUES (?, ?, datetime('now'))
+                   ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at""",
+                (key, content)
+            )
 
     def _delete_user_instructions(user_id: str | None = None):
         """Delete user instructions from SQLite."""
@@ -875,10 +870,8 @@ AVAILABLE CAPABILITIES:
         from jarvis import get_data_dir
         _db = get_data_dir() / "memory" / "jarvis.db"
         key = _settings_key("system_instructions", user_id)
-        conn = sqlite3.connect(str(_db))
-        conn.execute("DELETE FROM user_settings WHERE key = ?", (key,))
-        conn.commit()
-        conn.close()
+        with sqlite3.connect(str(_db)) as conn:
+            conn.execute("DELETE FROM user_settings WHERE key = ?", (key,))
 
     # One-time migration: move soul.md content to SQLite if it exists
     def _migrate_soul_to_db():
@@ -2866,6 +2859,7 @@ Analyze queries using multiple AI models simultaneously.
                     "message": "Authentication required"
                 })
                 await websocket.close(code=4001)
+                connections.pop(session_id, None)
                 return
 
         jarvis = None
@@ -2912,6 +2906,8 @@ Analyze queries using multiple AI models simultaneously.
                 "message": f"Failed to initialize: {e}\n{traceback.format_exc()}"
             })
             await websocket.close()
+            connections.pop(session_id, None)
+            instances.pop(session_id, None)
             return
 
         # Track the current processing task so we can cancel it
@@ -3117,7 +3113,10 @@ Analyze queries using multiple AI models simultaneously.
                 pass
         finally:
             connections.pop(session_id, None)
-            instances.pop(session_id, None)
+            inst = instances.pop(session_id, None)
+            # Clean up fact extraction counter for this session
+            if inst:
+                _fact_extraction_counter.pop(id(inst), None)
 
     # Message counter for throttled fact extraction
     _fact_extraction_counter: dict = {}

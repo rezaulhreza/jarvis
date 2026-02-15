@@ -203,8 +203,9 @@ Output JSON only, no explanation:'''
         """
         self.provider = provider
         self.config = config or {}
-        self._cache: Dict[str, ClassifiedIntent] = {}
+        self._cache: Dict[str, tuple] = {}  # key -> (timestamp, result)
         self._cache_ttl = self.config.get("intent", {}).get("cache_ttl", 300)
+        self._cache_max = 500  # Max entries before eviction
 
     def _get_context_section(self, context: List[dict] = None) -> str:
         """Build context section for the prompt if context is provided."""
@@ -248,10 +249,15 @@ Output JSON only, no explanation:'''
                 requires_tools=False
             )
 
-        # Check cache first
+        # Check cache first (with TTL)
+        import time as _time
         cache_key = message.lower().strip()
         if cache_key in self._cache:
-            return self._cache[cache_key]
+            ts, cached_result = self._cache[cache_key]
+            if _time.time() - ts < self._cache_ttl:
+                return cached_result
+            else:
+                del self._cache[cache_key]
 
         # Use fast heuristic classification by default (instant)
         result = self._classify_heuristic(message)
@@ -269,7 +275,11 @@ Output JSON only, no explanation:'''
                 except Exception as e:
                     print(f"[IntentClassifier] LLM classification failed: {e}")
 
-        self._cache[cache_key] = result
+        # Evict oldest entries if cache is full
+        if len(self._cache) >= self._cache_max:
+            oldest_key = min(self._cache, key=lambda k: self._cache[k][0])
+            del self._cache[oldest_key]
+        self._cache[cache_key] = (_time.time(), result)
         return result
 
     def classify_sync(self, message: str, context: List[dict] = None) -> ClassifiedIntent:
@@ -279,14 +289,22 @@ Output JSON only, no explanation:'''
         Always uses fast heuristic classification for instant results.
         This is the preferred method for UI responsiveness.
         """
-        # Check cache first
+        # Check cache first (with TTL)
+        import time as _time
         cache_key = message.lower().strip()
         if cache_key in self._cache:
-            return self._cache[cache_key]
+            ts, cached_result = self._cache[cache_key]
+            if _time.time() - ts < self._cache_ttl:
+                return cached_result
+            else:
+                del self._cache[cache_key]
 
         # Use heuristic classification (instant, no LLM call)
         result = self._classify_heuristic(message)
-        self._cache[cache_key] = result
+        if len(self._cache) >= self._cache_max:
+            oldest_key = min(self._cache, key=lambda k: self._cache[k][0])
+            del self._cache[oldest_key]
+        self._cache[cache_key] = (_time.time(), result)
         return result
 
     async def _classify_with_llm(self, message: str, context: List[dict] = None) -> ClassifiedIntent:

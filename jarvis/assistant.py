@@ -625,7 +625,7 @@ personalize responses but keep it internal.
                     if self.plan_mode and len(clean.strip()) > 100:
                         self.active_plan = clean.strip()
                         self.ui.console.print()
-                        self.ui.console.print("[cyan]Plan ready.[/cyan] [dim][y]es to implement, [n]o to discard, [e]dit to refine[/dim]")
+                        self.ui.console.print("[cyan]Plan ready.[/cyan] [dim]\\[y]es to implement, \\[n]o to discard, \\[e]dit to refine[/dim]")
                         try:
                             choice = input("> ").strip().lower()
                             if choice in ('y', 'yes'):
