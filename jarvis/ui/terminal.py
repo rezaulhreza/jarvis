@@ -93,6 +93,151 @@ VALID_COMMANDS = {
 }
 
 
+# ────────────────────────────────────────────────
+# LiveSpinner — updatable spinner for tool activity
+# ────────────────────────────────────────────────
+
+# Friendly display names for tools
+_TOOL_DISPLAY = {
+    "read_file": "Reading",
+    "write_file": "Writing",
+    "edit_file": "Editing",
+    "list_files": "Listing files",
+    "search_files": "Searching",
+    "glob_files": "Searching files",
+    "grep": "Searching code",
+    "run_command": "Running command",
+    "find_definition": "Finding definition",
+    "find_references": "Finding references",
+    "get_project_structure": "Scanning project",
+    "get_project_overview": "Analyzing project",
+    "apply_patch": "Applying patch",
+    "run_tests": "Running tests",
+    "git_status": "Checking git status",
+    "git_diff": "Getting diff",
+    "git_log": "Reading git log",
+    "git_commit": "Committing",
+    "git_add": "Staging files",
+    "git_branch": "Managing branch",
+    "git_stash": "Stashing changes",
+    "web_search": "Searching web",
+    "web_fetch": "Fetching page",
+    "get_current_news": "Getting news",
+    "get_weather": "Getting weather",
+    "get_gold_price": "Getting gold price",
+    "get_current_time": "Getting time",
+    "calculate": "Calculating",
+    "save_memory": "Saving memory",
+    "recall_memory": "Recalling memory",
+    "create_pr": "Creating PR",
+    "update_pr": "Updating PR",
+    "task_create": "Creating task",
+    "task_update": "Updating task",
+    "github_search": "Searching GitHub",
+    "generate_image": "Generating image",
+    "analyze_image": "Analyzing image",
+}
+
+
+import random as _random
+
+# Varied thinking phrases — rotated to keep UI lively (like Claude Code)
+_THINKING_PHRASES = [
+    "Thinking",
+    "Processing",
+    "Reasoning",
+    "Pondering",
+    "Cooking up a response",
+    "Brewing thoughts",
+    "Crunching",
+    "Analyzing",
+    "Mulling it over",
+    "Working on it",
+    "Figuring it out",
+    "Connecting the dots",
+]
+
+
+def _pick_thinking_phrase() -> str:
+    return _random.choice(_THINKING_PHRASES)
+
+
+def _tool_activity_text(tool_name: str, args: dict | None = None) -> str:
+    """Build a short activity string like 'Reading jarvis/core/agent.py'."""
+    verb = _TOOL_DISPLAY.get(tool_name, tool_name.replace("_", " ").title() + "ing")
+    detail = ""
+    if args:
+        # Pick the most meaningful arg for display
+        for key in ("path", "file_path", "pattern", "query", "command", "name"):
+            if key in args:
+                val = str(args[key])
+                if len(val) > 50:
+                    val = "..." + val[-47:]
+                detail = f" {val}"
+                break
+    return f"{verb}{detail}"
+
+
+class LiveSpinner:
+    """Spinner that supports live text updates — like Claude Code activity display."""
+
+    def __init__(self, console: Console, initial_message: str = "Thinking"):
+        self._console = console
+        # Use a varied phrase if the caller just said "Thinking"
+        if initial_message == "Thinking":
+            initial_message = _pick_thinking_phrase()
+        self._message = initial_message
+        self._tool_count = 0
+        self._start_time = None
+        self._spinner = Spinner("dots", text=self._render_text(), style="cyan")
+        self._live = Live(
+            self._spinner,
+            console=console,
+            refresh_per_second=10,
+            transient=True,
+        )
+
+    def _render_text(self) -> str:
+        parts = [f" [dim]{self._message}[/dim]"]
+        if self._start_time is not None:
+            elapsed = time.time() - self._start_time
+            if elapsed >= 1.0:
+                parts.append(f"[dim] ({elapsed:.0f}s)[/dim]")
+        if self._tool_count > 0:
+            parts.append(f"[dim] · {self._tool_count} tool{'s' if self._tool_count != 1 else ''}[/dim]")
+        return "".join(parts)
+
+    def start(self):
+        self._start_time = time.time()
+        self._live.start()
+
+    def stop(self):
+        try:
+            self._live.stop()
+        except Exception:
+            pass
+
+    def update_text(self, message: str):
+        """Update the spinner message (e.g. 'Reading agent.py')."""
+        self._message = message
+        self._spinner = Spinner("dots", text=self._render_text(), style="cyan")
+        try:
+            self._live.update(self._spinner)
+        except Exception:
+            pass
+
+    def update_tool(self, tool_name: str, args: dict | None = None):
+        """Update spinner to show current tool activity."""
+        self._tool_count += 1
+        activity = _tool_activity_text(tool_name, args)
+        self._message = activity
+        self._spinner = Spinner("dots", text=self._render_text(), style="cyan")
+        try:
+            self._live.update(self._spinner)
+        except Exception:
+            pass
+
+
 class TerminalUI:
     """Terminal interface for Jarvis AI assistant."""
 
@@ -193,7 +338,7 @@ class TerminalUI:
                         buf.start_completion(select_first=False)
 
                 style = Style.from_dict({
-                    "prompt": "#e07a5f bold",  # Warm orange/coral prompt
+                    "prompt": "#b794f4 bold",  # Light purple prompt
                     "placeholder": "#555555",  # Subtle gray placeholder
                     # Command highlighting styles
                     "command": "#a855f7 bold",  # Purple for valid commands
@@ -284,18 +429,11 @@ class TerminalUI:
             user_config = config.get("user", {})
             user_name = user_config.get("nickname") or user_config.get("name")
 
-        # Print version header
         self.console.print()
-        self.console.print(f"[bold cyan]Jarvis[/bold cyan] [dim]v{__version__}[/dim]")
 
-        # Print gradient banner
+        # Gradient banner
         banner = self._render_gradient_banner()
         self.console.print(banner)
-
-        # Greeting and info
-        greeting = f"Welcome back{', ' + user_name if user_name else ''}!"
-        self.console.print(f"  [bold white]{greeting}[/bold white]")
-        self.console.print()
 
         # Info line
         info_parts = [provider, model]
@@ -305,8 +443,7 @@ class TerminalUI:
         self.console.print(f"  [dim]{info_line}[/dim]")
 
         # Tips
-        self.console.print()
-        self.console.print("[dim]  /help for commands • ESC to stop response • Ctrl+C to clear input[/dim]")
+        self.console.print(f"[dim]  /help for commands · ESC to stop · Ctrl+C to clear[/dim]")
         self.console.print()
 
     def print_status(self, provider: str = None, model: str = None, project_root: Path = None, context_stats: dict = None):
@@ -341,14 +478,13 @@ class TerminalUI:
 
         return " · ".join(parts)
 
-    def get_input(self, prompt: str = ">", placeholder: str = None) -> str:
-        """Get user input with bordered input field."""
+    def get_input(self, prompt: str = "❯", placeholder: str = None) -> str:
+        """Get user input."""
         try:
             self.stop_requested = False
 
-            # Print top border
-            width = self.console.width or 80
-            self.console.print(f"[dim]{'─' * width}[/dim]")
+            # Just a blank line for spacing
+            self.console.print()
 
             if self.session:
                 result = self.session.prompt(
@@ -356,13 +492,10 @@ class TerminalUI:
                     placeholder=HTML('<style fg="#555555">Ask anything...</style>') if placeholder is None else placeholder,
                     bottom_toolbar=HTML(f'<style fg="#666666">{self._get_toolbar_text()}</style>'),
                 )
-                # Print bottom border after input
-                self.console.print(f"[dim]{'─' * width}[/dim]")
                 return result
             else:
-                self.console.print(f"[bold #e07a5f]{prompt}[/bold #e07a5f] ", end="")
+                self.console.print(f"[bold #b794f4]{prompt}[/bold #b794f4] ", end="")
                 result = input()
-                self.console.print(f"[dim]{'─' * width}[/dim]")
                 return result
 
         except EOFError:
@@ -527,13 +660,8 @@ class TerminalUI:
                 self.console.print(f"     [{style}]result: {t['result_preview']}[/{style}]")
 
     def show_spinner(self, message: str = "Thinking"):
-        """Show a spinner. Returns a context manager."""
-        return Live(
-            Spinner("dots", text=f" [dim]{message}...[/dim]", style="cyan"),
-            console=self.console,
-            refresh_per_second=10,
-            transient=True
-        )
+        """Show a live spinner with updatable text. Returns a LiveSpinner."""
+        return LiveSpinner(self.console, message)
 
     def print_error(self, message: str):
         self.console.print(f"[red]Error: {message}[/red]")
@@ -783,12 +911,18 @@ class TerminalUI:
         """Prompt user for tool permission. Returns 'y', 'n', 'a' (always), or 'd' (deny)."""
         risk_colors = {"safe": "green", "moderate": "yellow", "dangerous": "red"}
         color = risk_colors.get(risk, "dim")
-        args_preview = ", ".join(f"{k}={repr(v)[:30]}" for k, v in (args or {}).items())
         self.console.print()
-        self.console.print(f"[{color}][{risk.upper()}][/{color}] {tool_name}({args_preview})")
-        self.console.print("[dim]  [y]es, [n]o, [a]lways allow, [d]eny always[/dim]")
+        self.console.print(f"  [{color}]{tool_name}[/{color}]")
+        if args:
+            for k, v in args.items():
+                val = str(v)
+                if len(val) > 80:
+                    val = val[:77] + "..."
+                self.console.print(f"  [dim]{k}:[/dim] {val}")
+        self.console.print()
+        self.console.print("[dim]  y[/dim] Allow  [dim]n[/dim] Deny  [dim]a[/dim] Always allow  [dim]d[/dim] Always deny")
         try:
-            response = input("> ").strip().lower()
+            response = input("  > ").strip().lower()
             return response if response in ('y', 'n', 'a', 'd', 'yes', 'no') else 'n'
         except (EOFError, KeyboardInterrupt):
             return 'n'

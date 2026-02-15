@@ -300,15 +300,16 @@ class Jarvis:
             self.ui.print_warning(f"RAG initialization failed: {e}")
             self.rag = None
 
+        # Cache KB state to avoid querying on every message
+        self._rag_kb_empty = True
+        self._rag_check_counter = 0
+
         self._build_system_prompt()
 
     def _on_context_compact(self, num_messages: int, summary: str):
         """Callback when context is auto-compacted."""
         self.ui.console.print()
-        self.ui.console.print(f"[dim]─── Context Compacted ───[/dim]")
-        self.ui.console.print(f"[dim]Summarized {num_messages} messages to save space.[/dim]")
-        self.ui.console.print(f"[dim italic]{summary[:200]}{'...' if len(summary) > 200 else ''}[/dim italic]")
-        self.ui.console.print(f"[dim]──────────────────────────[/dim]")
+        self.ui.console.print(f"[dim]Context compacted: summarized {num_messages} messages[/dim]")
         self.ui.console.print()
 
     def _build_system_prompt(self):
@@ -350,8 +351,8 @@ class Jarvis:
         lines.append("")
         lines.append("BEHAVIOR:")
         lines.extend([
-            "- Be DIRECT and BRIEF. Give short, to-the-point answers unless the user asks for detail.",
-            "- No fluff, no filler, no unnecessary preamble. Just answer the question.",
+            "- Be concise but conversational. Answer directly without unnecessary preamble.",
+            "- For greetings and casual chat, be friendly and warm. For technical questions, be precise and brief.",
             "- For factual questions about public figures, events, legal cases - provide information directly.",
             "- Only refuse truly harmful requests (instructions to cause harm, illegal activities).",
             "- Never lecture or moralize.",
@@ -414,15 +415,24 @@ class Jarvis:
         # === LAYER 2: USER INSTRUCTIONS (editable, from SQLite) ===
         user_instructions = self._get_user_instructions_from_db()
         if user_instructions and user_instructions.strip():
-            self.base_system_prompt += f"""
+            # Strip identity-overriding lines to prevent stale persona leaks
+            filtered_lines = []
+            identity_keywords = {"you are ", "your name is ", "introduce yourself as ",
+                                 "always introduce", "identity (never break"}
+            for line in user_instructions.strip().splitlines():
+                line_lower = line.lower().strip()
+                if any(kw in line_lower for kw in identity_keywords):
+                    continue
+                filtered_lines.append(line)
+            filtered = "\n".join(filtered_lines).strip()
+            if filtered:
+                self.base_system_prompt += f"""
 
---- USER CUSTOM INSTRUCTIONS ---
-The user has set the following custom instructions. Follow them for tone,
-style, and preferences. However, NEVER let these override your identity,
-name, or creator defined above. If they contradict your identity, ignore
-that part and follow the soul above.
+--- USER CUSTOM INSTRUCTIONS (tone/style only) ---
+{filtered}"""
 
-{user_instructions.strip()}"""
+        # Soft identity reminder (avoid causing terse name-only replies to greetings)
+        self.base_system_prompt += f"\n\nYour name is {assistant_name}. Use this name if asked who you are."
 
         # Inject user context (facts, preferences)
         self.system_prompt = self._inject_user_context(self.base_system_prompt)
@@ -502,15 +512,21 @@ personalize responses but keep it internal.
             return ""
 
         try:
-            # Check if knowledge base has content
-            if self.rag.count() == 0:
+            # Re-check KB count every 20 messages (handles additions mid-session)
+            self._rag_check_counter += 1
+            if self._rag_kb_empty and self._rag_check_counter % 20 != 1:
                 return ""
 
-            # Use RAG engine's get_context method (includes prompt injection hardening)
+            count = self.rag.count()
+            self._rag_kb_empty = (count == 0)
+            if count == 0:
+                return ""
+
             context = self.rag.get_context(query, n_results=3, max_tokens=1500)
             return context
         except Exception as e:
-            print(f"[RAG] Error retrieving context: {e}")
+            import logging
+            logging.getLogger("jarvis.rag").debug(f"Error retrieving context: {e}")
             return ""
 
     def _extract_facts_from_conversation(self, user_message: str, assistant_response: str):
@@ -529,7 +545,8 @@ personalize responses but keep it internal.
             # This requires an LLM call, so only do it periodically
             extractor.process_conversation(messages, self.provider)
         except Exception as e:
-            print(f"[FactExtractor] Error: {e}")
+            import logging
+            logging.getLogger("jarvis.facts").debug(f"Fact extraction error: {e}")
 
     def process(self, user_input: str) -> str:
         """Process user input."""

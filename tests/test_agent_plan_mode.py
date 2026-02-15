@@ -91,7 +91,7 @@ class TestPlanModeGating:
         expected = {
             "write_file", "edit_file", "run_command", "apply_patch",
             "git_commit", "git_add", "git_stash", "git_branch",
-            "save_memory", "create_pr",
+            "save_memory", "create_pr", "update_pr",
         }
         assert agent.PLAN_BLOCKED_TOOLS == expected
 

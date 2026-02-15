@@ -379,7 +379,8 @@ class DocumentProcessor:
         except ImportError:
             return ""
         except Exception as e:
-            print(f"[DocProcessor] Embedding error: {e}")
+            import logging
+            logging.getLogger("jarvis.docprocessor").warning(f"Embedding error: {e}")
             return ""
 
     async def query_document(
@@ -409,7 +410,8 @@ class DocumentProcessor:
                 return "\n\n---\n\n".join(sections)
 
         except Exception as e:
-            print(f"[DocProcessor] Query error: {e}")
+            import logging
+            logging.getLogger("jarvis.docprocessor").warning(f"Query error: {e}")
 
         return ""
 

@@ -550,11 +550,39 @@ class Reranker:
         self._model = None
 
     def _load_model(self):
-        """Lazy load the cross-encoder model."""
+        """Lazy load the cross-encoder model (suppresses noisy output)."""
         if self._model is None:
             try:
-                from sentence_transformers import CrossEncoder
-                self._model = CrossEncoder(self.model_name)
+                import os
+                import sys
+                import io
+                import warnings
+
+                # Suppress tqdm, LOAD REPORT, and HF warnings during model load
+                old_stderr = sys.stderr
+                old_stdout = sys.stdout
+                old_hf_verbosity = os.environ.get("TRANSFORMERS_VERBOSITY")
+                old_hf_no_advisory = os.environ.get("HF_HUB_DISABLE_ADVISORY_WARNINGS")
+                os.environ["TRANSFORMERS_VERBOSITY"] = "error"
+                os.environ["HF_HUB_DISABLE_ADVISORY_WARNINGS"] = "1"
+                try:
+                    sys.stderr = io.StringIO()
+                    sys.stdout = io.StringIO()
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore")
+                        from sentence_transformers import CrossEncoder
+                        self._model = CrossEncoder(self.model_name)
+                finally:
+                    sys.stderr = old_stderr
+                    sys.stdout = old_stdout
+                    if old_hf_verbosity is None:
+                        os.environ.pop("TRANSFORMERS_VERBOSITY", None)
+                    else:
+                        os.environ["TRANSFORMERS_VERBOSITY"] = old_hf_verbosity
+                    if old_hf_no_advisory is None:
+                        os.environ.pop("HF_HUB_DISABLE_ADVISORY_WARNINGS", None)
+                    else:
+                        os.environ["HF_HUB_DISABLE_ADVISORY_WARNINGS"] = old_hf_no_advisory
             except ImportError:
                 raise ImportError(
                     "sentence-transformers is required for reranking. "
@@ -707,14 +735,14 @@ class RAGEngine:
         # Default fallback (conservative)
         if context_tokens is None:
             context_tokens = 8192  # Safe default
-            print(f"[RAG] Using default context length: {context_tokens} tokens for model '{self.embedding_model}'")
+            logger.debug(f"Using default context length: {context_tokens} tokens for model '{self.embedding_model}'")
 
         # Convert to chars - use conservative ratio of ~3 chars per token
         # and 50% safety margin to account for tokenizer differences
         max_chars = int(context_tokens * 3 * 0.5)
         self._max_embedding_chars = max_chars
 
-        print(f"[RAG] Embedding model: {self.embedding_model}, context: {context_tokens} tokens, max chars: {max_chars}")
+        logger.debug(f"Embedding model: {self.embedding_model}, context: {context_tokens} tokens, max chars: {max_chars}")
 
         return max_chars
 
@@ -727,16 +755,16 @@ class RAGEngine:
 
         if original_len > HARD_MAX_CHARS:
             text = text[:HARD_MAX_CHARS]
-            print(f"[RAG] Truncated embedding input: {original_len} -> {HARD_MAX_CHARS} chars")
+            logger.debug(f"Truncated embedding input: {original_len} -> {HARD_MAX_CHARS} chars")
 
         if self.ollama_client:
             try:
                 embedding = self.ollama_client.embed(text, model=self.embedding_model)
             except Exception as e:
                 # If still fails, try with very short truncation (500 chars)
-                print(f"[RAG] Embed failed with {len(text)} chars: {e}")
+                logger.warning(f"Embed failed with {len(text)} chars: {e}")
                 if len(text) > 500:
-                    print(f"[RAG] Retrying with 500 chars...")
+                    logger.debug(f"Retrying with 500 chars...")
                     text = text[:500]
                     embedding = self.ollama_client.embed(text, model=self.embedding_model)
                 else:

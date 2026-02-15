@@ -3984,7 +3984,9 @@ Analyze queries using multiple AI models simultaneously.
                         from jarvis.knowledge import get_rag_engine
                         rag = get_rag_engine(jarvis.config)
                         count = rag.count()
-                        print(f"[RAG] Knowledge base has {count} chunks")
+                        import logging
+                        _rag_logger = logging.getLogger("jarvis.rag")
+                        _rag_logger.debug(f"Knowledge base has {count} chunks")
                         if count > 0:
                             info["enabled"] = True
                             info["total_chunks"] = count
@@ -3994,11 +3996,10 @@ Analyze queries using multiple AI models simultaneously.
                                 info["sources"] = list(set(r.get("source", "unknown") for r in results))
                                 rag_ctx = await asyncio.to_thread(rag.get_context, user_input, 5)
                             else:
-                                print("[RAG] No context found")
+                                _rag_logger.debug("No context found")
                     except Exception as e:
-                        import traceback
-                        print(f"[RAG] Error retrieving context: {e}")
-                        traceback.print_exc()
+                        import logging
+                        logging.getLogger("jarvis.rag").warning(f"Error retrieving context: {e}")
                         info["error"] = str(e)
                     return info, rag_ctx or ""
 

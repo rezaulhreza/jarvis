@@ -29,8 +29,8 @@ from .tools import (
     calculate, save_memory, recall_memory, github_search,
     # Task management
     task_create, task_update, task_list, task_get,
-    # PR creation
-    create_pr,
+    # PR
+    create_pr, update_pr,
 )
 # Media generation (lazy import to avoid startup delays)
 def _get_media_tools():
@@ -66,7 +66,7 @@ class Agent:
     PLAN_BLOCKED_TOOLS = {
         "write_file", "edit_file", "run_command", "apply_patch",
         "git_commit", "git_add", "git_stash", "git_branch",
-        "save_memory", "create_pr",
+        "save_memory", "create_pr", "update_pr",
     }
 
     def __init__(self, provider, project_root: Path, ui=None, config: dict | None = None, permissions=None):
@@ -354,9 +354,17 @@ class Agent:
             "file", "repo", "project", "codebase", "function", "class",
             "line", "stack trace", "traceback", "error", "bug", "fix",
             "refactor", "edit", "update", "read", "open", "search",
-            "commit", "branch", "git", "push", "pull", "merge"
+            "commit", "branch", "git", "push", "pull", "merge",
+            "find", "where", "defined", "definition", "locate", "show me",
+            "list all", "list the", "create", "write", "delete", "remove",
+            "run", "execute", "test", "install", "build", "deploy",
+            "directory", "folder", "path", "import", "module", "variable",
         ]
         if any(s in msg for s in file_signals):
+            return True
+
+        # Path-like patterns (e.g. "jarvis/core/tools.py")
+        if re.search(r'\b[\w-]+/[\w.-]+', msg):
             return True
 
         # File extensions hinting code questions
@@ -720,6 +728,7 @@ GIT:
   git_branch      - {"tool": "git_branch", "name": "branch-name", "create": true}
   git_stash       - {"tool": "git_stash", "action": "push"}
   create_pr       - {"tool": "create_pr", "title": "PR title", "body": "description", "base": "main", "draft": false}
+  update_pr       - {"tool": "update_pr", "title": "New title", "body": "New description", "pr_number": 3}
 
 WEB & INFO:
   web_search      - {"tool": "web_search", "query": "search query"}
@@ -767,18 +776,22 @@ TOOL ORDERING RULES:
         "get_weather", "get_current_time", "calculate", "save_memory", "recall_memory",
         "task_create", "task_update", "task_list", "task_get", "github_search",
         "generate_image", "generate_video", "generate_music", "analyze_image",
-        "create_pr",
+        "create_pr", "update_pr",
     }
 
     def _has_tool_call_syntax(self, text: str) -> bool:
-        """Check if text contains tool call syntax (JSON or function-call style)."""
+        """Check if text contains tool call syntax (JSON, function-call, or name+JSON)."""
         if not text:
             return False
         # JSON-style: {"name": "tool", ...}
         if any(k in text for k in ('"name"', '"tool"', '"function"', '"action"')):
             return True
+        _tool_pattern = r'\b(' + '|'.join(re.escape(t) for t in self._KNOWN_TOOL_NAMES) + r')'
         # Function-call style: tool_name(...) matching a known tool
-        if re.search(r'\b(' + '|'.join(re.escape(t) for t in self._KNOWN_TOOL_NAMES) + r')\s*\(', text):
+        if re.search(_tool_pattern + r'\s*\(', text):
+            return True
+        # Name+JSON style: tool_name\n{"key": ...} or tool_name {"key": ...}
+        if re.search(_tool_pattern + r'\s*\{', text):
             return True
         return False
 
@@ -862,6 +875,7 @@ TOOL ORDERING RULES:
             "generate_image": "prompt", "generate_video": "prompt",
             "generate_music": "prompt", "github_search": "query",
             "create_pr": "title",
+            "update_pr": "title",
         }.get(tool_name, "query")
         args[first_param] = positional
         return tool_name, args
@@ -929,6 +943,16 @@ TOOL ORDERING RULES:
                                     if k not in ["tool", "name", "function", "action", "tool_name",
                                                 "arguments", "params", "parameters", "args"]}
                         return tool_name, args
+
+                    # Name+JSON format: tool_name\n{"key": "value"} or tool_name {"key": ...}
+                    # Tool name appears BEFORE the JSON, not inside it
+                    if start > 0:
+                        prefix = text[:start].strip()
+                        # Check if the prefix ends with a known tool name
+                        for known in self._KNOWN_TOOL_NAMES:
+                            if prefix == known or prefix.endswith(known):
+                                return known, data
+
                 except json.JSONDecodeError:
                     pass
 
@@ -1125,6 +1149,15 @@ TOOL ORDERING RULES:
             draft = " (draft)" if args.get("draft") else ""
             return f"Create PR: {title}{draft}"
 
+        elif tool_name == "update_pr":
+            parts = []
+            if args.get("title"):
+                parts.append(f"title='{args['title'][:30]}'")
+            if args.get("body"):
+                parts.append("description")
+            pr_num = args.get("pr_number", "current")
+            return f"Update PR #{pr_num}: {', '.join(parts) if parts else 'no changes'}"
+
         return f"{tool_name}()"
 
     def _format_timing_stats(self, elapsed: float, tool_count: int, input_tokens: int = 0, output_tokens: int = 0) -> str:
@@ -1245,6 +1278,7 @@ TOOL ORDERING RULES:
             "run_tests": {"required": [], "types": {"test_path": str, "framework": str}},
             "get_project_overview": {"required": [], "types": {}},
             "create_pr": {"required": ["title"], "types": {"title": str, "body": str, "base": str}},
+            "update_pr": {"required": [], "types": {"title": str, "body": str, "pr_number": int}},
         }
 
         schema = tool_schemas.get(tool_name)
@@ -1335,8 +1369,9 @@ TOOL ORDERING RULES:
             "task_get": task_get,
             # GitHub
             "github_search": github_search,
-            # PR creation
+            # PR
             "create_pr": create_pr,
+            "update_pr": update_pr,
         }
 
         # Add media tools (lazy loaded)
@@ -1553,6 +1588,7 @@ TOOL ORDERING RULES:
 
         iteration = 0
         final_response = ""
+        _tool_spinner = None  # Persistent spinner for tool activity display
 
         while iteration < self.max_iterations:
             iteration += 1
@@ -1595,15 +1631,25 @@ TOOL ORDERING RULES:
 
                 # If auto-tool already ran, just get LLM to synthesize - no more tools needed
                 if auto_tool_done:
+                    _synth_spinner = None
                     try:
                         from jarvis.providers import Message
                         synth_messages = [Message(role=m["role"], content=m["content"]) for m in messages]
                         synth_system = system_prompt + "\n\nAnswer the user's question based on the tool result above. Do NOT call any tools."
+
+                        if self.ui and hasattr(self.ui, "show_spinner"):
+                            _synth_spinner = self.ui.show_spinner("Generating response")
+                            _synth_spinner.start()
+
                         reply = self.provider.chat(
                             messages=synth_messages,
                             system=synth_system,
                             stream=True
                         )
+
+                        if _synth_spinner:
+                            _synth_spinner.stop()
+                            _synth_spinner = None
 
                         content_parts = []
                         if hasattr(reply, "__iter__") and not isinstance(reply, (str, dict)):
@@ -1622,7 +1668,10 @@ TOOL ORDERING RULES:
                         final_response = self._clean_content("".join(content_parts))
                         break
                     except Exception as e:
-                        print(f"[agent] Synthesis error: {e}")
+                        if _synth_spinner:
+                            _synth_spinner.stop()
+                        import logging
+                        logging.getLogger("jarvis.agent").debug(f"Synthesis error: {e}")
                         pass
 
                 # Optional fast path when tools are unlikely
@@ -1630,31 +1679,80 @@ TOOL ORDERING RULES:
                     try:
                         from jarvis.providers import Message
                         fast_messages = [Message(role=m["role"], content=m["content"]) for m in messages]
+
+                        # Show spinner while waiting for first token
+                        spinner = None
+                        if self.ui and hasattr(self.ui, "show_spinner"):
+                            spinner = self.ui.show_spinner("Thinking")
+                            spinner.start()
+
                         reply = self.provider.chat(
                             messages=fast_messages,
                             system=system_prompt,
                             stream=True
                         )
 
-                        # Stream output live
+                        # Buffer initial tokens to detect tool-call syntax before streaming
                         content_parts = []
                         if hasattr(reply, "__iter__") and not isinstance(reply, (str, dict)):
+                            buffer = []
+                            buffer_len = 0
+                            streaming = False
+
                             for chunk in reply:
-                                # Check for stop (Ctrl+C or ESC)
                                 if self.ui:
                                     if self.ui.stop_requested:
                                         break
                                     if hasattr(self.ui, "check_escape_pressed") and self.ui.check_escape_pressed():
                                         self.ui.stop_requested = True
                                         break
+
                                 content_parts.append(chunk)
-                                if self.ui and hasattr(self.ui, "stream_text"):
-                                    self.ui.stream_text(chunk)
-                            if self.ui and hasattr(self.ui, "stream_done"):
-                                self.ui.stream_done()
+
+                                if not streaming:
+                                    # Buffer first ~80 chars to check for tool syntax
+                                    buffer.append(chunk)
+                                    buffer_len += len(chunk)
+                                    if buffer_len >= 80:
+                                        buffered = "".join(buffer)
+                                        if self._has_tool_call_syntax(buffered):
+                                            # Tool call detected — stop spinner, fall through
+                                            if spinner:
+                                                spinner.stop()
+                                                spinner = None
+                                            break
+                                        # Safe to stream — stop spinner, flush buffer
+                                        if spinner:
+                                            spinner.stop()
+                                            spinner = None
+                                        streaming = True
+                                        if self.ui and hasattr(self.ui, "stream_text"):
+                                            self.ui.stream_text(buffered)
+                                else:
+                                    if self.ui and hasattr(self.ui, "stream_text"):
+                                        self.ui.stream_text(chunk)
+
+                            # Handle short responses that never hit buffer threshold
+                            if not streaming and buffer:
+                                buffered = "".join(buffer)
+                                if spinner:
+                                    spinner.stop()
+                                    spinner = None
+                                if not self._has_tool_call_syntax(buffered):
+                                    if self.ui and hasattr(self.ui, "stream_text"):
+                                        self.ui.stream_text(buffered)
+                                    streaming = True
+
+                            if streaming:
+                                if self.ui and hasattr(self.ui, "stream_done"):
+                                    self.ui.stream_done()
+                                self.last_streamed = True
+
                             content = "".join(content_parts)
-                            self.last_streamed = True
                         else:
+                            if spinner:
+                                spinner.stop()
+                                spinner = None
                             # Non-stream reply fallback
                             content = None
                             if isinstance(reply, str):
@@ -1676,14 +1774,19 @@ TOOL ORDERING RULES:
                                 self.ui.stream_done()
                                 self.last_streamed = True
 
+                        if spinner:
+                            spinner.stop()
+
                         final_response = self._clean_content(content if content is not None else "")
-                        # Safety net: if LLM output tool-call syntax, discard and fall through to agent loop
+                        # If tool-call syntax detected (from buffer or full), fall through to agent loop
                         if self._has_tool_call_syntax(final_response):
                             final_response = ""
                             self.last_streamed = False
                         else:
                             break
                     except Exception:
+                        if spinner:
+                            spinner.stop()
                         # Fall back to tool-capable path
                         pass
 
@@ -1697,20 +1800,22 @@ TOOL ORDERING RULES:
                     tools = None
 
                 # Call model with timeout (interruptible)
-                if self.ui:
-                    self.ui.console.print("[dim]  Thinking...[/dim]", end="\r")
+                _tool_spinner = None
+                if self.ui and hasattr(self.ui, "show_spinner"):
+                    _tool_spinner = self.ui.show_spinner("Thinking")
+                    _tool_spinner.start()
 
                 timeout = self._get_timeout()
                 response = self._call_model_with_timeout(messages, system_prompt, tools, timeout=timeout)
 
-                # Clear the "Thinking..." line
-                if self.ui:
-                    self.ui.console.print("             ", end="\r")
-
                 if response is None:
+                    if _tool_spinner:
+                        _tool_spinner.stop()
                     return "[dim]Stopped[/dim]"
 
                 if self.ui and self.ui.stop_requested:
+                    if _tool_spinner:
+                        _tool_spinner.stop()
                     return "[dim]Stopped[/dim]"
 
                 # Parse response
@@ -1724,6 +1829,8 @@ TOOL ORDERING RULES:
 
                     for call in tool_calls:
                         if self.ui and self.ui.stop_requested:
+                            if _tool_spinner:
+                                _tool_spinner.stop()
                             return "[dim]Stopped[/dim]"
 
                         tool_call_id = None
@@ -1743,12 +1850,20 @@ TOOL ORDERING RULES:
                             except json.JSONDecodeError:
                                 args = {}
 
+                        # Update spinner to show tool activity
+                        if _tool_spinner and hasattr(_tool_spinner, "update_tool"):
+                            _tool_spinner.update_tool(tool_name, args)
+
                         tool_start = time.time()
                         result = self._execute_tool(tool_name, args)
                         tool_duration = time.time() - tool_start
                         tool_count += 1
                         # Check if tool failed
                         tool_success = not (result and (result.startswith("Error") or result.startswith("error")))
+
+                        # Stop spinner briefly to print tool result, then restart
+                        if _tool_spinner:
+                            _tool_spinner.stop()
                         if self.ui:
                             self.ui.print_tool(self._format_tool_display(tool_name, args, result), success=tool_success)
                             if hasattr(self.ui, "record_tool"):
@@ -1765,6 +1880,13 @@ TOOL ORDERING RULES:
                         if tool_call_id:
                             tool_msg["tool_call_id"] = tool_call_id
                         messages.append(tool_msg)
+
+                    # Restart spinner for next iteration (model thinking)
+                    if self.ui and hasattr(self.ui, "show_spinner"):
+                        _tool_spinner = self.ui.show_spinner("Thinking")
+                        _tool_spinner.start()
+                    else:
+                        _tool_spinner = None
 
                     # Multi-step: let the loop continue so model can make more tool calls
                     # Duplicate-call detection
@@ -1807,9 +1929,17 @@ TOOL ORDERING RULES:
                     tool_name, args = self._parse_tool_call_from_text(content)
 
                     if tool_name:
+                        # Update spinner to show tool activity
+                        if _tool_spinner and hasattr(_tool_spinner, "update_tool"):
+                            _tool_spinner.update_tool(tool_name, args)
+
                         result = self._execute_tool(tool_name, args)
                         tool_count += 1
                         tool_success = not (result and (result.startswith("Error") or result.startswith("error")))
+
+                        # Stop spinner to print tool result
+                        if _tool_spinner:
+                            _tool_spinner.stop()
                         if self.ui:
                             self.ui.print_tool(self._format_tool_display(tool_name, args, result), success=tool_success)
 
@@ -1827,7 +1957,16 @@ TOOL ORDERING RULES:
                                 "role": "user",
                                 "content": "Multiple tool calls have failed. Reconsider your approach or answer with what you know."
                             })
+
+                        # Restart spinner for next iteration
+                        if self.ui and hasattr(self.ui, "show_spinner"):
+                            _tool_spinner = self.ui.show_spinner("Thinking")
+                            _tool_spinner.start()
+                        else:
+                            _tool_spinner = None
                     else:
+                        if _tool_spinner:
+                            _tool_spinner.stop()
                         # Couldn't parse JSON - remove JSON blob and return rest, or show error
                         clean = content
                         start = content.find('{')
@@ -1852,19 +1991,27 @@ TOOL ORDERING RULES:
 
                 # No tool calls - final response
                 elif content:
+                    if _tool_spinner:
+                        _tool_spinner.stop()
                     final_response = self._clean_content(content)
                     if self.ui and hasattr(self.ui, "print_tool_section"):
                         self.ui.print_tool_section()
                     break
 
                 else:
+                    if _tool_spinner:
+                        _tool_spinner.stop()
                     break
 
             except Exception as e:
+                if _tool_spinner:
+                    _tool_spinner.stop()
                 elapsed = time.time() - start_time
                 stats = self._format_timing_stats(elapsed, tool_count)
                 return f"[red]Error: {e}[/red]" + stats
 
+        if _tool_spinner:
+            _tool_spinner.stop()
         if iteration >= self.max_iterations:
             final_response += "\n[dim](max iterations)[/dim]"
 
@@ -1913,6 +2060,7 @@ TOOL ORDERING RULES:
             "task_get": task_get,
             "github_search": github_search,
             "create_pr": create_pr,
+            "update_pr": update_pr,
         }
         return tool_map
 
