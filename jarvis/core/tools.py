@@ -81,8 +81,8 @@ def read_file(path: str) -> str:
                 return f"Error: File not found: {path}"
 
         content = file_path.read_text(errors='replace')
-        if len(content) > 15000:
-            content = content[:15000] + f"\n\n... [TRUNCATED - file is {len(content)} chars, showing first 15000]"
+        if len(content) > 50000:
+            content = content[:50000] + f"\n\n... [TRUNCATED - file is {len(content)} chars, showing first 50000. Use grep or search_files to find specific content in large files.]"
 
         # Track that this file was read
         _READ_FILES.add(str(file_path.resolve()))

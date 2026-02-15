@@ -1593,8 +1593,13 @@ TOOL ORDERING RULES:
         while iteration < self.max_iterations:
             iteration += 1
 
-            if self.ui and self.ui.stop_requested:
-                return "[dim]Stopped[/dim]"
+            if self.ui:
+                if self.ui.stop_requested:
+                    return "[dim]Stopped[/dim]"
+                # Check ESC key between iterations
+                if hasattr(self.ui, "check_escape_pressed") and self.ui.check_escape_pressed():
+                    self.ui.stop_requested = True
+                    return "[dim]Stopped[/dim]"
 
             try:
                 # Auto-run tools for current info, time, weather, etc.
@@ -1800,7 +1805,9 @@ TOOL ORDERING RULES:
                     tools = None
 
                 # Call model with timeout (interruptible)
-                _tool_spinner = None
+                if _tool_spinner:
+                    _tool_spinner.stop()
+                    _tool_spinner = None
                 if self.ui and hasattr(self.ui, "show_spinner"):
                     _tool_spinner = self.ui.show_spinner("Thinking")
                     _tool_spinner.start()
@@ -1813,10 +1820,14 @@ TOOL ORDERING RULES:
                         _tool_spinner.stop()
                     return "[dim]Stopped[/dim]"
 
-                if self.ui and self.ui.stop_requested:
-                    if _tool_spinner:
-                        _tool_spinner.stop()
-                    return "[dim]Stopped[/dim]"
+                if self.ui:
+                    # Check ESC after model call
+                    if hasattr(self.ui, "check_escape_pressed") and self.ui.check_escape_pressed():
+                        self.ui.stop_requested = True
+                    if self.ui.stop_requested:
+                        if _tool_spinner:
+                            _tool_spinner.stop()
+                        return "[dim]Stopped[/dim]"
 
                 # Parse response
                 msg = response.message if hasattr(response, 'message') else response.get('message', {})
@@ -1880,13 +1891,6 @@ TOOL ORDERING RULES:
                         if tool_call_id:
                             tool_msg["tool_call_id"] = tool_call_id
                         messages.append(tool_msg)
-
-                    # Restart spinner for next iteration (model thinking)
-                    if self.ui and hasattr(self.ui, "show_spinner"):
-                        _tool_spinner = self.ui.show_spinner("Thinking")
-                        _tool_spinner.start()
-                    else:
-                        _tool_spinner = None
 
                     # Multi-step: let the loop continue so model can make more tool calls
                     # Duplicate-call detection
@@ -1958,12 +1962,6 @@ TOOL ORDERING RULES:
                                 "content": "Multiple tool calls have failed. Reconsider your approach or answer with what you know."
                             })
 
-                        # Restart spinner for next iteration
-                        if self.ui and hasattr(self.ui, "show_spinner"):
-                            _tool_spinner = self.ui.show_spinner("Thinking")
-                            _tool_spinner.start()
-                        else:
-                            _tool_spinner = None
                     else:
                         if _tool_spinner:
                             _tool_spinner.stop()
