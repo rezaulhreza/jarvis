@@ -2110,6 +2110,82 @@ def get_project_overview() -> str:
         return f"Error getting project overview: {e}"
 
 
+def create_pr(title: str, body: str = "", base: str = "main", draft: bool = False) -> str:
+    """Create a GitHub pull request from the current branch.
+
+    Args:
+        title: PR title (required)
+        body: PR description/body (optional)
+        base: Base branch to merge into (default "main")
+        draft: Create as draft PR (default False)
+
+    Returns:
+        PR URL on success, or error message
+    """
+    global _PROJECT_ROOT
+
+    try:
+        # Check if gh is installed
+        check = subprocess.run(
+            ["gh", "--version"],
+            capture_output=True, text=True, timeout=10
+        )
+        if check.returncode != 0:
+            return "Error: GitHub CLI (gh) not installed. Install with: brew install gh"
+
+        # Check if authenticated
+        auth_check = subprocess.run(
+            ["gh", "auth", "status"],
+            cwd=_PROJECT_ROOT,
+            capture_output=True, text=True, timeout=10
+        )
+        if auth_check.returncode != 0:
+            return "Error: Not authenticated with GitHub. Run: gh auth login"
+
+        # Get current branch
+        branch_result = subprocess.run(
+            ["git", "branch", "--show-current"],
+            cwd=_PROJECT_ROOT,
+            capture_output=True, text=True, timeout=10
+        )
+        current_branch = branch_result.stdout.strip()
+        if not current_branch or current_branch in (base, "main", "master"):
+            return f"Error: Cannot create PR from '{current_branch}'. Switch to a feature branch first."
+
+        # Build gh pr create command
+        cmd = ["gh", "pr", "create", "--title", title, "--base", base]
+        if body:
+            cmd.extend(["--body", body])
+        else:
+            cmd.extend(["--body", ""])
+        if draft:
+            cmd.append("--draft")
+
+        result = subprocess.run(
+            cmd,
+            cwd=_PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+
+        if result.returncode != 0:
+            error = result.stderr.strip()
+            if "already exists" in error:
+                return f"Error: A pull request already exists for branch '{current_branch}'"
+            return f"Error creating PR: {error}"
+
+        pr_url = result.stdout.strip()
+        return f"Created PR: {pr_url}"
+
+    except FileNotFoundError:
+        return "Error: GitHub CLI (gh) not installed. Install with: brew install gh"
+    except subprocess.TimeoutExpired:
+        return "Error: PR creation timed out"
+    except Exception as e:
+        return f"Error creating PR: {e}"
+
+
 def github_search(query: str, search_type: str = "repos") -> str:
     """Search GitHub for repositories, code, issues, or users.
 
@@ -2190,6 +2266,8 @@ ALL_TOOLS = [
     task_get,
     # GitHub
     github_search,
+    # PR creation
+    create_pr,
 ]
 
 
@@ -2234,6 +2312,7 @@ _TOOL_FUNC_TO_NAME = {
     task_list: "task_list",
     task_get: "task_get",
     github_search: "github_search",
+    create_pr: "create_pr",
 }
 
 TOOL_REGISTRY = {
@@ -2283,6 +2362,7 @@ TOOL_REGISTRY = {
     "task_get":         {"category": "task", "intents": ["code", "shell"],       "keywords": ["task", "get", "detail"]},
     # GitHub
     "github_search":    {"category": "web",  "intents": ["search", "code"],      "keywords": ["github", "repo", "repository"]},
+    "create_pr":        {"category": "git",  "intents": ["git"],                 "keywords": ["pr", "pull request", "merge", "review"]},
 }
 
 # Always include these tools as fallback
@@ -2292,7 +2372,7 @@ _ALWAYS_INCLUDE = {"read_file"}
 _CATEGORY_GROUPS = {
     "file": ["read_file", "list_files", "search_files", "write_file", "edit_file", "glob_files", "grep", "get_project_structure"],
     "code": ["read_file", "write_file", "edit_file", "apply_patch", "find_definition", "find_references", "run_tests", "get_project_overview", "grep", "glob_files"],
-    "git": ["git_status", "git_diff", "git_log", "git_commit", "git_add", "git_branch", "git_stash"],
+    "git": ["git_status", "git_diff", "git_log", "git_commit", "git_add", "git_branch", "git_stash", "create_pr"],
     "web": ["web_search", "web_fetch", "get_current_news"],
     "task": ["task_create", "task_update", "task_list", "task_get"],
 }

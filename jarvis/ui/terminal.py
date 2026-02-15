@@ -87,7 +87,8 @@ except ImportError:
 # Valid commands for highlighting
 VALID_COMMANDS = {
     "/help", "/init", "/models", "/model", "/provider", "/providers",
-    "/project", "/tools", "/context", "/level", "/clear", "/cls", "/quit", "/exit", "/q", "/reset",
+    "/project", "/tools", "/context", "/compact", "/usage", "/sessions", "/resume",
+    "/permissions", "/plan", "/level", "/clear", "/cls", "/quit", "/exit", "/q", "/reset",
     "/analyze"
 }
 
@@ -322,6 +323,10 @@ class TerminalUI:
     def _get_toolbar_text(self):
         """Generate toolbar text for display."""
         parts = ["? help", "ESC stop", self._current_provider, self._current_model]
+
+        # Show plan mode indicator
+        if getattr(self, '_plan_mode', False):
+            parts.append("[PLAN]")
 
         # Add context stats if available
         if self._context_stats:
@@ -629,6 +634,12 @@ class TerminalUI:
             ("/project", "Show project info"),
             ("/tools", "Show recent tool calls (expand details)"),
             ("/context", "Show context window usage"),
+            ("/compact", "Compact conversation context"),
+            ("/usage", "Show session token usage"),
+            ("/sessions", "List recent sessions"),
+            ("/resume <#>", "Resume a previous session"),
+            ("/permissions", "View/manage tool permissions"),
+            ("/plan", "Toggle plan mode (blocks writes)"),
             ("/level [level]", "Set reasoning level (fast/balanced/deep/auto)"),
             ("/analyze <query>", "Multi-model AI analysis"),
             ("/clear", "Clear conversation history"),
@@ -726,6 +737,62 @@ class TerminalUI:
         self.console.print(f"{message} [dim](y/n)[/dim] ", end="")
         return input().lower().strip() in ('y', 'yes')
 
+    def print_sessions(self, chats: list, current_id: str = None):
+        """Print a table of recent chat sessions."""
+        self.console.print()
+        if not chats:
+            self.console.print("[dim]No sessions found.[/dim]")
+            self.console.print()
+            return
+
+        table = Table(show_header=True, header_style="bold cyan", box=None)
+        table.add_column("#", style="dim", width=4)
+        table.add_column("Title")
+        table.add_column("Messages", justify="right", width=10)
+        table.add_column("Updated", width=20)
+
+        for i, chat in enumerate(chats, 1):
+            marker = "[cyan]●[/cyan] " if chat.get("id") == current_id else "  "
+            title = chat.get("title", "Untitled")[:40]
+            msg_count = str(chat.get("message_count", 0))
+            updated = chat.get("updated_at", "")[:16]
+            table.add_row(f"{marker}{i}", title, msg_count, updated)
+
+        self.console.print(table)
+        self.console.print("[dim]Use /resume <#> to resume a session[/dim]")
+        self.console.print()
+
+    def print_permissions(self, permissions):
+        """Print tool permissions table."""
+        self.console.print()
+        table = Table(show_header=True, header_style="bold cyan", box=None)
+        table.add_column("Tool")
+        table.add_column("Risk", width=10)
+        table.add_column("Setting", width=15)
+
+        for tool_name, level in sorted(permissions.get_all_levels().items()):
+            setting = permissions.get_setting(tool_name)
+            risk_style = {"safe": "green", "moderate": "yellow", "dangerous": "red"}.get(level, "dim")
+            table.add_row(tool_name, f"[{risk_style}]{level}[/{risk_style}]", setting)
+
+        self.console.print(table)
+        self.console.print("[dim]Usage: /permissions allow <tool> | deny <tool> | reset[/dim]")
+        self.console.print()
+
+    def prompt_tool_permission(self, tool_name: str, args: dict, risk: str) -> str:
+        """Prompt user for tool permission. Returns 'y', 'n', 'a' (always), or 'd' (deny)."""
+        risk_colors = {"safe": "green", "moderate": "yellow", "dangerous": "red"}
+        color = risk_colors.get(risk, "dim")
+        args_preview = ", ".join(f"{k}={repr(v)[:30]}" for k, v in (args or {}).items())
+        self.console.print()
+        self.console.print(f"[{color}][{risk.upper()}][/{color}] {tool_name}({args_preview})")
+        self.console.print("[dim]  [y]es, [n]o, [a]lways allow, [d]eny always[/dim]")
+        try:
+            response = input("> ").strip().lower()
+            return response if response in ('y', 'n', 'a', 'd', 'yes', 'no') else 'n'
+        except (EOFError, KeyboardInterrupt):
+            return 'n'
+
 
 class _JarvisLexer(Lexer):
     """Syntax highlighter for Jarvis input - highlights commands and file mentions."""
@@ -783,6 +850,12 @@ class _JarvisCompleter(Completer):
         "/project",
         "/tools",
         "/context",
+        "/compact",
+        "/usage",
+        "/sessions",
+        "/resume",
+        "/permissions",
+        "/plan",
         "/level",
         "/analyze",
         "/clear",

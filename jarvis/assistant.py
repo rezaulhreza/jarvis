@@ -275,12 +275,22 @@ class Jarvis:
         self.context.set_provider(self.provider)
         self.context.set_compact_callback(self._on_context_compact)
 
+        # Session state
+        self.session_tokens = {"input": 0, "output": 0}
+        self.plan_mode = False
+        self.active_plan = ""
+
+        # Permission system
+        from .core.permissions import PermissionManager
+        self.permissions = PermissionManager(config_dir=CONFIG_DIR)
+
         # Agent for tool calling
         self.agent = Agent(
             provider=self.provider,
             project_root=self.project.project_root,
             ui=self.ui,
-            config=self.config
+            config=self.config,
+            permissions=self.permissions,
         )
 
         # Initialize RAG engine for knowledge retrieval
@@ -548,6 +558,9 @@ personalize responses but keep it internal.
         self.ui.is_streaming = True
         self.ui.console.print()  # Blank line before response
 
+        # Sync plan mode to agent
+        self.agent.plan_mode = self.plan_mode
+
         try:
             # Get RAG context for this query
             rag_context = self._get_rag_context(user_input)
@@ -556,6 +569,18 @@ personalize responses but keep it internal.
             enhanced_prompt = self.system_prompt
             if rag_context:
                 enhanced_prompt = self.system_prompt + "\n\n" + rag_context
+
+            # Inject plan mode instructions
+            if self.plan_mode:
+                enhanced_prompt += (
+                    "\n\n[PLAN MODE] You are in plan mode. Do NOT execute any write operations. "
+                    "Instead, create a detailed step-by-step plan for the user's request. "
+                    "List files to change, what changes to make, and why."
+                )
+
+            # Track input tokens
+            input_tokens = self.context.count_tokens(user_input)
+            self.session_tokens['input'] += input_tokens
 
             # Run agent (shows spinner and tool calls internally)
             response = self.agent.run(user_input, enhanced_prompt, history)
@@ -566,6 +591,10 @@ personalize responses but keep it internal.
                 if not getattr(self.agent, "last_streamed", False):
                     self.ui.console.print(response)
 
+                # Track output tokens
+                output_tokens = self.context.count_tokens(response)
+                self.session_tokens['output'] += output_tokens
+
                 # Save clean response to context (strip markup)
                 clean = response.replace("[dim]", "").replace("[/dim]", "")
                 clean = clean.replace("[red]", "").replace("[/red]", "")
@@ -574,6 +603,31 @@ personalize responses but keep it internal.
 
                     # Extract facts from conversation (periodically)
                     self._extract_facts_from_conversation(user_input, clean.strip())
+
+                    # Plan mode: prompt for action after agent responds with a plan
+                    if self.plan_mode and len(clean.strip()) > 100:
+                        self.active_plan = clean.strip()
+                        self.ui.console.print()
+                        self.ui.console.print("[cyan]Plan ready.[/cyan] [dim][y]es to implement, [n]o to discard, [e]dit to refine[/dim]")
+                        try:
+                            choice = input("> ").strip().lower()
+                            if choice in ('y', 'yes'):
+                                self.plan_mode = False
+                                self.agent.plan_mode = False
+                                self.ui.print_info("Implementing plan...")
+                                # Inject plan as context and re-run
+                                self.context.add_message("user", f"Implement this plan:\n{self.active_plan}")
+                                return self._run_agent(f"Implement this plan:\n{self.active_plan}")
+                            elif choice in ('e', 'edit'):
+                                self.ui.print_info("Enter feedback to refine the plan:")
+                                feedback = input("> ").strip()
+                                if feedback:
+                                    return self.process(feedback)
+                            else:
+                                self.active_plan = ""
+                                self.ui.print_info("Plan discarded")
+                        except (EOFError, KeyboardInterrupt):
+                            self.active_plan = ""
 
             self.ui.is_streaming = False
             return response
@@ -821,6 +875,86 @@ Describe your project's directory structure and key files:
                 self.ui.console.print(f"  [yellow]⚠ Approaching limit - will auto-compact soon[/yellow]")
             self.ui.console.print()
 
+        elif cmd == '/compact':
+            # Manual context compaction
+            before_stats = self.context.get_context_stats()
+            before_tokens = before_stats['tokens_used']
+            before_msgs = before_stats['messages']
+            if before_msgs <= 2:
+                self.ui.print_info("Nothing to compact (too few messages)")
+            else:
+                self.context._compact()
+                after_stats = self.context.get_context_stats()
+                after_tokens = after_stats['tokens_used']
+                after_msgs = after_stats['messages']
+                self.ui.print_success(
+                    f"Compacted: {before_tokens:,} → {after_tokens:,} tokens "
+                    f"({before_msgs} → {after_msgs} messages)"
+                )
+
+        elif cmd == '/usage':
+            # Show cumulative token usage for this session
+            self.ui.console.print()
+            self.ui.console.print(f"[cyan]Session Token Usage[/cyan]")
+            self.ui.console.print(f"  Input tokens:    {self.session_tokens['input']:,}")
+            self.ui.console.print(f"  Output tokens:   {self.session_tokens['output']:,}")
+            total = self.session_tokens['input'] + self.session_tokens['output']
+            self.ui.console.print(f"  Total tokens:    {total:,}")
+            self.ui.console.print()
+
+        elif cmd == '/sessions':
+            # List recent chat sessions
+            chats = self.context.list_chats(limit=20)
+            self.ui.print_sessions(chats, self.context.current_chat_id)
+
+        elif cmd == '/resume':
+            if not args:
+                self.ui.print_warning("Usage: /resume <number>")
+                self.ui.print_info("Use /sessions to list available sessions")
+            else:
+                chats = self.context.list_chats(limit=20)
+                try:
+                    idx = int(args.strip()) - 1
+                    if 0 <= idx < len(chats):
+                        chat = chats[idx]
+                        if self.context.switch_chat(chat['id']):
+                            msg_count = len(self.context.get_messages())
+                            self.ui.print_success(f"Resumed: {chat.get('title', 'Untitled')} ({msg_count} messages)")
+                        else:
+                            self.ui.print_error("Failed to resume session")
+                    else:
+                        self.ui.print_warning(f"Invalid session number. Use 1-{len(chats)}")
+                except ValueError:
+                    self.ui.print_warning("Usage: /resume <number>")
+
+        elif cmd == '/permissions':
+            if hasattr(self, 'permissions'):
+                if args:
+                    parts_p = args.split(maxsplit=1)
+                    subcmd = parts_p[0].lower()
+                    tool_arg = parts_p[1] if len(parts_p) > 1 else ""
+                    if subcmd == "allow" and tool_arg:
+                        self.permissions.set_always_allow(tool_arg)
+                        self.ui.print_success(f"Always allow: {tool_arg}")
+                    elif subcmd == "deny" and tool_arg:
+                        self.permissions.set_always_deny(tool_arg)
+                        self.ui.print_success(f"Always deny: {tool_arg}")
+                    elif subcmd == "reset":
+                        self.permissions.reset()
+                        self.ui.print_success("Permissions reset to defaults")
+                    else:
+                        self.ui.print_warning("Usage: /permissions [allow|deny|reset] [tool]")
+                else:
+                    self.ui.print_permissions(self.permissions)
+
+        elif cmd == '/plan':
+            self.plan_mode = not self.plan_mode
+            if self.plan_mode:
+                self.active_plan = ""
+                self.ui.print_info("[PLAN MODE] Write operations blocked. Ask me to plan something.")
+            else:
+                self.ui.print_info("Plan mode disabled")
+
         elif cmd == '/level':
             # Set or show reasoning level
             valid_levels = ['fast', 'balanced', 'deep', 'auto']
@@ -986,6 +1120,9 @@ def run_cli(reasoning_level: str = None):
         level_names = {'fast': '⚡ Fast', 'balanced': '⚖️ Balanced', 'deep': '🧠 Deep'}
         ui.print_system(f"Reasoning level: {level_names.get(reasoning_level, reasoning_level)}")
 
+    # Create a CLI session so messages are resumable
+    jarvis.context.create_chat(f"CLI: {jarvis.project.project_name}")
+
     # Show header with PROJECT info (not jarvis info)
     ui.print_header(
         jarvis.provider.name,
@@ -999,6 +1136,7 @@ def run_cli(reasoning_level: str = None):
             # Get context stats for display
             context_stats = jarvis.context.get_context_stats() if hasattr(jarvis.context, 'get_context_stats') else None
 
+            ui._plan_mode = jarvis.plan_mode
             ui.print_status(
                 jarvis.provider.name,
                 jarvis.provider.model,

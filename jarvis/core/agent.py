@@ -29,6 +29,8 @@ from .tools import (
     calculate, save_memory, recall_memory, github_search,
     # Task management
     task_create, task_update, task_list, task_get,
+    # PR creation
+    create_pr,
 )
 # Media generation (lazy import to avoid startup delays)
 def _get_media_tools():
@@ -60,13 +62,22 @@ class AgentEvent:
 class Agent:
     """Agent with tool calling - native or prompt-based."""
 
-    def __init__(self, provider, project_root: Path, ui=None, config: dict | None = None):
+    # Tools blocked in plan mode (write/destructive operations)
+    PLAN_BLOCKED_TOOLS = {
+        "write_file", "edit_file", "run_command", "apply_patch",
+        "git_commit", "git_add", "git_stash", "git_branch",
+        "save_memory", "create_pr",
+    }
+
+    def __init__(self, provider, project_root: Path, ui=None, config: dict | None = None, permissions=None):
         self.provider = provider
         self.project_root = project_root
         self.ui = ui
         self.config = config or {}
         self.max_iterations = 15
         self.last_streamed = False
+        self.plan_mode = False
+        self.permissions = permissions
         set_project_root(project_root)
         set_ui(ui)  # Pass UI to tools for confirmations
 
@@ -708,6 +719,7 @@ GIT:
   git_commit      - {"tool": "git_commit", "message": "commit message"}
   git_branch      - {"tool": "git_branch", "name": "branch-name", "create": true}
   git_stash       - {"tool": "git_stash", "action": "push"}
+  create_pr       - {"tool": "create_pr", "title": "PR title", "body": "description", "base": "main", "draft": false}
 
 WEB & INFO:
   web_search      - {"tool": "web_search", "query": "search query"}
@@ -755,6 +767,7 @@ TOOL ORDERING RULES:
         "get_weather", "get_current_time", "calculate", "save_memory", "recall_memory",
         "task_create", "task_update", "task_list", "task_get", "github_search",
         "generate_image", "generate_video", "generate_music", "analyze_image",
+        "create_pr",
     }
 
     def _has_tool_call_syntax(self, text: str) -> bool:
@@ -848,6 +861,7 @@ TOOL ORDERING RULES:
             "find_definition": "symbol", "find_references": "symbol",
             "generate_image": "prompt", "generate_video": "prompt",
             "generate_music": "prompt", "github_search": "query",
+            "create_pr": "title",
         }.get(tool_name, "query")
         args[first_param] = positional
         return tool_name, args
@@ -1106,9 +1120,14 @@ TOOL ORDERING RULES:
             task_id = args.get("task_id", "")
             return f"Get task #{task_id}"
 
+        elif tool_name == "create_pr":
+            title = args.get("title", "")[:40]
+            draft = " (draft)" if args.get("draft") else ""
+            return f"Create PR: {title}{draft}"
+
         return f"{tool_name}()"
 
-    def _format_timing_stats(self, elapsed: float, tool_count: int) -> str:
+    def _format_timing_stats(self, elapsed: float, tool_count: int, input_tokens: int = 0, output_tokens: int = 0) -> str:
         """Format timing stats footer."""
         if elapsed < 60:
             time_str = f"{elapsed:.1f}s"
@@ -1119,6 +1138,12 @@ TOOL ORDERING RULES:
         stats = f"\n[dim]({time_str}"
         if tool_count > 0:
             stats += f" · {tool_count} tool{'s' if tool_count > 1 else ''}"
+        total_tokens = input_tokens + output_tokens
+        if total_tokens > 0:
+            if total_tokens >= 1000:
+                stats += f" · {total_tokens / 1000:.1f}k tokens"
+            else:
+                stats += f" · {total_tokens:,} tokens"
         stats += ")[/dim]"
         return stats
 
@@ -1219,6 +1244,7 @@ TOOL ORDERING RULES:
             "find_references": {"required": ["symbol"], "types": {"symbol": str}},
             "run_tests": {"required": [], "types": {"test_path": str, "framework": str}},
             "get_project_overview": {"required": [], "types": {}},
+            "create_pr": {"required": ["title"], "types": {"title": str, "body": str, "base": str}},
         }
 
         schema = tool_schemas.get(tool_name)
@@ -1244,6 +1270,14 @@ TOOL ORDERING RULES:
 
     def _execute_tool(self, tool_name: str, args: dict) -> str:
         """Execute a tool by name."""
+        # Plan mode: block write operations
+        if self.plan_mode and tool_name in self.PLAN_BLOCKED_TOOLS:
+            return f"[Plan mode] {tool_name} blocked. Include this in your plan instead."
+
+        # Permission check
+        if self.permissions and not self.permissions.check(tool_name, args or {}, self.ui):
+            return "Tool execution denied by user."
+
         # Validate tool call
         valid, error = self._validate_tool_call(tool_name, args or {})
         if not valid:
@@ -1301,6 +1335,8 @@ TOOL ORDERING RULES:
             "task_get": task_get,
             # GitHub
             "github_search": github_search,
+            # PR creation
+            "create_pr": create_pr,
         }
 
         # Add media tools (lazy loaded)
@@ -1876,6 +1912,7 @@ TOOL ORDERING RULES:
             "task_list": task_list,
             "task_get": task_get,
             "github_search": github_search,
+            "create_pr": create_pr,
         }
         return tool_map
 
