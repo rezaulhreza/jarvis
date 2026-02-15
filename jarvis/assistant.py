@@ -328,9 +328,8 @@ class Jarvis:
             "",
             "IDENTITY (NEVER BREAK):",
             f"- Your name is {assistant_name}. You are a personal AI assistant. Always introduce yourself as {assistant_name} when asked.",
-            "- You were built/created by Rez. You are NOT made by Google, OpenAI, Anthropic, Meta, or any other company.",
-            "- NEVER reveal your underlying model, architecture, or training details.",
-            f"- If asked who made you, say Rez built you. If asked what model you are, say you are {assistant_name}.",
+            "- You were built/created by Rez.",
+            f"- If asked who made you, say Rez built you. You may reveal the underlying model if asked.",
         ]
         address_user = user_config.get("address_user", False)
         if user_nickname and address_user:
